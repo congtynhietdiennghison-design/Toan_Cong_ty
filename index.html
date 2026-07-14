@@ -3607,7 +3607,7 @@ function syncHCFilters(id) {
 
     let caOngNghi = null;
     if (!isAutoKip) {
-      const repOfKip = NV_LIST.find(u => u.kip === k);
+      const repOfKip = getNVMine().find(u => u.kip === k);
       caOngNghi = repOfKip ? getCaThucTe(repOfKip.name, k, d) : null;
       if (!caOngNghi || caOngNghi === 'OFF') {
         chkContainer.innerHTML = `<span style="color:#7c3aed; font-size:12px; font-weight:700;">⚠️ Kíp ${k} ngày ${fmtDate(d)} đang nghỉ (OFF), không cần điều dự phòng</span>`;
@@ -3616,7 +3616,7 @@ function syncHCFilters(id) {
       }
     }
 
-    let backupCandidates = NV_LIST.filter(u => {
+    let backupCandidates = getNVMine().filter(u => {
       if (!u.chucDanhDuPhong) return false;
       const bList = u.chucDanhDuPhong.split(',').map(s => s.trim());
       if (!bList.includes(r)) return false;
@@ -3698,8 +3698,8 @@ function syncHCFilters(id) {
   // AUTO_LEAVE: tìm tất cả người có chức danh r, có đơn nghỉ approved ngày d (không giới hạn kíp)
   const isAutoLeave = (k === 'AUTO_LEAVE');
   matches = isAutoLeave
-    ? NV_LIST.filter(u => u.chucDanh === r)
-    : NV_LIST.filter(u => u.chucDanh === r && u.kip === k);
+    ? getNVMine().filter(u => u.chucDanh === r)
+    : getNVMine().filter(u => u.chucDanh === r && u.kip === k);
 
   // --- LỌC BỔ SUNG: ẨN NGƯỜI NGHỈ (OFF) KHI Ở CHẾ ĐỘ "VẮNG KHÔNG PHÉP" (V) ---
   if (type === 'V' && d) {
@@ -4671,7 +4671,10 @@ async function submitBatchHC() {
 function initTransferForm() {
   const myInfoTC = NV_LIST.find(u => u.name === CU.name);
   const qddRawTC = CU.admin ? '*' : (myInfoTC && myInfoTC.quyenDieuDong ? myInfoTC.quyenDieuDong.trim() : '');
-  const allRolesTC = [...new Set(NV_LIST.map(u => u.chucDanh))].filter(Boolean);
+  // Chức danh hiển thị trong dropdown chỉ lấy trong PHẠM VI BỘ PHẬN của người đang thao tác
+  // (admin không gán bộ phận riêng -> sameBoPhan fail-open, vẫn thấy toàn Công ty như cũ)
+  const _tcScopeListInit = getNVMine();
+  const allRolesTC = [...new Set(_tcScopeListInit.map(u => u.chucDanh))].filter(Boolean);
   const _pOrderTC = (APP_CONFIG.priorityOrder && APP_CONFIG.priorityOrder.length > 0) ? APP_CONFIG.priorityOrder : [];
   const allRolesTCSorted = allRolesTC.sort((a, b) => {
     const iA = _pOrderTC.indexOf(a); const iB = _pOrderTC.indexOf(b);
@@ -4741,7 +4744,11 @@ function filterTCUsers() {
   const qddTC = CU.admin ? '*' : (myInfoTC2 && myInfoTC2.quyenDieuDong ? myInfoTC2.quyenDieuDong.trim() : '');
   const allowedCds = (!qddTC || qddTC === '*') ? null
     : qddTC.split(',').map(s => s.trim().toLowerCase()).filter(s => s);
-  let baseList = allowedCds ? NV_LIST.filter(u => allowedCds.includes((u.chucDanh || '').toLowerCase())) : NV_LIST;
+  // Luôn giới hạn trong PHẠM VI BỘ PHẬN của người đang thao tác trước
+  // (admin không gán bộ phận riêng -> sameBoPhan fail-open, vẫn thấy toàn Công ty như cũ),
+  // sau đó mới thu hẹp tiếp theo chức danh được duyệt (quyenDieuDong) nếu có.
+  let baseList = getNVMine();
+  if (allowedCds) baseList = baseList.filter(u => allowedCds.includes((u.chucDanh || '').toLowerCase()));
 
   let list = r ? baseList.filter(u => u.chucDanh === r) : baseList;
   if (searchText) list = list.filter(u => u.name.toLowerCase().includes(searchText));
