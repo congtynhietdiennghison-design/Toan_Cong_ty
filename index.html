@@ -144,7 +144,7 @@ textarea{resize:none;height:80px}
 <input type="file" id="camera-upload" accept="image/*" style="display:none">
 
 <div class="topbar">
-  <div><div style="font-size:16px;font-weight:700;">Quản lý chấm công</div><div class="topbar-sub" id="tb-ten-px">Đang tải cấu hình...</div></div>
+  <div><div id="tb-title" style="font-size:16px;font-weight:700;">Quản lý chấm công</div><div class="topbar-sub" id="tb-ten-px">Đang tải cấu hình...</div></div>
 </div>
 
 <div class="overlay" id="overlay">
@@ -995,6 +995,69 @@ function transferMatchesYM(t, yr, mo) {
   return mo ? (y === yr && m === mo) : y === yr;
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// ĐỊNH MỨC SỐ CA LỆCH THEO TỪNG BỘ PHẬN
+// ═══════════════════════════════════════════════════════════════════
+// Mỗi Phòng/Phân xưởng có thể có SỐ CA LỆCH TỐI ĐA riêng, cấu hình trong
+// sheet "settings" (cột configKey/configValue), đặt tên theo quy ước:
+//   SO_CA_LECH_MAX_<TÊN BỘ PHẬN KHÔNG DẤU, cách nhau bằng "_">
+//   SO_CA_LECH_CANH_BAO_<TÊN BỘ PHẬN KHÔNG DẤU>
+// Ví dụ bộ phận "Phân xưởng Vận hành" → khoá: SO_CA_LECH_MAX_PHAN_XUONG_VAN_HANH
+// Nếu bộ phận không có dòng cấu hình riêng → dùng SO_CA_LECH_MAX chung (global).
+// Nếu để trống SO_CA_LECH_CANH_BAO_xxx → tự lấy = (SO_CA_LECH_MAX của bộ phận đó) - 2.
+let LECH_MAX_BY_BP = {};
+let LECH_WARN_BY_BP = {};
+
+// Chuẩn hoá tên bộ phận thành hậu tố configKey: bỏ dấu tiếng Việt, viết hoa,
+// thay mọi ký tự không phải chữ/số bằng "_".
+function boPhanConfigSuffix(bp) {
+  return (bp || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'd')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+// Dựng lại bảng định mức theo bộ phận — gọi sau khi đã có settings + NV_LIST.
+function buildLechLimitsByBoPhan() {
+  LECH_MAX_BY_BP = {}; LECH_WARN_BY_BP = {};
+  const conf = APP_CONFIG.configs || {};
+  const globalMax = parseInt(conf.SO_CA_LECH_MAX) || 10;
+  const bpList = [...new Set((NV_LIST || []).map(u => u.boPhan).filter(Boolean))];
+  bpList.forEach(bp => {
+    const suf = boPhanConfigSuffix(bp);
+    if (!suf) return;
+    const rawMax = conf['SO_CA_LECH_MAX_' + suf];
+    const bpMax = (rawMax !== undefined && rawMax !== '' && rawMax !== null && !isNaN(parseInt(rawMax)))
+      ? parseInt(rawMax) : globalMax;
+    const rawWarn = conf['SO_CA_LECH_CANH_BAO_' + suf];
+    const bpWarn = (rawWarn !== undefined && rawWarn !== '' && rawWarn !== null && !isNaN(parseInt(rawWarn)))
+      ? parseInt(rawWarn) : (bpMax - 2);
+    LECH_MAX_BY_BP[bp] = bpMax;
+    LECH_WARN_BY_BP[bp] = bpWarn;
+  });
+}
+
+// Lấy định mức số ca lệch TỐI ĐA áp dụng cho 1 bộ phận. Bộ phận rỗng/chưa cấu
+// hình riêng → dùng số chung toàn hệ thống (APP_CONFIG.lechMax).
+function getLechMax(boPhan) {
+  if (boPhan && LECH_MAX_BY_BP[boPhan] !== undefined) return LECH_MAX_BY_BP[boPhan];
+  return parseInt(APP_CONFIG.lechMax) || 10;
+}
+// Lấy mức CẢNH BÁO áp dụng cho 1 bộ phận.
+function getLechWarn(boPhan) {
+  if (boPhan && LECH_WARN_BY_BP[boPhan] !== undefined) return LECH_WARN_BY_BP[boPhan];
+  return parseInt(APP_CONFIG.lechWarn) || (getLechMax(boPhan) - 2);
+}
+// Tra theo TÊN nhân sự (tự tìm bộ phận qua NV_LIST).
+function getLechMaxByName(name) {
+  return getLechMax((NV_LIST.find(u => u.name === name) || {}).boPhan || '');
+}
+function getLechWarnByName(name) {
+  return getLechWarn((NV_LIST.find(u => u.name === name) || {}).boPhan || '');
+}
+
 function setupDynamicFields(settings) {
   if(settings.configs) {
     APP_CONFIG.tenPX = settings.configs.TEN_PHAN_XUONG || "Phân xưởng"; 
@@ -1003,6 +1066,7 @@ function setupDynamicFields(settings) {
     APP_CONFIG.configs = settings.configs;
     APP_CONFIG.kipList = settings.kips;
     APP_CONFIG.priorityOrder = settings.chucDanhs;
+    buildLechLimitsByBoPhan();
     document.getElementById('page-title').textContent = "Quản lý đổi ca – " + APP_CONFIG.tenPX; 
     document.getElementById('tb-ten-px').textContent = APP_CONFIG.tenPX;
   }
@@ -1317,6 +1381,13 @@ async function doLogin(){
     document.getElementById('overlay').style.display='none'; document.getElementById('app').style.display='block'; 
     document.getElementById('ub-name').textContent=CU.name; 
     const myInfo = NV_LIST.find(u => u.name === CU.name); 
+    // Tiêu đề "Quản lý chấm công" — chèn tên bộ phận của tài khoản đang đăng nhập (nếu có).
+    // Admin/tài khoản chưa gán bộ phận (giám sát toàn Công ty) thì giữ nguyên tiêu đề gốc.
+    const _tbTitleEl = document.getElementById('tb-title');
+    if (_tbTitleEl) {
+      const _myBoPhan = (CU.boPhan || (myInfo && myInfo.boPhan) || '').trim();
+      _tbTitleEl.textContent = 'Quản lý chấm công' + (_myBoPhan ? ' - ' + _myBoPhan : '');
+    }
     document.getElementById('ub-role').textContent = (myInfo && myInfo.chucDanh) ? myInfo.chucDanh : (CU.role==='ld'?'Lãnh đạo PX':'Vận hành');
     document.getElementById('tab-ld').style.display = CU.role==='ld'?'':'none';
     document.getElementById('tab-btn-duyet-np').style.display = CU.role==='ld'?'':'none';
@@ -2338,21 +2409,25 @@ if (document.getElementById('f-no-return').checked) {
   // --- LẤY THÔNG SỐ VÀ ĐẾM CA LỆCH ---
   const monthDoi = ngayDoi ? ngayDoi.substring(0, 7) : null; 
   const monthTra = ngayTra ? ngayTra.substring(0, 7) : null;
-  const lMax = parseInt(APP_CONFIG.lechMax) || 10; 
-  const lWarn = parseInt(APP_CONFIG.lechWarn) || 8; 
+  // Mỗi người dùng đúng định mức lệch ca của BỘ PHẬN mình (không còn dùng chung 1 số cho cả Công ty)
+  const lMaxSelf = getLechMaxByName(name);
+  const lWarnSelf = getLechWarnByName(name);
+  const lMaxPartner = getLechMaxByName(partner);
+  const lWarnPartner = getLechWarnByName(partner);
 
   const lechCuaDoiTac = monthDoi ? getLechHienTai(partner, monthDoi) : 0;
   const lechCuaToi = monthTra ? getLechHienTai(name, monthTra) : 0;
 
   // 1. CHẶN CỨNG
-  if (monthDoi && lechCuaDoiTac >= lMax) {
-    showLocalAlert('submit-msg', `Đồng chí ${partner} đã đạt giới hạn lệch ca (${lMax} ca) trong tháng ${monthDoi.split('-')[1]}. Vui lòng chọn người khác!`, 'ae'); 
+  if (monthDoi && lechCuaDoiTac >= lMaxPartner) {
+    showLocalAlert('submit-msg', `Đồng chí ${partner} đã đạt giới hạn lệch ca (${lMaxPartner} ca) trong tháng ${monthDoi.split('-')[1]}. Vui lòng chọn người khác!`, 'ae'); 
     return;
   }
-  if (monthTra && lechCuaToi >= lMax) {
-    showLocalAlert('submit-msg', `Bạn đã đạt giới hạn lệch ca (${lMax} ca) trong tháng ${monthTra.split('-')[1]} (tháng đi trả ca). Không thể tạo đơn!`, 'ae'); 
+  if (monthTra && lechCuaToi >= lMaxSelf) {
+    showLocalAlert('submit-msg', `Bạn đã đạt giới hạn lệch ca (${lMaxSelf} ca) trong tháng ${monthTra.split('-')[1]} (tháng đi trả ca). Không thể tạo đơn!`, 'ae'); 
     return;
   }
+
 
   // --- KIỂM TRA TÍNH HỢP LỆ VÀ AN TOÀN CHO TỪNG CHIỀU (Nếu có nhập) ---
   // --- CHỐT CHẶN: GHI ĐÈ ĐƠN & CHẶN ĐỔI CA VÒNG ---
@@ -2400,8 +2475,8 @@ if (document.getElementById('f-no-return').checked) {
   }
 
   let warningMsg = "";
-  if (monthTra && lechCuaToi >= lWarn) warningMsg += `- Bạn đã lệch ${lechCuaToi} ca trong tháng ${monthTra.split('-')[1]}, sắp chạm mức tối đa (${lMax}).\n`;
-  if (monthDoi && lechCuaDoiTac >= lWarn) warningMsg += `- Đồng chí ${partner} đã lệch ${lechCuaDoiTac} ca trong tháng ${monthDoi.split('-')[1]}, sắp chạm mức tối đa (${lMax}).\n`;
+  if (monthTra && lechCuaToi >= lWarnSelf) warningMsg += `- Bạn đã lệch ${lechCuaToi} ca trong tháng ${monthTra.split('-')[1]}, sắp chạm mức tối đa (${lMaxSelf}).\n`;
+  if (monthDoi && lechCuaDoiTac >= lWarnPartner) warningMsg += `- Đồng chí ${partner} đã lệch ${lechCuaDoiTac} ca trong tháng ${monthDoi.split('-')[1]}, sắp chạm mức tối đa (${lMaxPartner}).\n`;
 
   let confirmText = "Xác nhận GỬI yêu cầu?\nHãy kiểm tra kỹ Ngày và Ca đổi/trả!";
   if (warningMsg !== "") confirmText = "⚠️ CẢNH BÁO SẮP QUÁ ĐỊNH MỨC:\n" + warningMsg + "\nBạn có chắc chắn VẪN MUỐN TIẾP TỤC gửi đơn không?";
@@ -2698,32 +2773,39 @@ function renderWarn() {
   let totalLechThang = 0;
   sortedWarn.forEach(([,v]) => totalLechThang += v.lech);
 
-  // Lấy cấu hình từ Excel 
-  const lMax = parseInt(APP_CONFIG.lechMax) || 3;
-  const lWarn = parseInt(APP_CONFIG.lechWarn) || 1;
+  // Định mức lệch ca: MỖI NGƯỜI áp dụng đúng định mức của bộ phận mình
+  // (SO_CA_LECH_MAX_<bộ phận> / SO_CA_LECH_CANH_BAO_<bộ phận> trong sheet settings).
+  const critList = sortedWarn.filter(([n,v])=>v.lech >= getLechMaxByName(n));
+  const warnList = sortedWarn.filter(([n,v])=>v.lech >= getLechWarnByName(n) && v.lech < getLechMaxByName(n));
+  const monList  = sortedWarn.filter(([n,v])=>v.lech > 0 && v.lech < getLechWarnByName(n));
 
-  // LỌC 3 NHÓM CHUẨN XÁC
-  const critList = sortedWarn.filter(([,v])=>v.lech >= lMax);                  
-  const warnList = sortedWarn.filter(([,v])=>v.lech >= lWarn && v.lech < lMax); 
-  const monList = sortedWarn.filter(([,v])=>v.lech > 0 && v.lech < lWarn);      
-  
+  // Khi danh sách đang xem chỉ gồm 1 bộ phận (LĐ thường xem PX mình, hoặc admin đã lọc theo 1 bộ phận)
+  // → hiển thị số cụ thể trong tiêu đề nhóm, giống trước đây.
+  // Khi admin xem TOÀN CÔNG TY (nhiều bộ phận, mỗi bộ phận 1 định mức khác nhau) → không ghi số cố định.
+  const _oneBp = CU.admin ? _warnBp : (CU.boPhan || '');
+  const lMax = _oneBp ? getLechMax(_oneBp) : null;
+  const lWarn = _oneBp ? getLechWarn(_oneBp) : null;
+
   let wHtml='';
   
   // 1. NHÓM ĐỎ
   if(critList.length){ 
-    wHtml+=`<p style="font-size:12px;font-weight:700;color:#991b1b;margin-bottom:8px">❌ Đã chạm/vượt định mức (≥ ${lMax} ca)</p>`; 
-    wHtml+=critList.map(([n,v])=>`<div class="wcard crit"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${n} <small>(${NV_LIST.find(u=>u.name===n)?.chucDanh||''} - ${v.kip})</small></span><span style="font-weight:700;color:#dc2626">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.join('<br>')}</div></div>`).join(''); 
+    const _hdrCrit = lMax !== null ? `(≥ ${lMax} ca)` : `(theo định mức riêng của từng bộ phận)`;
+    wHtml+=`<p style="font-size:12px;font-weight:700;color:#991b1b;margin-bottom:8px">❌ Đã chạm/vượt định mức ${_hdrCrit}</p>`; 
+    wHtml+=critList.map(([n,v])=>{ const _lim = lMax===null ? ` · giới hạn ${getLechMaxByName(n)} ca` : ''; return `<div class="wcard crit"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${n} <small>(${NV_LIST.find(u=>u.name===n)?.chucDanh||''} - ${v.kip}${_lim})</small></span><span style="font-weight:700;color:#dc2626">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.join('<br>')}</div></div>`; }).join(''); 
   }
   
   // 2. NHÓM CAM
   if(warnList.length){ 
-    wHtml+=`<p style="font-size:12px;font-weight:700;color:#c2410c;margin:12px 0 8px">⚠️ Mức Cảnh báo (Từ ${lWarn} đến ${lMax - 1} ca)</p>`; 
-    wHtml+=warnList.map(([n,v])=>`<div class="wcard" style="background:#fff7ed; border-color:#fb923c;"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${n} <small>(${NV_LIST.find(u=>u.name===n)?.chucDanh||''} - ${v.kip})</small></span><span style="font-weight:700;color:#ea580c">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.join('<br>')}</div></div>`).join(''); 
+    const _hdrWarn = (lMax !== null && lWarn !== null) ? `(Từ ${lWarn} đến ${lMax - 1} ca)` : `(theo định mức riêng của từng bộ phận)`;
+    wHtml+=`<p style="font-size:12px;font-weight:700;color:#c2410c;margin:12px 0 8px">⚠️ Mức Cảnh báo ${_hdrWarn}</p>`; 
+    wHtml+=warnList.map(([n,v])=>{ const _lim = lMax===null ? ` · giới hạn ${getLechMaxByName(n)} ca` : ''; return `<div class="wcard" style="background:#fff7ed; border-color:#fb923c;"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${n} <small>(${NV_LIST.find(u=>u.name===n)?.chucDanh||''} - ${v.kip}${_lim})</small></span><span style="font-weight:700;color:#ea580c">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.join('<br>')}</div></div>`; }).join(''); 
   }
 
   // 3. NHÓM VÀNG
   if(monList.length){ 
-    wHtml+=`<p style="font-size:12px;font-weight:600;color:#64748b;margin:12px 0 8px">📋 Mức an toàn (< ${lWarn} ca)</p>`; 
+    const _hdrMon = lWarn !== null ? `(< ${lWarn} ca)` : `(theo định mức riêng của từng bộ phận)`;
+    wHtml+=`<p style="font-size:12px;font-weight:600;color:#64748b;margin:12px 0 8px">📋 Mức an toàn ${_hdrMon}</p>`; 
     wHtml+=monList.map(([n,v])=>`<div class="wcard"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${n} <small>(${NV_LIST.find(u=>u.name===n)?.chucDanh||''} - ${v.kip})</small></span><span style="font-weight:600;color:#d97706">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.join('<br>')}</div></div>`).join(''); 
   } 
 
@@ -2790,7 +2872,6 @@ function renderStaffStats() {
   });
 
   let entries = Object.entries(staffMap); if (CU.role !== 'ld') { entries = entries.filter(([n, v]) => n === CU.name); } entries.sort((a,b)=>b[1].tao-a[1].tao);
-  let lMax = APP_CONFIG.lechMax;
   
   // BIẾN ĐỂ TÍNH TỔNG
   let totalTao = 0, totalDongY = 0, totalLech = 0;
@@ -2801,6 +2882,8 @@ function renderStaffStats() {
     totalDongY += v.dongY;
     totalLech += v.lech;
 
+    // Định mức riêng của bộ phận nhân sự này (không dùng chung 1 số cho toàn Công ty)
+    const lMax = getLechMaxByName(n);
     let clr = v.lech > lMax ? '#dc2626' : (v.lech > 0 ? '#d97706' : '#4b5563'); 
     const chucDanh = NV_LIST.find(u => u.name === n)?.chucDanh || '';
     return `<tr><td>${n}</td><td>${chucDanh}</td><td>${v.kip}</td><td>${v.tao}</td><td>${v.dongY}</td><td style=\"font-weight:600; color:${clr}\">+${v.lech}</td></tr>`;
