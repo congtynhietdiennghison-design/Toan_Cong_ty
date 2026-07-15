@@ -1049,6 +1049,7 @@ function setupDynamicFields(settings) {
     APP_CONFIG.lechMax = parseInt(settings.configs.SO_CA_LECH_MAX) || 10;
     APP_CONFIG.lechWarn = parseInt(settings.configs.SO_CA_LECH_CANH_BAO) || (APP_CONFIG.lechMax - 2); 
     APP_CONFIG.configs = settings.configs;
+    APP_CONFIG.configsByBoPhan = settings.configsByBoPhan || {}; // FIX: thiếu dòng này khiến mọi bộ phận đều dùng chung MAU_LICH_MAC_DINH/MOC_KIP thay vì cấu hình riêng
     APP_CONFIG.kipList = settings.kips;
     APP_CONFIG.priorityOrder = settings.chucDanhs;
     buildLechLimitsByBoPhan();
