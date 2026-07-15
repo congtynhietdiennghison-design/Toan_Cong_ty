@@ -843,8 +843,11 @@ let NV_LIST=[]; let CA = {}; let CU=null;
 // để không phá vỡ các bản đang triển khai cho 1 phân xưởng duy nhất.
 function sameBoPhan(u, ref) {
   const refBP = (ref && ref.boPhan) ? ref.boPhan : (CU && CU.boPhan) || '';
+  // Người đang xem (ref/CU) chưa được gán boPhan → hệ thống chưa rollout cho họ, không lọc.
+  if (!refBP) return true;
   const uBP = (u && u.boPhan) || '';
-  if (!refBP || !uBP) return true; // chưa cấu hình boPhan → không lọc
+  // Người đang xem ĐÃ có boPhan → đối phương phải khớp đúng, kể cả khi đối phương
+  // chưa có boPhan (VD tài khoản ADMIN không thuộc bộ phận nào) — không tự động cho qua.
   return uBP === refBP;
 }
 // NV_MINE: danh sách nhân sự CÙNG bộ phận với người đang đăng nhập (CU).
@@ -999,42 +1002,24 @@ function transferMatchesYM(t, yr, mo) {
 // ĐỊNH MỨC SỐ CA LỆCH THEO TỪNG BỘ PHẬN
 // ═══════════════════════════════════════════════════════════════════
 // Mỗi Phòng/Phân xưởng có thể có SỐ CA LỆCH TỐI ĐA riêng, cấu hình trong
-// sheet "settings" (cột configKey/configValue), đặt tên theo quy ước:
-//   SO_CA_LECH_MAX_<TÊN BỘ PHẬN KHÔNG DẤU, cách nhau bằng "_">
-//   SO_CA_LECH_CANH_BAO_<TÊN BỘ PHẬN KHÔNG DẤU>
-// Ví dụ bộ phận "Phân xưởng Vận hành" → khoá: SO_CA_LECH_MAX_PHAN_XUONG_VAN_HANH
-// Nếu bộ phận không có dòng cấu hình riêng → dùng SO_CA_LECH_MAX chung (global).
-// Nếu để trống SO_CA_LECH_CANH_BAO_xxx → tự lấy = (SO_CA_LECH_MAX của bộ phận đó) - 2.
+// sheet "settings": cột configKey = SO_CA_LECH_MAX hoặc SO_CA_LECH_CANH_BAO,
+// cột configValue = con số, cột boPhan = tên bộ phận (để trống = chung).
+// Logic merge chung/riêng giống mọi config khác trong hệ thống.
 let LECH_MAX_BY_BP = {};
 let LECH_WARN_BY_BP = {};
-
-// Chuẩn hoá tên bộ phận thành hậu tố configKey: bỏ dấu tiếng Việt, viết hoa,
-// thay mọi ký tự không phải chữ/số bằng "_".
-function boPhanConfigSuffix(bp) {
-  return (bp || '')
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[đĐ]/g, 'd')
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-}
 
 // Dựng lại bảng định mức theo bộ phận — gọi sau khi đã có settings + NV_LIST.
 function buildLechLimitsByBoPhan() {
   LECH_MAX_BY_BP = {}; LECH_WARN_BY_BP = {};
-  const conf = APP_CONFIG.configs || {};
-  const globalMax = parseInt(conf.SO_CA_LECH_MAX) || 10;
+  const globalMax = parseInt((APP_CONFIG.configs || {}).SO_CA_LECH_MAX) || 10;
   const bpList = [...new Set((NV_LIST || []).map(u => u.boPhan).filter(Boolean))];
   bpList.forEach(bp => {
-    const suf = boPhanConfigSuffix(bp);
-    if (!suf) return;
-    const rawMax = conf['SO_CA_LECH_MAX_' + suf];
-    const bpMax = (rawMax !== undefined && rawMax !== '' && rawMax !== null && !isNaN(parseInt(rawMax)))
-      ? parseInt(rawMax) : globalMax;
-    const rawWarn = conf['SO_CA_LECH_CANH_BAO_' + suf];
-    const bpWarn = (rawWarn !== undefined && rawWarn !== '' && rawWarn !== null && !isNaN(parseInt(rawWarn)))
-      ? parseInt(rawWarn) : (bpMax - 2);
-    LECH_MAX_BY_BP[bp] = bpMax;
+    const conf = mergeConfigsForBoPhan(bp);
+    const rawMax  = conf.SO_CA_LECH_MAX;
+    const rawWarn = conf.SO_CA_LECH_CANH_BAO;
+    const bpMax  = (rawMax  !== undefined && rawMax  !== '' && !isNaN(parseInt(rawMax)))  ? parseInt(rawMax)  : globalMax;
+    const bpWarn = (rawWarn !== undefined && rawWarn !== '' && !isNaN(parseInt(rawWarn))) ? parseInt(rawWarn) : (bpMax - 2);
+    LECH_MAX_BY_BP[bp]  = bpMax;
     LECH_WARN_BY_BP[bp] = bpWarn;
   });
 }
@@ -1068,7 +1053,7 @@ function setupDynamicFields(settings) {
     APP_CONFIG.priorityOrder = settings.chucDanhs;
     buildLechLimitsByBoPhan();
     document.getElementById('page-title').textContent = "Quản lý đổi ca – " + APP_CONFIG.tenPX; 
-    document.getElementById('tb-title').textContent = "Quản lý chấm công - " + APP_CONFIG.tenPX;
+    document.getElementById('tb-ten-px').textContent = APP_CONFIG.tenPX;
   }
   let kipHtml = '<option value="">-- Kíp --</option>' + settings.kips.map(k => `<option>${k}</option>`).join('');
   document.getElementById('f-kip').innerHTML = kipHtml; document.getElementById('f-partner-kip').innerHTML = kipHtml; document.getElementById('f-fkp').innerHTML = '<option value="">Tất cả kíp</option>' + settings.kips.map(k => `<option>${k}</option>`).join('');
@@ -1381,10 +1366,13 @@ async function doLogin(){
     document.getElementById('overlay').style.display='none'; document.getElementById('app').style.display='block'; 
     document.getElementById('ub-name').textContent=CU.name; 
     const myInfo = NV_LIST.find(u => u.name === CU.name); 
-    // Tiêu đề "Quản lý chấm công" — chèn tên bộ phận của tài khoản đang đăng nhập (nếu có).
-    // Admin/tài khoản chưa gán bộ phận (giám sát toàn Công ty) thì giữ nguyên tiêu đề gốc.
-    // Dòng trên (tb-title) giữ nguyên "Quản lý chấm công - [Tên Công ty]".
-    // Dòng dưới (tb-ten-px) chỉ hiện TÊN BỘ PHẬN của người đăng nhập.
+    // Tiêu đề "Quản lý chấm công" — dùng tên chung TEN_PHAN_XUONG (cấu hình ở Settings).
+    const _tbTitleEl = document.getElementById('tb-title');
+    if (_tbTitleEl) {
+      _tbTitleEl.textContent = 'Quản lý chấm công' + (APP_CONFIG.tenPX ? ' - ' + APP_CONFIG.tenPX : '');
+    }
+    // Dòng phụ dưới tiêu đề — chèn tên bộ phận của tài khoản đang đăng nhập (nếu có).
+    // Admin/tài khoản chưa gán bộ phận (giám sát toàn Công ty) thì giữ nguyên tên chung.
     const _tbSubEl = document.getElementById('tb-ten-px');
     if (_tbSubEl) {
       const _myBoPhan = (CU.boPhan || (myInfo && myInfo.boPhan) || '').trim();
@@ -2030,14 +2018,25 @@ function normalizeDate(str) {
   return str.toString().substring(0, 10);
 }
 
+// ── Helper: merge config chung + riêng theo bộ phận (mirror của GAS) ──
+function mergeConfigsForBoPhan(boPhan) {
+  const common   = (APP_CONFIG.configs) || {};
+  const byBP     = (APP_CONFIG.configsByBoPhan) || {};
+  const specific = (boPhan && byBP[boPhan]) ? byBP[boPhan] : {};
+  return Object.assign({}, common, specific);
+}
+
 function getCaTrucGoc(userName, defaultKip, dateStr) {
   if (!dateStr) return 'OFF';
 
+  // Lấy boPhan của user để dùng đúng config (MOC_KIP, MAU_LICH_MAC_DINH) theo bộ phận
+  const _userInfo = NV_LIST.find(u => u.name === userName);
+  const _userBoPhan = _userInfo ? (_userInfo.boPhan || '') : '';
+  const _cfg = mergeConfigsForBoPhan(_userBoPhan);
+
   // --- 1. TÌM TRẠNG THÁI THỰC TẾ TẠI NGÀY ĐANG XÉT ---
   let currentKip = defaultKip;
-  let currentPattern = (APP_CONFIG.configs && APP_CONFIG.configs.MAU_LICH_MAC_DINH) 
-                     ? APP_CONFIG.configs.MAU_LICH_MAC_DINH 
-                     : "3 ca 5 kíp";
+  let currentPattern = _cfg.MAU_LICH_MAC_DINH || "3 ca 5 kíp";
   let currentRef = 0;
   let isNgoaiLe = false;
 
@@ -2054,10 +2053,7 @@ function getCaTrucGoc(userName, defaultKip, dateStr) {
       if (latest.newPattern) {
         currentPattern = latest.newPattern;
         currentRef = parseInt(latest.newViTriMoc) || 0;
-        const defaultPattern = (APP_CONFIG.configs && APP_CONFIG.configs.MAU_LICH_MAC_DINH) 
-                       ? APP_CONFIG.configs.MAU_LICH_MAC_DINH 
-                       : "3 ca 5 kíp";
-         isNgoaiLe = (latest.newPattern !== defaultPattern);
+        isNgoaiLe = (latest.newPattern !== (_cfg.MAU_LICH_MAC_DINH || '3 ca 5 kíp'));
       }
     }
   }
@@ -2070,8 +2066,7 @@ function getCaTrucGoc(userName, defaultKip, dateStr) {
     const ngayNghiCuoiTuan = [0, 6]; // 0 là Chủ nhật. Nếu nghỉ cả T7 thì đổi thành [0, 6]
     const isCuoiTuan = ngayNghiCuoiTuan.includes(d);
 
-    const c = APP_CONFIG.configs || {};
-    const mangLe = (c.NGAY_LE || "").split(',').map(s => s.trim());
+    const mangLe = (_cfg.NGAY_LE || '').split(',').map(s => s.trim());
     const isNgayLe = mangLe.includes(dateStr);
 
     let isNghiBu = false;
@@ -2106,10 +2101,9 @@ function getCaTrucGoc(userName, defaultKip, dateStr) {
 
   // Nếu là lịch chuẩn, bốc vị trí mốc theo tên Kíp từ Settings
   if (!isNgoaiLe) {
-    const c = APP_CONFIG.configs || {};
-    const soKip = currentKip.replace(/\D/g, ""); 
-    const keyTimKiem = "MOC_KIP_" + soKip;
-    viTriMoc = c[keyTimKiem] !== undefined ? parseInt(c[keyTimKiem]) : 0; 
+    const soKip = currentKip.replace(/\D/g, '');
+    const keyTimKiem = 'MOC_KIP_' + soKip;
+    viTriMoc = _cfg[keyTimKiem] !== undefined ? parseInt(_cfg[keyTimKiem]) : 0;
   }
 
   const diffTime = parseDateLocal(dateStr) - parseDateLocal(ngayMocStr);
@@ -2267,8 +2261,10 @@ function checkViPhamAnToan(userName, kipName, dateStr, caMuonDi, ignoreReqId = n
   const caNgayTruoc = getCaThucTe(userName, kipName, ngayTruoc, ignoreReqId);
   const caNgaySau = getCaThucTe(userName, kipName, ngaySau, ignoreReqId);
 
-  // --- A. LẤY LUẬT TỪ EXCEL ---
-  const c = APP_CONFIG.configs || {};
+  // --- A. LẤY LUẬT TỪ EXCEL (theo đúng bộ phận của người dùng) ---
+  const _uInfo = NV_LIST.find(u => u.name === userName);
+  const _uBoPhan = _uInfo ? (_uInfo.boPhan || '') : '';
+  const c = mergeConfigsForBoPhan(_uBoPhan);
   const chuoiCaCam = c.CA_CAM_LIEN_TIEP || "C-K"; // Mặc định nếu Excel trống là C-K
   const maxK = parseInt(c.MAX_K_LIEN_TIEP) || 4;  // Mặc định là 4
 
@@ -4977,7 +4973,10 @@ function renderTransferLog() {
   const bpFilter = (bpSel && bpSel.style.display !== 'none') ? bpSel.value : '';
 
   let filtered = allTransfers.filter(t => transferMatchesYM(t, yr, mo)).sort((a,b) => b.date.localeCompare(a.date));
-  if (bpFilter) {
+  if (!CU.admin) {
+    // LĐ (không phải admin): luôn khoanh vùng đúng bộ phận mình, không được xem toàn Công ty.
+    filtered = filtered.filter(t => sameBoPhan(NV_LIST.find(u => u.name === t.name) || {}, CU));
+  } else if (bpFilter) {
     filtered = filtered.filter(t => (NV_LIST.find(u => u.name === t.name) || {}).boPhan === bpFilter);
   }
 
