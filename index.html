@@ -1068,7 +1068,7 @@ function setupDynamicFields(settings) {
     APP_CONFIG.priorityOrder = settings.chucDanhs;
     buildLechLimitsByBoPhan();
     document.getElementById('page-title').textContent = "Quản lý đổi ca – " + APP_CONFIG.tenPX; 
-    document.getElementById('tb-ten-px').textContent = APP_CONFIG.tenPX;
+    document.getElementById('tb-title').textContent = "Quản lý chấm công - " + APP_CONFIG.tenPX;
   }
   let kipHtml = '<option value="">-- Kíp --</option>' + settings.kips.map(k => `<option>${k}</option>`).join('');
   document.getElementById('f-kip').innerHTML = kipHtml; document.getElementById('f-partner-kip').innerHTML = kipHtml; document.getElementById('f-fkp').innerHTML = '<option value="">Tất cả kíp</option>' + settings.kips.map(k => `<option>${k}</option>`).join('');
@@ -1383,10 +1383,12 @@ async function doLogin(){
     const myInfo = NV_LIST.find(u => u.name === CU.name); 
     // Tiêu đề "Quản lý chấm công" — chèn tên bộ phận của tài khoản đang đăng nhập (nếu có).
     // Admin/tài khoản chưa gán bộ phận (giám sát toàn Công ty) thì giữ nguyên tiêu đề gốc.
-    const _tbTitleEl = document.getElementById('tb-title');
-    if (_tbTitleEl) {
+    // Dòng trên (tb-title) giữ nguyên "Quản lý chấm công - [Tên Công ty]".
+    // Dòng dưới (tb-ten-px) chỉ hiện TÊN BỘ PHẬN của người đăng nhập.
+    const _tbSubEl = document.getElementById('tb-ten-px');
+    if (_tbSubEl) {
       const _myBoPhan = (CU.boPhan || (myInfo && myInfo.boPhan) || '').trim();
-      _tbTitleEl.textContent = 'Quản lý chấm công' + (_myBoPhan ? ' - ' + _myBoPhan : '');
+      _tbSubEl.textContent = _myBoPhan || APP_CONFIG.tenPX;
     }
     document.getElementById('ub-role').textContent = (myInfo && myInfo.chucDanh) ? myInfo.chucDanh : (CU.role==='ld'?'Lãnh đạo PX':'Vận hành');
     document.getElementById('tab-ld').style.display = CU.role==='ld'?'':'none';
