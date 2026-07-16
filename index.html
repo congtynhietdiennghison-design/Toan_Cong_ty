@@ -1183,6 +1183,9 @@ const SS_SOURCES = {
       if (u.name === CU.name) return false;
       const theirRoles = getRoles(u);
       if (!myRoles.some(r => theirRoles.includes(r))) return false;
+      // Bắt buộc CÙNG bộ phận — trùng chức danh nhưng khác bộ phận thì không được chọn
+      // (nếu chưa gán bộ phận cho mình thì bỏ qua điều kiện này, để không phá dữ liệu cũ)
+      if (myInfo.boPhan && (u.boPhan || '') !== myInfo.boPhan) return false;
 
       // Lọc người rảnh và an toàn để đi thay
       if (nDoi && cDoi) {
