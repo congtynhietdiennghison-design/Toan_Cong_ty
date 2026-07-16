@@ -3659,11 +3659,14 @@ function syncHCFilters(id) {
       }
     }
 
-    let backupCandidates = getNVMine().filter(u => {
-      if (!u.chucDanhDuPhong) return false;
-      const bList = u.chucDanhDuPhong.split(',').map(s => s.trim());
-      if (!bList.includes(r)) return false;
-      if (u.chucDanh === r) return false;
+    let candidatesRaw = getNVMine().filter(u => {
+      const isSameRole = (u.chucDanh === r); // Cùng chức danh CHÍNH với ông nghỉ
+      let isBackupRole = false;
+      if (u.chucDanhDuPhong) {
+        const bList = u.chucDanhDuPhong.split(',').map(s => s.trim());
+        isBackupRole = bList.includes(r);
+      }
+      if (!isSameRole && !isBackupRole) return false;
       if (d) {
           const isDup = allReqs.some(req => isManagementDispatch(req) && (req.name === u.name || req.partner === u.name) && req.ngayDoi === d);
           if (isDup) return false;
@@ -3679,7 +3682,7 @@ function syncHCFilters(id) {
     
     // ƯU TIÊN 2: Nếu không có người dự định, mới tìm người đã có đơn nghỉ/vắng (ví dụ: ông Dũng)
     if (!leavePerson) {
-        const sampleBackup = backupCandidates.length > 0 ? backupCandidates[0] : null;
+        const sampleBackup = candidatesRaw.length > 0 ? candidatesRaw[0] : null;
         leavePerson = sampleBackup ? (isAutoKip ? findLeavePersonForBackupAuto(r, d, type, sampleBackup.name, sampleBackup.kip) : findLeavePersonForBackup(r, k, d, type)) : null;
     }
 
@@ -3689,9 +3692,29 @@ function syncHCFilters(id) {
         return;
     }
 
+    // Xác định ca thực tế mà ông nghỉ đang gánh (để kiểm tra cấm ca liên tiếp cho người đi thay)
+    if (isAutoKip) {
+      caOngNghi = getCaThucTe(leavePerson.name, leavePerson.kip, d);
+    }
+
+    // Loại chính ông đang nghỉ ra khỏi danh sách ứng viên thay thế
+    candidatesRaw = candidatesRaw.filter(u => u.name !== leavePerson.name);
+
+    // KIỂM TRA CẤM CA LIÊN TIẾP: loại người mà nếu đi ca này sẽ vướng luật an toàn ngày trước/sau
+    const viPhamMap = {};
+    let backupCandidates = candidatesRaw.filter(u => {
+      if (!caOngNghi || caOngNghi === 'OFF') return true;
+      const loi = checkViPhamAnToan(u.name, u.kip, d, caOngNghi);
+      if (loi) { viPhamMap[u.name] = loi; return false; }
+      return true;
+    });
+
     if (backupCandidates.length === 0) {
-      const msg = `Không tìm thấy ai có chức danh dự phòng "${r}" trong ngày ${fmtDate(d)}`;
-      chkContainer.innerHTML = `<span style="color:#7c3aed; font-size:12px; font-weight:700;">⚠️ ${msg}</span>`;
+      const soBiCam = Object.keys(viPhamMap).length;
+      const msg = soBiCam > 0
+        ? `Không tìm thấy ai phù hợp: tất cả ${soBiCam} người có chức danh "${r}" (chính hoặc dự phòng) đều vướng quy định cấm ca liên tiếp ngày ${fmtDate(d)}.`
+        : `Không tìm thấy ai có chức danh chính hoặc dự phòng "${r}" trong ngày ${fmtDate(d)}`;
+      chkContainer.innerHTML = `<span style="color:#dc2626; font-size:12px; font-weight:700;">⚠️ ${msg}</span>`;
       resetRightColumns(id); // <--- Reset khi không có dự phòng
       return;
     }
@@ -3701,19 +3724,26 @@ function syncHCFilters(id) {
     // Lưu lại tên người được thay vào dataset để submitBatchHC sử dụng chính xác
     row.dataset.actualReplace = leavePerson.name;
 
-    let html = `<div style="color:#7c3aed; font-size:11px; font-weight:700; margin-bottom:6px; padding-bottom:4px; border-bottom:2px solid #ede9fe;">🔁 Chọn dự phòng điều lên (${headerNote}${leaveHint}):</div>`;
+    const soBiCamLoc = Object.keys(viPhamMap).length;
+    const camNote = soBiCamLoc > 0 ? ` · <span style="color:#b91c1c; background:#fee2e2; padding:2px 4px; border-radius:4px;">Đã ẩn ${soBiCamLoc} người vướng cấm ca liên tiếp</span>` : '';
+
+    let html = `<div style="color:#7c3aed; font-size:11px; font-weight:700; margin-bottom:6px; padding-bottom:4px; border-bottom:2px solid #ede9fe;">🔁 Chọn người thay (${headerNote}${leaveHint}${camNote}):</div>`;
     
     const shouldAutoCheck = (backupCandidates.length === 1);
     html += backupCandidates.map(u => {
       const caThucTe = getCaThucTe(u.name, u.kip, d);
       const caTag = `<span style="color:#dc2626; margin-left:4px; font-size:11px; font-weight:700;">(${caThucTe === 'OFF' ? 'Nghỉ' : 'Ca ' + caThucTe})</span>`;
+      const laChinh = (u.chucDanh === r);
+      const roleTag = laChinh
+        ? `<span style="color:#065f46; margin-left:6px; font-size:11px; background:#d1fae5; padding:2px 6px; border-radius:4px;">${u.chucDanh} (Chính)</span>`
+        : `<span style="color:#7c3aed; margin-left:6px; font-size:11px; background:#ede9fe; padding:2px 6px; border-radius:4px;">${u.chucDanh} (Dự phòng)</span>`;
       return `
       <label style="display:flex; align-items:center; margin-bottom:6px; cursor:pointer; font-weight:500;">
         <input type="checkbox" class="hc-chk-val" value="${u.name}" ${shouldAutoCheck ? 'checked' : ''} onchange="handleHCSelection(this, '${d}', ${id})" style="width:18px; height:18px; margin:0 8px 0 0; padding:0; appearance:auto; -webkit-appearance:auto; cursor:pointer;">
         ${u.name}
         <span style="color:#ea580c; margin-left:4px; font-size:11px; font-weight:700;">[${u.kip}]</span>
         ${caTag}
-        <span style="color:#7c3aed; margin-left:6px; font-size:11px; background:#ede9fe; padding:2px 6px; border-radius:4px;">${u.chucDanh}</span>
+        ${roleTag}
       </label>`;
     }).join('');
     chkContainer.innerHTML = html;
@@ -3956,6 +3986,11 @@ function syncPartnerList(id) {
             // Nếu phát hiện ông này gánh ca sẽ dính lỗi -> Loại vĩnh viễn khỏi danh sách gợi ý!
             if (loiAnToan) return false; 
         }
+    } else if (dHC && caThucTeA !== 'OFF') {
+        // Dù chọn Kíp CỤ THỂ (không phải AUTO), vẫn phải quét An toàn cho người thay,
+        // tránh trường hợp người này vướng cấm ca liên tiếp với ngày trước/sau khi gánh ca thay.
+        const loiAnToanKipCuThe = checkViPhamAnToan(u.name, u.kip, dHC, caThucTeA);
+        if (loiAnToanKipCuThe) return false;
     }
 
     return true;
