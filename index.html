@@ -3244,17 +3244,24 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
   });
 
   // 3b. POPULATE FILTER DROPDOWNS (chỉ lần đầu hoặc khi danh sách thay đổi)
+  const bpSel  = document.getElementById('f-sched-bp');
   const kipSel = document.getElementById('f-sched-kip');
   const cdSel  = document.getElementById('f-sched-chucdanh');
   if (kipSel && cdSel) {
     const kipCur = kipSel.value;
     const cdCur  = cdSel.value;
+    const bpCur  = bpSel ? bpSel.value : '';
     const kips = [...new Set(displayList.map(u => u.displayKip).filter(Boolean))].sort();
     const cds  = [...new Set(displayList.map(u => u.chucDanh).filter(Boolean))];
+    const BO_PHAN_ORDER = ['Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
+    const bps  = [...new Set(NV_LIST.map(u => u.boPhan).filter(Boolean))].sort((a,b)=>{const ia=BO_PHAN_ORDER.indexOf(a),ib=BO_PHAN_ORDER.indexOf(b);return(ia===-1?99:ia)-(ib===-1?99:ib);});
     kipSel.innerHTML = '<option value="">Tất cả kíp</option>' + kips.map(k => `<option${k===kipCur?' selected':''}>${k}</option>`).join('');
     cdSel.innerHTML  = '<option value="">Tất cả chức danh</option>' + cds.map(c => `<option${c===cdCur?' selected':''}>${c}</option>`).join('');
-    // Ẩn filter chức danh với user thường (họ chỉ thấy cùng chức danh)
-    if (CU.role !== 'ld') { cdSel.parentElement && (cdSel.style.display = 'none'); }
+    if (bpSel) {
+      bpSel.innerHTML = '<option value="">Tất cả bộ phận</option>' + bps.map(b=>`<option${b===bpCur?' selected':''}>${b}</option>`).join('');
+      bpSel.style.display = CU.admin ? '' : 'none';
+    }
+    if (CU.role !== 'ld' && !CU.admin) { cdSel.style.display = 'none'; }
   }
 
   // 3c. ÁP DỤNG BỘ LỌC
@@ -3392,16 +3399,50 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
 // HÀM XUẤT EXCEL CHO BẢNG ĐI CA (DÀNH RIÊNG CHO LÃNH ĐẠO)
 // ===============================================================
 function exportExcelSched() {
-  if (!CU || CU.role !== 'ld') return;
+  if (!CU || (CU.role !== 'ld' && !CU.admin)) return;
+  const { yr, mo } = getYM('f-sched-year', 'f-sched-month');
   const mv = ymExportLabel('f-sched-year', 'f-sched-month');
   const tableEl = document.getElementById('table-schedule');
-  
-  // Sửa thành kiểm tra class .empty thay vì check chữ
-  if(!tableEl || tableEl.querySelector('.empty')) { 
-    showAlert('app', 'Không có dữ liệu để tải!', 'ae'); 
-    return; 
+  if (!tableEl || tableEl.querySelector('.empty')) { showAlert('app', 'Không có dữ liệu để tải!', 'ae'); return; }
+
+  // Lãnh đạo bộ phận hoặc admin đang lọc 1 bộ phận cụ thể → xuất bảng hiện tại
+  const fBp = document.getElementById('f-sched-bp')?.value || '';
+  if (!CU.admin || fBp) {
+    const tenBP = fBp || (NV_LIST.find(u=>u.name===CU.name)||{}).boPhan || '';
+    const tenFile = tenBP ? `Bang_Di_Ca_${tenBP.replace(/[^a-zA-Z0-9]/g,'_')}_${mv}.xls` : `Bang_Di_Ca_${mv}.xls`;
+    downloadExcel(tableEl.innerHTML, tenFile, 'BangDiCa');
+    return;
   }
-  downloadExcel(tableEl.innerHTML, `Bang_Di_Ca_Tong_Hop_${mv}.xls`, `BangDiCa`);
+
+  // Admin, không lọc → xuất toàn Công ty phân theo bộ phận
+  const BO_PHAN_ORDER = ['Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
+  const thead = tableEl.querySelector('thead')?.innerHTML || '';
+  const daysInMonth = yr && mo ? new Date(yr, mo, 0).getDate() : 31;
+  const totalCols = 3 + daysInMonth + 7;
+  const hdrStyle = 'background:#1e3a8a;color:#fff;font-weight:700;font-size:14px;text-align:center;padding:8px;';
+
+  // Index rows theo tên từ tbody hiện tại
+  const trByName = {};
+  tableEl.querySelectorAll('tbody tr').forEach(tr => {
+    const name = (tr.querySelector('td')?.textContent||'').replace('(Tôi)','').trim();
+    if (name) trByName[name] = tr.outerHTML;
+  });
+
+  let fullHtml = '';
+  const bpList = BO_PHAN_ORDER.filter(bp => NV_LIST.some(u=>(u.boPhan||'')===bp));
+  bpList.forEach((bp, i) => {
+    const bpUsers = NV_LIST.filter(u=>(u.boPhan||'')===bp && (u.chucDanh||'').trim()!=='ADMIN');
+    if (!bpUsers.length) return;
+    fullHtml += `<table border="1" style="border-collapse:collapse;width:100%;margin-bottom:20px;">`;
+    fullHtml += `<thead><tr><td colspan="${totalCols}" style="${hdrStyle}">${bp.toUpperCase()}</td></tr>${thead}</thead>`;
+    fullHtml += `<tbody>`;
+    bpUsers.forEach(u => { fullHtml += trByName[u.name] || ''; });
+    fullHtml += `</tbody></table>`;
+    if (i < bpList.length-1) fullHtml += '<br>';
+  });
+
+  if (!fullHtml) { showAlert('app','Không có dữ liệu!','ae'); return; }
+  downloadExcel(fullHtml, `Bang_Di_Ca_Toan_Cong_Ty_${mv}.xls`, `BangDiCa_${mv}`);
 }
 // ===============================================================
 // HỆ THỐNG ĐIỀU ĐỘNG HÀNH CHÍNH (BÁO LỖI THỜI GIAN THỰC)
@@ -5789,6 +5830,28 @@ function exportExcelLeaveHistory() {
 
   const periodLabel = ymExportLabel('f-leave-hist-year', 'f-leave-hist-month');
   const tenFile = `Lich_su_nghi_ca_nhan${periodLabel ? '_' + periodLabel : ''}.xls`;
+
+  // Admin không lọc chức danh → xuất phân theo bộ phận
+  if (CU.admin && !fcd) {
+    const BO_PHAN_ORDER = ['Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
+    const getUserBP = name => (NV_LIST.find(u=>u.name===name)||{}).boPhan || '';
+    const hdrStyle = 'background:#1e3a8a;color:#fff;font-weight:700;font-size:14px;text-align:center;padding:8px;';
+    const thead = `<tr><th>STT</th><th>Họ tên</th><th>Chức danh</th><th>Kíp</th><th>Chế độ nghỉ</th><th>Ngày nghỉ</th><th>Số ngày</th><th>Lý do</th><th>Nơi nghỉ</th><th>Trạng thái</th><th>Thời gian tạo đơn</th><th>Thời gian duyệt/từ chối</th><th>Người duyệt</th><th>Lý do từ chối</th></tr>`;
+
+    let fullHtml = '';
+    BO_PHAN_ORDER.forEach(bp => {
+      const bpLeaves = leaves.filter(lv => getUserBP(lv.name) === bp);
+      if (!bpLeaves.length) return;
+      const bpRows = bpLeaves.map((lv, i) => {
+        const safeDates = (lv.dates||'').toString();
+        const dates = safeDates ? safeDates.split(',').map(d=>fmtDate(d.trim())).join(', ') : '';
+        return `<tr><td>${i+1}</td><td>${escapeHTML(lv.name||'')}</td><td>${escapeHTML(lv.role||'')}</td><td>${escapeHTML(getKipTaiThoiDiem(lv.name,lv.createdAt))}</td><td>${escapeHTML(typeLabel[lv.leaveType||'P']||'')}</td><td>${dates}</td><td>${lv.days_count||''}</td><td>${escapeHTML(lv.reason||'')}</td><td>${escapeHTML(lv.location||'')}</td><td>${escapeHTML(statusLabel[lv.status]||lv.status||'')}</td><td>${lv.createdAt?fmtDateTime(lv.createdAt):''}</td><td>${lv.approvedAt&&lv.status!=='pending_ld'?fmtDateTime(lv.approvedAt):''}</td><td>${escapeHTML(lv.approver||'')}</td><td>${escapeHTML(lv.rejectReason||'')}</td></tr>`;
+      }).join('');
+      fullHtml += `<table border="1" style="border-collapse:collapse;width:100%;margin-bottom:20px;"><thead><tr><td colspan="14" style="${hdrStyle}">${bp.toUpperCase()}</td></tr>${thead}</thead><tbody>${bpRows}</tbody></table><br>`;
+    });
+    if (fullHtml) { downloadExcel(fullHtml, tenFile, 'LichSuNghi'); return; }
+  }
+
   downloadExcel(table, tenFile, 'LichSuNghi');
 }
 
