@@ -2206,17 +2206,26 @@ function getCaThucTe(userName, kipName, dateStr, ignoreReqId = null, returnFullO
               if (partner === uName && partner !== 'CÔNG TÁC HC') {
                   caResult = getDieuDongWorkCa(r, targetDate); // partner: đi làm thay theo lệnh
               } else if (name === uName) {
-                  let tempLeave = 'HC';
-                  if (/\[(CÔNG TÁC)\]/i.test(reason))              tempLeave = 'CT';
-                  else if (/\[(HỌC TẬP)\]/i.test(reason))          tempLeave = 'HT';
-                  else if (/\[(VẮNG KHÔNG PHÉP)\]/i.test(reason))  tempLeave = 'V';
-                  else if (/\[(ĐIỀU ĐỘNG 0.5 NGÀY)\]/i.test(reason)) tempLeave = 'HC/2';
-                  else if (/\[(NGHỈ PHÉP)\]/i.test(reason))        tempLeave = 'P';
-                  else if (/\[(VIỆC RIÊNG)\]/i.test(reason))       tempLeave = 'VR';
-                  else if (/\[(NGHỈ ỐM)\]/i.test(reason))          tempLeave = 'Ô';
-                  else if (/\[(NGHỈ THAI SẢN)\]/i.test(reason))    tempLeave = 'TS';
-                  else if (/\[(NGHỈ KHÔNG LƯƠNG)\]/i.test(reason)) tempLeave = 'O';
-                  caResult = tempLeave;
+                  // FIX: Lệnh dạng "chuỗi dự phòng" (tag [THAY DỰ PHÒNG]) — người này
+                  // (name) KHÔNG hề đi HC/nghỉ thật, mà đang được điều đi làm thay ở vị
+                  // trí khác (ca thực tế của họ ngày này đã được 1 lệnh KHÁC — nơi họ là
+                  // "partner" — quyết định đúng rồi). Nếu vẫn mặc định gán 'HC' ở đây sẽ
+                  // đè nhầm lên kết quả đúng đó (bug: bảng đi ca hiện sai thành HC/X).
+                  if (/\[THAY DỰ PHÒNG/i.test(reason)) {
+                      // Bỏ qua — không set caResult, để lệnh khác (nơi họ là partner) quyết định.
+                  } else {
+                      let tempLeave = 'HC';
+                      if (/\[(CÔNG TÁC)\]/i.test(reason))              tempLeave = 'CT';
+                      else if (/\[(HỌC TẬP)\]/i.test(reason))          tempLeave = 'HT';
+                      else if (/\[(VẮNG KHÔNG PHÉP)\]/i.test(reason))  tempLeave = 'V';
+                      else if (/\[(ĐIỀU ĐỘNG 0.5 NGÀY)\]/i.test(reason)) tempLeave = 'HC/2';
+                      else if (/\[(NGHỈ PHÉP)\]/i.test(reason))        tempLeave = 'P';
+                      else if (/\[(VIỆC RIÊNG)\]/i.test(reason))       tempLeave = 'VR';
+                      else if (/\[(NGHỈ ỐM)\]/i.test(reason))          tempLeave = 'Ô';
+                      else if (/\[(NGHỈ THAI SẢN)\]/i.test(reason))    tempLeave = 'TS';
+                      else if (/\[(NGHỈ KHÔNG LƯƠNG)\]/i.test(reason)) tempLeave = 'O';
+                      caResult = tempLeave;
+                  }
               }
           }
           if (dTra === targetDate && dTra !== dDoi) {
@@ -3870,7 +3879,22 @@ function syncHCFilters(id) {
   row.querySelector('.h-partner').innerHTML = '<span style="color:#64748b; font-size:12px;">Chọn Kíp thay trước</span>';
 }
 function syncPartnerList(id) {
+  // FIX QUAN TRỌNG: Khi vừa tích "Điều dự phòng kíp lên thay", hàm này bị gọi
+  // NGAY LẬP TỨC cùng lúc với syncHCFilters() (dòng onchange của checkbox
+  // .h-use-backup). Nếu chỉ có >=2 ứng viên dự phòng, không có setTimeout nào
+  // đợi DOM render/tích checkbox xong (chỉ trường hợp duy nhất 1 ứng viên mới
+  // có setTimeout ở cuối syncHCFilters). Kết quả: hàm này đọc selectedNames
+  // rỗng ngay tại thời điểm đó, "backupPersonName" = null, rơi vào nhánh tính
+  // caThucTeA theo NGƯỜI NGHỈ GỐC (A) thay vì theo ÔNG DỰ PHÒNG (B, vd Cường)
+  // — khiến hệ thống tưởng cần tìm người thay dù ông dự phòng đang OFF thật.
+  // Bọc toàn bộ logic trong setTimeout ngắn để luôn đọc đúng trạng thái
+  // checkbox SAU KHI DOM đã kịp cập nhật, bất kể có 1 hay nhiều ứng viên.
+  setTimeout(() => _doSyncPartnerList(id), 0);
+}
+
+function _doSyncPartnerList(id) {
   const row = document.getElementById(`hc-r-${id}`);
+  if (!row) return;
   const r = row.querySelector('.h-role').value;
   const pk = row.querySelector('.h-pkip').value; 
   const dHC = row.querySelector('.h-date').value; 
@@ -3942,6 +3966,19 @@ function syncPartnerList(id) {
   }
 
   // --- LOGIC MỚI: LỌC SẠCH SẼ 100% NGAY TỪ VÒNG TÌM KIẾM ---
+
+  // FIX QUAN TRỌNG: Nếu là chế độ dự phòng và ông dự phòng (B, vd Cường) đang
+  // THỰC SỰ OFF (không có ca thật để gánh thay), thì KHÔNG CẦN TÌM AI CẢ —
+  // thoát sớm ngay tại đây, không chạy vòng lọc NV_LIST.filter() bên dưới.
+  // Trước đây dù caThucTeA==='OFF', vòng lọc vẫn có thể trả về những người
+  // KHÁC cũng đang OFF cùng ngày (trùng lịch nghỉ) vì bước kiểm tra an toàn
+  // bị bỏ qua nhưng bước liệt kê ứng viên vẫn chạy — khiến hệ thống vẫn hiện
+  // danh sách để chọn dù không có nhu cầu thực sự nào cần người thay.
+  if (useBackup && caThucTeA === 'OFF') {
+    partnerChkContainer.innerHTML = `<div style="color:#16a34a; font-size:12px; font-weight:700; padding:10px; background:#f0fdf4; border-radius:6px; border:1px solid #bbf7d0;">✅ Dự phòng đang nghỉ, không cần người thay.</div>`;
+    return;
+  }
+
   const partners = NV_LIST.filter(u => {
     // 1. Kiểm tra chức danh (theo searchRole - có thể là CD chính ông dự phòng)
     let matchRole = false;
@@ -3955,6 +3992,18 @@ function syncPartnerList(id) {
     // 2. Không được chọn chính người đang đi HC (ông nghỉ gốc)
     // Và không được chọn chính ông dự phòng vừa được điều lên
     if (selectedNames.includes(u.name)) return false;
+
+    // FIX QUAN TRỌNG: Ở chế độ dự phòng, TUYỆT ĐỐI không được chọn lại chính
+    // ÔNG NGHỈ GỐC (A — vd ông Cường) làm người thay chỗ ông dự phòng (B).
+    // Ông A đang nghỉ (OFF), không cần và không thể đi thay cho bất kỳ ai —
+    // nếu A tình cờ trùng chức danh chính với B (searchRole), A vẫn lọt qua
+    // các điều kiện lọc phía trên vì "selectedNames" chỉ chứa tên của B,
+    // không chứa tên A. Đây chính là nguyên nhân A vẫn hiện trong danh sách
+    // và khi submit thì báo lỗi "đang OFF, không thể điều động lên thay!".
+    if (useBackup) {
+      const _aGocName = row.dataset.actualReplace;
+      if (_aGocName && u.name === _aGocName) return false;
+    }
 
     // LỌC THÊM: Nếu là chế độ dự phòng, không được chọn người có cùng CD với ông nghỉ gốc (r)
     // Ví dụ: Điều Tùng (lái máy) dự phòng Trưởng kíp. Thì người thay Tùng phải là Lái máy, không được là Trưởng kíp khác.
