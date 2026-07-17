@@ -1375,12 +1375,14 @@ async function doLogin(){
     if (_tbTitleEl) {
       _tbTitleEl.textContent = 'Quản lý chấm công' + (APP_CONFIG.tenPX ? ' - ' + APP_CONFIG.tenPX : '');
     }
-    // Dòng phụ dưới tiêu đề — chèn tên bộ phận của tài khoản đang đăng nhập (nếu có).
-    // Admin/tài khoản chưa gán bộ phận (giám sát toàn Công ty) thì giữ nguyên tên chung.
+    // Dòng phụ dưới tiêu đề — chỉ hiện khi tài khoản có gán bộ phận cụ thể.
+    // Admin/tài khoản chưa gán bộ phận (giám sát toàn Công ty) thì ẩn hẳn dòng này,
+    // tránh lặp lại y hệt tên chung đã hiện ở dòng tiêu đề phía trên.
     const _tbSubEl = document.getElementById('tb-ten-px');
     if (_tbSubEl) {
       const _myBoPhan = (CU.boPhan || (myInfo && myInfo.boPhan) || '').trim();
-      _tbSubEl.textContent = _myBoPhan || APP_CONFIG.tenPX;
+      if (_myBoPhan) { _tbSubEl.textContent = _myBoPhan; _tbSubEl.style.display = ''; }
+      else { _tbSubEl.style.display = 'none'; }
     }
     document.getElementById('ub-role').textContent = (myInfo && myInfo.chucDanh) ? myInfo.chucDanh : (CU.role==='ld'?'Lãnh đạo PX':'Vận hành');
     document.getElementById('tab-ld').style.display = CU.role==='ld'?'':'none';
@@ -3239,7 +3241,16 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
   const priorityOrder = APP_CONFIG.priorityOrder?.length > 0
   ? APP_CONFIG.priorityOrder
   : ["Quản đốc", "Phó quản đốc", "Kỹ thuật Phân xưởng", "Trưởng kíp nhiên liệu", "Trực chính nhiên liệu", "Vận hành Băng tải", "Vận hành Máy đánh phá đống", "Vận hành Cẩu trục và xe cơ giới", "Tiếp nhận nhiên liệu"];
+  const _BP_ORDER_SCHED = ['Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
+  const _schedBpFilter = document.getElementById('f-sched-bp')?.value || '';
+  // Admin xem "Tất cả bộ phận" (chưa chọn lọc riêng 1 bộ phận nào) → nhóm theo bộ phận trước tiên
+  const _groupByBp = CU.admin && !_schedBpFilter;
   displayList.sort((a, b) => {
+    if (_groupByBp) {
+      const bpA = _BP_ORDER_SCHED.indexOf(a.boPhan || ''); const bpB = _BP_ORDER_SCHED.indexOf(b.boPhan || '');
+      const vBpA = bpA === -1 ? 999 : bpA; const vBpB = bpB === -1 ? 999 : bpB;
+      if (vBpA !== vBpB) return vBpA - vBpB;
+    }
     let idxA = priorityOrder.indexOf(a.chucDanh); let idxB = priorityOrder.indexOf(b.chucDanh);
     let valA = idxA === -1 ? 999 : idxA; let valB = idxB === -1 ? 999 : idxB;
     if (valA !== valB) return valA - valB;
@@ -3285,8 +3296,18 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
   let grandTotalP = 0, grandTotalVR = 0, grandTotalO = 0, grandTotalTS = 0, grandTotalV = 0;
 
   // 4. VẼ TỪNG Ô LỊCH
+  const _totalColsSched = 1 + (CU.role === 'ld' ? 2 : 1) + daysInMonth + 7;
+  let _lastBpSeen = null;
   let bodyHtml = displayList.map(u => {
-    let row = `<tr><td style="position:sticky; left:0; background:#fff; font-weight:600; border-right:2px solid #e2e8f0;">${u.name} ${u.name === CU.name ? '(Tôi)' : ''}</td>`;
+    let rowPrefix = '';
+    if (_groupByBp) {
+      const curBp = u.boPhan || 'Chưa phân loại';
+      if (curBp !== _lastBpSeen) {
+        _lastBpSeen = curBp;
+        rowPrefix = `<tr><td colspan="${_totalColsSched}" style="background:#dbeafe; color:#1e3a5f; font-weight:700; padding:8px 12px; position:sticky; left:0;">▶ ${curBp}</td></tr>`;
+      }
+    }
+    let row = rowPrefix + `<tr><td style="position:sticky; left:0; background:#fff; font-weight:600; border-right:2px solid #e2e8f0;">${u.name} ${u.name === CU.name ? '(Tôi)' : ''}</td>`;
     
     const firstDayOfMonth = `${yr}-${String(mo).padStart(2,'0')}-01`;
     let displayKip = u.kip;
