@@ -3555,7 +3555,7 @@ function addRowHC() {
         <input type="checkbox" class="h-no-replace" onchange="if(this.checked){const ub=this.closest('tr').querySelector('.h-use-backup');if(ub)ub.checked=false;} checkShiftStatus(${id}); validateHCDates(${id})" style="width:18px; height:18px; margin:0; padding:0; appearance:auto; -webkit-appearance:auto; cursor:pointer;"> KHÔNG bố trí người thay
       </label>
       <label style="font-size:12px; font-weight:600; color:#7c3aed; display:flex; align-items:center; gap:4px; margin-top:4px; cursor:pointer;" title="Điều người trong cùng kíp có chức danh dự phòng lên thay, rồi tìm người thay chỗ ông đó">
-        <input type="checkbox" class="h-use-backup" onchange="if(this.checked){const nr=this.closest('tr').querySelector('.h-no-replace');if(nr)nr.checked=false;} syncHCFilters(${id}); syncPartnerList(${id}); checkShiftStatus(${id}); validateHCDates(${id})" style="width:18px; height:18px; margin:0; padding:0; appearance:auto; -webkit-appearance:auto; cursor:pointer;"> Điều dự phòng kíp lên thay
+        <input type="checkbox" class="h-use-backup" onchange="if(this.checked){const nr=this.closest('tr').querySelector('.h-no-replace');if(nr)nr.checked=false;} syncHCFilters(${id}); syncPartnerList(${id}); setTimeout(()=>{checkShiftStatus(${id}); validateHCDates(${id});},0)" style="width:18px; height:18px; margin:0; padding:0; appearance:auto; -webkit-appearance:auto; cursor:pointer;"> Điều dự phòng kíp lên thay
       </label>
       <input type="date" class="h-date" style="padding:8px; width:100%; border-radius:4px;" onchange="syncHCFilters(${id}); checkShiftStatus(${id}); validateHCDates(${id})">
     </td>
@@ -3566,7 +3566,7 @@ function addRowHC() {
         <span style="color:#64748b; font-size:12px;">Vui lòng chọn CD & Kíp</span>
       </div>
     </td>
-    <td><select class="h-pkip" style="padding:8px; width:100%; border-radius:4px; border-color:#f59e0b; background:#fffbeb; transition:0.2s;" onchange="syncPartnerList(${id}); validateHCDates(${id})"><option value="">- Kíp -</option><option value="AUTO" style="color:#16a34a; font-weight:700;">✨ Tự động tìm</option>${kips.map(k=>`<option>${k}</option>`).join('')}</select></td>
+    <td><select class="h-pkip" style="padding:8px; width:100%; border-radius:4px; border-color:#f59e0b; background:#fffbeb; transition:0.2s;" onchange="syncPartnerList(${id}); setTimeout(()=>{validateHCDates(${id});},0)"><option value="">- Kíp -</option><option value="AUTO" style="color:#16a34a; font-weight:700;">✨ Tự động tìm</option>${kips.map(k=>`<option>${k}</option>`).join('')}</select></td>
     <td>
       <div class="h-partner" style="height:140px; overflow-y:auto; border:2px solid #f59e0b; background:#fffbeb; border-radius:6px; padding:8px; font-size:14px; transition:0.2s;">
         <span style="color:#64748b; font-size:12px;">Chọn Kíp thay trước</span>
@@ -3764,7 +3764,9 @@ function syncHCFilters(id) {
                 pkipEl.value = 'AUTO';
                 syncPartnerList(id); 
             }
-            checkShiftStatus(id);
+            // FIX: syncPartnerList() ở trên chỉ lên lịch (setTimeout 0), chưa chạy ngay —
+            // đẩy checkShiftStatus vào cùng hàng đợi, xếp SAU, để đọc đúng DOM đã lọc sạch.
+            setTimeout(() => checkShiftStatus(id), 0);
         }, 10);
     }
     return; // THOÁT KHỎI HÀM, KHÔNG CHẠY LOGIC RENDER NGHỈ BÌNH THƯỜNG BÊN DƯỚI
@@ -3940,8 +3942,14 @@ function _doSyncPartnerList(id) {
   const LEAVE_SHIFT_CODES = ['P', 'VR', 'Ô', 'TS', 'O', 'V', 'CT', 'HT', 'HC', 'HC/2'];
   if (dHC) {
       if (useBackup && backupPersonName) {
-          const bInfo = NV_LIST.find(u => u.name === backupPersonName);
-          const bKip = bInfo ? bInfo.kip : kip;
+          // FIX QUAN TRỌNG: trước đây lấy "bInfo.kip" — kíp GỐC/tĩnh lưu trong danh sách nhân
+          // viên, KHÔNG tính đến việc kíp có thể luân phiên/xoay vòng theo thời gian. Nếu ông
+          // dự phòng (VD Tuấn) đã đổi sang kíp khác so với kíp gốc lưu sẵn, tra ca theo kíp gốc
+          // sẽ RA SAI ca thực tế của ông ấy (caThucTeA) — khiến máy quét an toàn C-K cho "người
+          // thay" (Hưng) chạy trên dữ liệu sai, có thể bỏ lọt người vi phạm thật ra khỏi diện bị
+          // loại. Dùng getPersonKip(..., null) để luôn lấy đúng kíp HIỆN TẠI đã resolve rotation
+          // — giống hệt cách nhánh "kip" bên dưới đã làm đúng từ trước.
+          const bKip = getPersonKip(backupPersonName, null);
           const caRaw = getCaThucTe(backupPersonName, bKip, dHC);
           caThucTeA = LEAVE_SHIFT_CODES.includes(caRaw) ? getCaTrucGoc(backupPersonName, bKip, dHC) : caRaw;
       } else if (kip) {
@@ -4022,24 +4030,22 @@ function _doSyncPartnerList(id) {
         if (isDup) return false;
     }
 
-    // 5. Nếu chọn AUTO -> Gộp toàn bộ 3 Lớp lọc làm 1
-    if (pk === 'AUTO') {
-        const caThucTeB = getCaThucTe(u.name, u.kip, dHC);
-        
-        // Lọc 1: Ngày đó phải đang rảnh (OFF)
-        if (caThucTeB !== 'OFF') return false; 
+    // 5. CẢ AUTO LẪN KÍP CỤ THỂ: đều bắt buộc đang RẢNH (OFF) ngày đó + an toàn ca cấm.
+    // Trước đây nhánh "Kíp cụ thể" KHÔNG yêu cầu OFF — có thể gợi ý nhầm người đang có ca làm
+    // việc thật trong ngày đó, khiến họ phải gánh 2 ca cùng lúc trong 1 ngày nếu được chọn.
+    // Đồng bộ lại: dùng chung đúng 1 tiêu chí cho cả 2 chế độ.
+    if (!dHC) return false; // Chưa có ngày thì không thể xác định OFF/an toàn — không gợi ý bừa
+    // FIX QUAN TRỌNG: dùng getPersonKip(u.name, null) thay vì u.kip thô — nếu ứng viên từng có
+    // lệnh ĐIỀU CHUYỂN kíp, u.kip (kíp gốc lưu tĩnh) đã lỗi thời, tra ca theo kíp gốc sẽ ra SAI
+    // OFF-status lẫn kết quả an toàn C-K, có thể để lọt người vi phạm thật vào danh sách gợi ý.
+    const uKipResolved = getPersonKip(u.name, null);
+    const caThucTeB = getCaThucTe(u.name, uKipResolved, dHC);
+    if (caThucTeB !== 'OFF') return false;
 
-        // Lọc 2 & 3: Lồng Máy quét An toàn vào chạy ngầm (Gánh ca không vi phạm C-K, 4K)
-        if (caThucTeA !== 'OFF') {
-            const loiAnToan = checkViPhamAnToan(u.name, u.kip, dHC, caThucTeA);
-            // Nếu phát hiện ông này gánh ca sẽ dính lỗi -> Loại vĩnh viễn khỏi danh sách gợi ý!
-            if (loiAnToan) return false; 
-        }
-    } else if (dHC && caThucTeA !== 'OFF') {
-        // Dù chọn Kíp CỤ THỂ (không phải AUTO), vẫn phải quét An toàn cho người thay,
-        // tránh trường hợp người này vướng cấm ca liên tiếp với ngày trước/sau khi gánh ca thay.
-        const loiAnToanKipCuThe = checkViPhamAnToan(u.name, u.kip, dHC, caThucTeA);
-        if (loiAnToanKipCuThe) return false;
+    if (caThucTeA !== 'OFF') {
+        const loiAnToan = checkViPhamAnToan(u.name, uKipResolved, dHC, caThucTeA);
+        // Nếu phát hiện ông này gánh ca sẽ dính lỗi -> Loại vĩnh viễn khỏi danh sách gợi ý!
+        if (loiAnToan) return false;
     }
 
     return true;
@@ -4083,7 +4089,7 @@ function _doSyncPartnerList(id) {
 
       return `
       <label style="display:flex; align-items:center; margin-bottom:6px; cursor:pointer; font-weight:500;">
-        <input type="checkbox" class="hc-partner-val" value="${u.name}" ${isChecked ? 'checked' : ''} onchange="checkShiftStatus(${id}); validateHCDates(${id});" style="width:18px; height:18px; margin:0 8px 0 0; padding:0; appearance:auto; -webkit-appearance:auto; cursor:pointer;"> 
+        <input type="checkbox" class="hc-partner-val" value="${u.name}" ${isChecked ? 'checked' : ''} onchange="handlePartnerSelection(this, ${id}); checkShiftStatus(${id}); validateHCDates(${id});" style="width:18px; height:18px; margin:0 8px 0 0; padding:0; appearance:auto; -webkit-appearance:auto; cursor:pointer;"> 
         ${u.name} ${kipTag} ${backupTag}
       </label>
     `}).join('');
@@ -4132,9 +4138,42 @@ function isManagementDispatch(req) {
 }
 
 // HÀM XỬ LÝ KHI TÍCH CHỌN NHÂN SỰ ĐIỀU ĐỘNG
+// CHẶN: số "Người thay (Tích chọn)" phải đúng bằng số "Người đi (Tích chọn)" — không được
+// nhiều người thay cho ít người đi (hoặc ngược lại). Ở chế độ dự phòng, số Người đi đã bị
+// chặn tối đa 1 (xem handleHCSelection), nên ở đây Người thay cũng chỉ được chọn tối đa 1.
+// Ở chế độ thường, submitBatchHC() vẫn còn kiểm tra lại 1 lần nữa trước khi ghi lệnh — hàm
+// này chỉ chặn NGAY TRÊN GIAO DIỆN cho người dùng biết sớm, không phải lớp bảo vệ duy nhất.
+function handlePartnerSelection(chk, id) {
+    const row = document.getElementById(`hc-r-${id}`);
+    if (!chk.checked) return; // Bỏ chọn thì luôn hợp lệ, không cần chặn
+
+    const selectedNames = Array.from(row.querySelectorAll('.hc-chk-val:checked')).map(cb => cb.value);
+    const soNguoiDi = Math.max(selectedNames.length, 1); // Chưa chọn ai (mặc định) coi như cần 1
+
+    const checkedPartners = Array.from(row.querySelectorAll('.hc-partner-val:checked'));
+    if (checkedPartners.length > soNguoiDi) {
+        chk.checked = false;
+        showAlert('app', `⚠️ Số "Người thay" (${checkedPartners.length}) không được nhiều hơn số "Người đi" (${soNguoiDi}). Vui lòng bỏ chọn bớt trước khi chọn người khác.`, 'ai');
+    }
+}
+
 function handleHCSelection(chk, dateStr, id) {
     const row = document.getElementById(`hc-r-${id}`);
     const useBackup = row.querySelector('.h-use-backup') && row.querySelector('.h-use-backup').checked;
+
+    // CHẶN: ở chế độ "Điều dự phòng kíp lên thay", mỗi dòng chỉ xử lý ĐÚNG 1 ông nghỉ gốc —
+    // nên chỉ được chọn TỐI ĐA 1 "ông dự phòng" đi thay. Nếu tích thêm ông thứ 2, submitBatchHC()
+    // sẽ lặp qua selectedNames và tạo ra 2 LỆNH RIÊNG BIỆT cùng thay cho MỘT người nghỉ trong
+    // cùng 1 ngày — trùng lệnh, sai nghiệp vụ. Chặn ngay tại đây, không để lọt xuống submit.
+    if (useBackup && chk.checked) {
+        const checkedNow = Array.from(row.querySelectorAll('.hc-chk-val:checked'));
+        if (checkedNow.length > 1) {
+            chk.checked = false;
+            showAlert('app', `⚠️ Chế độ "Điều dự phòng" chỉ được chọn 1 người đi thay cho 1 người nghỉ. Vui lòng bỏ chọn người trước rồi mới chọn người khác.`, 'ai');
+            return;
+        }
+    }
+
     const selectedNames = Array.from(row.querySelectorAll('.hc-chk-val:checked')).map(cb => cb.value);
     
     // Lưu lại người được chọn nếu đang ở chế độ bình thường để làm mục tiêu khi bật dự phòng
@@ -4152,8 +4191,19 @@ function handleHCSelection(chk, dateStr, id) {
     }
     
     syncPartnerList(id); 
-    checkShiftStatus(id); 
-    validateHCDates(id);
+    // FIX QUAN TRỌNG: syncPartnerList() chỉ LÊN LỊCH render lại danh sách người thay qua
+    // setTimeout(fn, 0) (_doSyncPartnerList) — nó KHÔNG chạy ngay. Nếu checkShiftStatus()/
+    // validateHCDates() chạy ĐỒNG BỘ ngay sau đó (như code cũ), chúng sẽ đọc DOM CŨ — danh
+    // sách người thay CHƯA kịp lọc bỏ người vi phạm ca cấm liên tiếp. Kết quả đúng như ảnh
+    // chụp: người vi phạm (VD Nguyễn Danh Nhất) vẫn hiện trong danh sách kèm banner lỗi đỏ,
+    // dù syncPartnerList đã có logic lọc đúng — chỉ là CHƯA KỊP CHẠY. Đẩy 2 hàm này vào cùng
+    // setTimeout(0) NGAY SAU lệnh gọi syncPartnerList(id) ở trên: vì cùng hàng đợi vi mô và
+    // được xếp lịch SAU, chúng sẽ luôn chạy SAU _doSyncPartnerList, đọc đúng danh sách đã lọc
+    // sạch — người vi phạm ca cấm bị ẩn hẳn ngay từ đầu, không còn hiện lên rồi mới báo lỗi.
+    setTimeout(() => {
+      checkShiftStatus(id);
+      validateHCDates(id);
+    }, 0);
 }
 function resetRightColumns(id) {
   const row = document.getElementById(`hc-r-${id}`);
@@ -4260,6 +4310,14 @@ function validateHCDates(id) {
   if(!dHC || !kip) return; 
 
   const selectedNames = Array.from(row.querySelectorAll('.hc-chk-val:checked')).map(cb => cb.value);
+  // FIX QUAN TRỌNG: hàm này trước đây LUÔN coi selectedNames[0] có kíp = kíp dòng "người đi HC"
+  // (biến `kip` — VD "Kíp 1", dùng để TÌM người nghỉ). Nhưng ở CHẾ ĐỘ DỰ PHÒNG, người được chọn
+  // (selectedNames[0]) là ÔNG DỰ PHÒNG (VD Lê Quốc Tuấn, thực tế thuộc Kíp 3) — không cùng kíp
+  // với dòng tìm kiếm. Dùng nhầm kíp khiến getCaThucTe() trả về SAI ca thực tế của ông ấy (banner
+  // lỗi tính theo ca sai), trong khi danh sách ứng viên (_doSyncPartnerList) đã tính ĐÚNG theo
+  // kíp thật của ông dự phòng. Đây là nguyên nhân banner báo lỗi dù người được chọn thực ra an
+  // toàn. Đồng bộ lại: nếu đang ở chế độ dự phòng, luôn lấy KÍP THẬT của selectedNames[0].
+  const useBackup = row.querySelector('.h-use-backup') && row.querySelector('.h-use-backup').checked;
   let repA_name = selectedNames.length > 0 ? selectedNames[0] : null;
   if (!repA_name) {
     const repObj = NV_LIST.find(u => u.kip === kip);
@@ -4270,7 +4328,7 @@ function validateHCDates(id) {
   let caThucTeA = 'OFF';
   
   if (repA_name) {
-      const personKip = getPersonKip(repA_name, kip);
+      const personKip = useBackup ? getPersonKip(repA_name, null) : getPersonKip(repA_name, kip);
       const caRawA = getCaThucTe(repA_name, personKip, dHC);
       // FIX: nếu ca thực tế là mã nghỉ (do đã có đơn nghỉ phép duyệt cho ngày
       // này — vd ông Hiếu) thì phải lấy CA GỐC làm căn cứ check an toàn,
@@ -4538,11 +4596,23 @@ async function submitBatchHC() {
     // selectedPartners = [người thay chỗ ông dự phòng ở chức danh chính của ổng] - CÓ THỂ TRỐNG
     if (useBackup) {
       if (selectedNames.length === 0) { hasError = true; showLocalAlert('batchhc-msg', 'Vui lòng chọn ông dự phòng!', 'ae'); return; }
+
+      // CHẶN LỚP CUỐI (phòng khi giao diện bị bypass): chế độ dự phòng chỉ xử lý 1 ông nghỉ gốc
+      // mỗi dòng, nên chỉ được chọn ĐÚNG 1 ông dự phòng — chọn nhiều hơn sẽ tạo trùng lệnh cho
+      // cùng 1 người nghỉ. Và số "Người thay" không được nhiều hơn số "ông dự phòng" đã chọn.
+      if (selectedNames.length > 1) {
+        hasError = true; showLocalAlert('batchhc-msg', `LỖI: Chỉ được chọn 1 người đi thay cho 1 người nghỉ (đang chọn ${selectedNames.length} người)!`, 'ae'); return;
+      }
+      if (selectedPartners.length > selectedNames.length) {
+        hasError = true; showLocalAlert('batchhc-msg', `LỖI: Số "Người thay" (${selectedPartners.length}) nhiều hơn số "Người đi" (${selectedNames.length})!`, 'ae'); return;
+      }
       
       selectedNames.forEach((n, idx) => {
         // n = ông dự phòng (vd: Nhất)
         const backupInfo = NV_LIST.find(u => u.name === n);
-        const backupKip = backupInfo ? backupInfo.kip : kip; 
+        // FIX: dùng getPersonKip(n, null) thay vì backupInfo.kip thô — nhất quán với fix ở
+        // syncPartnerList(), tránh ghi sai kíp vào lệnh nếu ông dự phòng từng bị điều chuyển kíp.
+        const backupKip = getPersonKip(n, null);
         const backupMainRole = backupInfo ? backupInfo.chucDanh : role; 
 
         // 1. TÌM ÔNG NGHỈ GỐC (vd: ông Hiền hoặc ông Hồng)
