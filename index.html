@@ -324,6 +324,10 @@ textarea{resize:none;height:80px}
     <div class="card" style="border-top: 4px solid #f97316; margin-bottom: 20px; background: #fffaf5;">
       <div class="sec-title" style="color:#f97316; margin-bottom:15px;">🚀 ĐIỀU CHUYỂN NHÂN SỰ SANG TRẠNG THÁI MỚI</div>
       <div class="form-row">
+        <div id="tc-bophan-wrap" style="display:none;">
+          <label>0. Lọc theo Bộ phận</label>
+          <select id="tc-bophan" onchange="onTCBoPhanChange()" style="border-color:#f97316; font-weight:700; color:#ea580c;"></select>
+        </div>
         <div>
           <label>1. Lọc theo chức danh</label>
           <select id="tc-role" onchange="filterTCUsers()"><option value="">-- Tất cả --</option></select>
@@ -1413,7 +1417,8 @@ async function doLogin(){
         ['f-hist-bp-wrap', 'f-hist-bp'],
         ['f-leave-hist-bp-wrap', 'f-leave-hist-bp'],
         ['f-leave-stat-bp-wrap', 'f-leave-stat-bp'],
-        ['f-no-ca-ld-bp-wrap', 'f-no-ca-ld-bp']
+        ['f-no-ca-ld-bp-wrap', 'f-no-ca-ld-bp'],
+        ['tc-bophan-wrap', 'tc-bophan']
       ];
       _bpWraps.forEach(([wrapId, selId]) => {
         const wrapEl = document.getElementById(wrapId);
@@ -3539,6 +3544,18 @@ function findLeavePersonForBackupAuto(role, dateStr, leaveType, backupName, back
 
 let hcIdCounter = 0;
 
+// Lấy phạm vi nhân sự cho 1 hàng lệnh điều động: trong bộ phận của mình (getNVMine),
+// thu hẹp thêm theo bộ phận đã chọn ở dropdown ".h-bophan" của hàng đó (chỉ Admin mới
+// thấy dropdown này — dùng để tránh chọn nhầm người/chức danh khi Admin quản lý nhiều
+// bộ phận cùng lúc, ví dụ 2 bộ phận cùng có chức danh "Trưởng kíp").
+function getRowNV(row) {
+  const bpSel = row ? row.querySelector('.h-bophan') : null;
+  const bp = bpSel ? bpSel.value : '';
+  let list = getNVMine();
+  if (bp) list = list.filter(u => u.boPhan === bp);
+  return list;
+}
+
 function addRowHC() {
   hcIdCounter++;
   const id = hcIdCounter;
@@ -3580,7 +3597,10 @@ function addRowHC() {
       </label>
       <input type="date" class="h-date" style="padding:8px; width:100%; border-radius:4px;" onchange="syncHCFilters(${id}); checkShiftStatus(${id}); validateHCDates(${id})">
     </td>
-    <td><select class="h-role" style="padding:8px; width:100%; border-radius:4px;" onchange="syncHCFilters(${id}); checkShiftStatus(${id}); validateHCDates(${id})"><option value="">- Chọn -</option>${roles.map(r=>`<option>${r}</option>`).join('')}</select></td>
+    <td>
+      ${CU.admin ? `<select class="h-bophan" style="padding:6px; width:100%; border-radius:4px; margin-bottom:6px; font-size:12px; color:#0f766e; background:#f0fdfa; border:1px solid #99f6e4;" onchange="onHCBoPhanChange(${id})"><option value="">-- Tất cả bộ phận --</option>${[...new Set(NV_LIST.map(u=>u.boPhan).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi')).map(bp=>`<option>${bp}</option>`).join('')}</select>` : ''}
+      <select class="h-role" style="padding:8px; width:100%; border-radius:4px;" onchange="syncHCFilters(${id}); checkShiftStatus(${id}); validateHCDates(${id})"><option value="">- Chọn -</option>${roles.map(r=>`<option>${r}</option>`).join('')}</select>
+    </td>
     <td><select class="h-kip" style="padding:8px; width:100%; border-radius:4px;" onchange="syncHCFilters(${id}); checkShiftStatus(${id}); validateHCDates(${id})"><option value="">- Kíp -</option><option value="AUTO_LEAVE" style="color:#7e22ce; font-weight:700;">🔍 Tự động tìm</option>${kips.map(k=>`<option>${k}</option>`).join('')}</select></td>
     <td>
       <div class="h-main-chk" style="height:140px; overflow-y:auto; border:2px solid #3b82f6; background:#eff6ff; border-radius:6px; padding:8px; font-size:14px;">
@@ -3602,6 +3622,34 @@ function addRowHC() {
     <td><button class="btn" style="color:#dc2626; padding:6px 10px;" onclick="document.getElementById('hc-r-${id}').remove()">✕</button></td>
   `;
   document.getElementById('hc-table-body').appendChild(tr);
+}
+
+// Khi Admin đổi bộ phận lọc cho 1 hàng lệnh điều động: làm mới danh sách Chức danh/Kíp
+// theo đúng bộ phận đó, reset lựa chọn cũ (có thể không còn hợp lệ ở bộ phận mới).
+function onHCBoPhanChange(id) {
+  const row = document.getElementById(`hc-r-${id}`);
+  if (!row) return;
+  const pool = getRowNV(row);
+  const myInfoHC = NV_LIST.find(u => u.name === CU.name);
+  const qddRaw = CU.admin ? '*' : (myInfoHC && myInfoHC.quyenDieuDong ? myInfoHC.quyenDieuDong.trim() : '');
+  const allRolesHC = [...new Set(pool.map(u => u.chucDanh))].filter(Boolean);
+  const _pOrderHC = (APP_CONFIG.priorityOrder && APP_CONFIG.priorityOrder.length > 0) ? APP_CONFIG.priorityOrder : [];
+  const allRolesHCSorted = allRolesHC.sort((a, b) => {
+    const iA = _pOrderHC.indexOf(a); const iB = _pOrderHC.indexOf(b);
+    const vA = iA === -1 ? 999 : iA; const vB = iB === -1 ? 999 : iB;
+    if (vA !== vB) return vA - vB;
+    return a.localeCompare(b, 'vi');
+  });
+  const roles = (!qddRaw || qddRaw === '*') ? allRolesHCSorted
+    : allRolesHCSorted.filter(r => qddRaw.split(',').map(s => s.trim().toLowerCase()).includes(r.toLowerCase()));
+  const kips = [...new Set(pool.map(u => u.kip))].filter(Boolean);
+
+  const roleSel = row.querySelector('.h-role');
+  const kipSel = row.querySelector('.h-kip');
+  roleSel.innerHTML = `<option value="">- Chọn -</option>${roles.map(r=>`<option>${r}</option>`).join('')}`;
+  kipSel.innerHTML = `<option value="">- Kíp -</option><option value="AUTO_LEAVE" style="color:#7e22ce; font-weight:700;">🔍 Tự động tìm</option>${kips.map(k=>`<option>${k}</option>`).join('')}`;
+
+  syncHCFilters(id); checkShiftStatus(id); validateHCDates(id);
 }
 
 function filterHCSearch(inp, targetClass) {
@@ -3648,8 +3696,8 @@ function syncHCFilters(id) {
       delete row.dataset.intendedReplace;
   }
 
-  // ── LẤY DANH SÁCH NHÂN VIÊN PHÙ HỢP ──
-  let matches = getNVMine();
+  // ── LẤY DANH SÁCH NHÂN VIÊN PHÙ HỢP (đã thu hẹp theo Bộ phận nếu Admin có chọn) ──
+  let matches = getRowNV(row);
   if (r) matches = matches.filter(u => u.chucDanh === r);
   if (k && k !== 'AUTO_LEAVE') matches = matches.filter(u => u.kip === k);
 
@@ -3680,7 +3728,7 @@ function syncHCFilters(id) {
 
     let caOngNghi = null;
     if (!isAutoKip) {
-      const repOfKip = getNVMine().find(u => u.kip === k);
+      const repOfKip = getRowNV(row).find(u => u.kip === k);
       caOngNghi = repOfKip ? getCaThucTe(repOfKip.name, k, d) : null;
       if (!caOngNghi || caOngNghi === 'OFF') {
         chkContainer.innerHTML = `<span style="color:#7c3aed; font-size:12px; font-weight:700;">⚠️ Kíp ${k} ngày ${fmtDate(d)} đang nghỉ (OFF), không cần điều dự phòng</span>`;
@@ -3689,7 +3737,7 @@ function syncHCFilters(id) {
       }
     }
 
-    let candidatesRaw = getNVMine().filter(u => {
+    let candidatesRaw = getRowNV(row).filter(u => {
       const isSameRole = (u.chucDanh === r); // Cùng chức danh CHÍNH với ông nghỉ
       let isBackupRole = false;
       if (u.chucDanhDuPhong) {
@@ -3803,8 +3851,8 @@ function syncHCFilters(id) {
   // AUTO_LEAVE: tìm tất cả người có chức danh r, có đơn nghỉ approved ngày d (không giới hạn kíp)
   const isAutoLeave = (k === 'AUTO_LEAVE');
   matches = isAutoLeave
-    ? getNVMine().filter(u => u.chucDanh === r)
-    : getNVMine().filter(u => u.chucDanh === r && u.kip === k);
+    ? getRowNV(row).filter(u => u.chucDanh === r)
+    : getRowNV(row).filter(u => u.chucDanh === r && u.kip === k);
 
   // --- LỌC BỔ SUNG: ẨN NGƯỜI NGHỈ (OFF) KHI Ở CHẾ ĐỘ "VẮNG KHÔNG PHÉP" (V) ---
   if (type === 'V' && d) {
@@ -3976,7 +4024,7 @@ function _doSyncPartnerList(id) {
       } else if (kip) {
           let repA_name = selectedNames.length > 0 ? selectedNames[0] : null;
           if (!repA_name) {
-              const repObj = NV_LIST.find(u => u.kip === kip);
+              const repObj = getRowNV(row).find(u => u.kip === kip);
               if (repObj) repA_name = repObj.name;
           }
           // FIX: nếu kip = 'AUTO_LEAVE' (chọn "🔍 Tự động tìm" cho người đi HC),
@@ -4003,12 +4051,19 @@ function _doSyncPartnerList(id) {
   // KHÁC cũng đang OFF cùng ngày (trùng lịch nghỉ) vì bước kiểm tra an toàn
   // bị bỏ qua nhưng bước liệt kê ứng viên vẫn chạy — khiến hệ thống vẫn hiện
   // danh sách để chọn dù không có nhu cầu thực sự nào cần người thay.
-  if (useBackup && caThucTeA === 'OFF') {
-    partnerChkContainer.innerHTML = `<div style="color:#16a34a; font-size:12px; font-weight:700; padding:10px; background:#f0fdf4; border-radius:6px; border:1px solid #bbf7d0;">✅ Dự phòng đang nghỉ, không cần người thay.</div>`;
+  // FIX QUAN TRỌNG: Nếu người đang gánh ca cần thay (ông dự phòng B ở chế độ dự phòng,
+  // HOẶC chính người đi ở chế độ bình thường) THỰC SỰ đang OFF (không có ca thật để gánh),
+  // thì KHÔNG CẦN TÌM AI CẢ — thoát sớm ngay tại đây, không chạy vòng lọc bên dưới.
+  // Trước đây điều kiện này chỉ áp dụng khi useBackup=true, nên ở chế độ bình thường
+  // (VD: ông Cường đi Công tác nhưng hôm đó ông vốn đã nghỉ/OFF), hệ thống vẫn chạy
+  // vòng tìm và tự gợi ý người thay dù không có ca nào cần gánh cả.
+  if (caThucTeA === 'OFF') {
+    const _offMsg = useBackup ? '✅ Dự phòng đang nghỉ, không cần người thay.' : '✅ Người đi vốn đang nghỉ (OFF) hôm đó, không cần người thay.';
+    partnerChkContainer.innerHTML = `<div style="color:#16a34a; font-size:12px; font-weight:700; padding:10px; background:#f0fdf4; border-radius:6px; border:1px solid #bbf7d0;">${_offMsg}</div>`;
     return;
   }
 
-  const partners = NV_LIST.filter(u => {
+  const partners = getRowNV(row).filter(u => {
     // 1. Kiểm tra chức danh (theo searchRole - có thể là CD chính ông dự phòng)
     let matchRole = false;
     if (u.chucDanh === searchRole) matchRole = true;
@@ -4209,6 +4264,12 @@ function handleHCSelection(chk, dateStr, id) {
     // Nếu bỏ tích hết -> Reset cột bên phải
     if (selectedNames.length === 0) {
         resetRightColumns(id);
+    } else {
+        // FIX: tự động đặt "Kíp thay = Tự động" ngay khi vừa chọn "Người đi", thay vì bắt
+        // người dùng phải tự tay bấm chọn mới thấy được kết quả (kể cả khi kết quả là
+        // "không cần người thay" vì người đi vốn đang nghỉ) — giảm 1 bước thao tác thừa.
+        const pkipEl = row.querySelector('.h-pkip');
+        if (pkipEl && !pkipEl.value) pkipEl.value = 'AUTO';
     }
     
     syncPartnerList(id); 
@@ -4890,12 +4951,21 @@ async function submitBatchHC() {
 }
 
 // Khởi tạo Form Điều chuyển
-function initTransferForm() {
+// Lấy phạm vi nhân sự cho form Điều chuyển: trong bộ phận của mình (getNVMine),
+// thu hẹp thêm theo bộ phận đã chọn ở dropdown "tc-bophan" (chỉ Admin mới thấy dropdown này,
+// dùng để tránh chọn nhầm người khi Admin quản lý nhiều bộ phận cùng lúc).
+function getTCScopeList() {
+  const bpSel = document.getElementById('tc-bophan');
+  const bp = bpSel ? bpSel.value : '';
+  let list = getNVMine();
+  if (bp) list = list.filter(u => u.boPhan === bp);
+  return list;
+}
+
+function refreshTCRoleOptions() {
   const myInfoTC = NV_LIST.find(u => u.name === CU.name);
   const qddRawTC = CU.admin ? '*' : (myInfoTC && myInfoTC.quyenDieuDong ? myInfoTC.quyenDieuDong.trim() : '');
-  // Chức danh hiển thị trong dropdown chỉ lấy trong PHẠM VI BỘ PHẬN của người đang thao tác
-  // (admin không gán bộ phận riêng -> sameBoPhan fail-open, vẫn thấy toàn Công ty như cũ)
-  const _tcScopeListInit = getNVMine();
+  const _tcScopeListInit = getTCScopeList();
   const allRolesTC = [...new Set(_tcScopeListInit.map(u => u.chucDanh))].filter(Boolean);
   const _pOrderTC = (APP_CONFIG.priorityOrder && APP_CONFIG.priorityOrder.length > 0) ? APP_CONFIG.priorityOrder : [];
   const allRolesTCSorted = allRolesTC.sort((a, b) => {
@@ -4906,12 +4976,24 @@ function initTransferForm() {
   });
   const roles = (!qddRawTC || qddRawTC === '*') ? allRolesTCSorted
     : allRolesTCSorted.filter(r => qddRawTC.split(',').map(s => s.trim().toLowerCase()).includes(r.toLowerCase()));
+  document.getElementById('tc-role').innerHTML = '<option value="">-- Tất cả --</option>' + roles.map(r=>`<option>${r}</option>`).join('');
+}
+
+// Khi Admin đổi bộ phận lọc: làm mới danh sách chức danh theo đúng bộ phận đó,
+// reset lại chức danh đang chọn (vì có thể không còn hợp lệ ở bộ phận mới), rồi lọc lại nhân viên.
+function onTCBoPhanChange() {
+  refreshTCRoleOptions();
+  document.getElementById('tc-role').value = '';
+  filterTCUsers();
+}
+
+function initTransferForm() {
+  refreshTCRoleOptions();
   const kips = APP_CONFIG.kipList?.length > 0 
   ? APP_CONFIG.kipList 
   : [...new Set(NV_LIST.map(u => u.kip))].filter(Boolean);
   const patterns = Object.keys(MAU_LICH); 
   
-  document.getElementById('tc-role').innerHTML = '<option value="">-- Tất cả --</option>' + roles.map(r=>`<option>${r}</option>`).join('');
   document.getElementById('tc-newkip').innerHTML = '<option value="">-- Giữ nguyên Kíp --</option>' + kips.map(k=>`<option>${k}</option>`).join('');
   document.getElementById('tc-newpattern').innerHTML = '<option value="">-- Giữ nguyên Mẫu --</option>' + patterns.map(p=>`<option>${p}</option>`).join('');
   
@@ -4968,8 +5050,9 @@ function filterTCUsers() {
     : qddTC.split(',').map(s => s.trim().toLowerCase()).filter(s => s);
   // Luôn giới hạn trong PHẠM VI BỘ PHẬN của người đang thao tác trước
   // (admin không gán bộ phận riêng -> sameBoPhan fail-open, vẫn thấy toàn Công ty như cũ),
-  // sau đó mới thu hẹp tiếp theo chức danh được duyệt (quyenDieuDong) nếu có.
-  let baseList = getNVMine();
+  // sau đó thu hẹp tiếp theo Bộ phận đã chọn ở dropdown (nếu Admin có chọn),
+  // rồi mới thu hẹp tiếp theo chức danh được duyệt (quyenDieuDong) nếu có.
+  let baseList = getTCScopeList();
   if (allowedCds) baseList = baseList.filter(u => allowedCds.includes((u.chucDanh || '').toLowerCase()));
 
   let list = r ? baseList.filter(u => u.chucDanh === r) : baseList;
