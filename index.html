@@ -4577,9 +4577,11 @@ async function submitBatchHC() {
         const finalCaDoiStep1 = (caThucTeLeave !== 'OFF' && caThucTeLeave !== 'HC') ? caThucTeLeave : getCaTrucGoc(leavePerson.name, leavePerson.kip, dHC);
 
         // 3. LẤY CA THỰC TẾ CỦA ÔNG DỰ PHÒNG (Nhất)
-        const caWorkBackup = getCaThucTe(n, backupKip, dHC); 
-        if (caWorkBackup === 'OFF' || caWorkBackup === 'P' || caWorkBackup === 'VR' || caWorkBackup === 'HC') {
-          hasError = true; showLocalAlert('batchhc-msg', `LỖI: Ông ${n} ngày ${dHC} không đi làm (đang ${caWorkBackup}), không thể điều động lên thay!`, 'ae'); return;
+        const caWorkBackup = getCaThucTe(n, backupKip, dHC);
+        // Chỉ chặn khi đang nghỉ có phép (P/VR/Ô/TS). OFF = nghỉ lịch, HC = giờ hành chính → đều được điều động lên thay
+        const _backupBlocked = ['P', 'VR', 'Ô', 'TS', 'O'];
+        if (_backupBlocked.includes(caWorkBackup)) {
+          hasError = true; showLocalAlert('batchhc-msg', `LỖI: Ông ${n} ngày ${dHC} đang nghỉ phép (${caWorkBackup}), không thể điều động lên thay!`, 'ae'); return;
         }
         
         // KIỂM TRA TRÙNG LỆNH CHO ÔNG DỰ PHÒNG
@@ -4603,7 +4605,9 @@ async function submitBatchHC() {
             replacerKip = replacerInfo ? replacerInfo.kip : pkip;
 
             const caReplacer = getCaThucTe(replacerName, replacerKip, dHC);
-            if (caReplacer !== 'OFF') { hasError = true; showLocalAlert('batchhc-msg', `LỖI: Ông ${replacerName} ngày ${dHC} đang có ca ${caReplacer}, không rảnh để thay!`, 'ae'); return; }
+            // Cho phép OFF (nghỉ lịch) và HC (hành chính) → đều rảnh để thay chỗ dự phòng
+            const _replacerBlocked = ['P', 'VR', 'Ô', 'TS', 'O', 'K', 'N', 'C'];
+            if (_replacerBlocked.includes(caReplacer)) { hasError = true; showLocalAlert('batchhc-msg', `LỖI: Ông ${replacerName} ngày ${dHC} đang có ca ${caReplacer}, không rảnh để thay!`, 'ae'); return; }
             
             const isDupReplacer = allReqs.some(req => 
                 isManagementDispatch(req) && 
