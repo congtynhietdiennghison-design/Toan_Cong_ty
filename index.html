@@ -3458,20 +3458,24 @@ function exportExcelSched() {
 
   // Index rows theo tên từ tbody hiện tại
   const trByName = {};
+  const orderedNames = [];
   tableEl.querySelectorAll('tbody tr').forEach(tr => {
     const name = (tr.querySelector('td')?.textContent||'').replace('(Tôi)','').trim();
-    if (name) trByName[name] = tr.outerHTML;
+    if (name) { trByName[name] = tr.outerHTML; orderedNames.push(name); }
   });
 
   let fullHtml = '';
   const bpList = BO_PHAN_ORDER.filter(bp => NV_LIST.some(u=>(u.boPhan||'')===bp));
   bpList.forEach((bp, i) => {
-    const bpUsers = NV_LIST.filter(u=>(u.boPhan||'')===bp && (u.chucDanh||'').trim()!=='ADMIN');
-    if (!bpUsers.length) return;
+    const bpNamesInOrder = orderedNames.filter(name => {
+      const u = NV_LIST.find(x => x.name === name);
+      return u && (u.boPhan||'')===bp && (u.chucDanh||'').trim()!=='ADMIN';
+    });
+    if (!bpNamesInOrder.length) return;
     fullHtml += `<table border="1" style="border-collapse:collapse;width:100%;margin-bottom:20px;">`;
     fullHtml += `<thead><tr><td colspan="${totalCols}" style="${hdrStyle}">${bp.toUpperCase()}</td></tr>${thead}</thead>`;
     fullHtml += `<tbody>`;
-    bpUsers.forEach(u => { fullHtml += trByName[u.name] || ''; });
+    bpNamesInOrder.forEach(name => { fullHtml += trByName[name] || ''; });
     fullHtml += `</tbody></table>`;
     if (i < bpList.length-1) fullHtml += '<br>';
   });
