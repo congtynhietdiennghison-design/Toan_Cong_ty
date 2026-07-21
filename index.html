@@ -2177,7 +2177,7 @@ function getCaThucTe(userName, kipName, dateStr, ignoreReqId = null, returnFullO
       const partner = (r.partner || "").toString().trim();
       const reason = (r.reason || "").toString();
 
-      const isSpecial = /\[(LỆNH ĐIỀU ĐỘNG|ĐIỀU ĐỘNG 0.5 NGÀY|NGHỈ PHÉP|VIỆC RIÊNG|NGHỈ ỐM|NGHỈ THAI SẢN|NGHỈ KHÔNG LƯƠNG|VẮNG KHÔNG PHÉP|CÔNG TÁC|HỌC TẬP)\]/i.test(reason);
+      const isSpecial = /\[(LỆNH ĐIỀU ĐỘNG|ĐIỀU ĐỘNG 0.5 NGÀY|NGHỈ PHÉP|VIỆC RIÊNG|NGHỈ ỐM|NGHỈ THAI SẢN|NGHỈ KHÔNG LƯƠNG|VẮNG KHÔNG PHÉP|CÔNG TÁC|HỌC TẬP|ĐIỀU DƯỠNG)\]/i.test(reason);
 
       let caResult = null; // ca tính được cho người này từ đơn r
 
@@ -4507,7 +4507,7 @@ function getCaThucTeBeforeDispatch(userName, defaultKip, dateStr) {
     if (r.status !== 'approved' && r.status !== 'pending_ld') return false;
     const reason = (r.reason || '').toString();
     // Bỏ qua hoàn toàn lệnh điều động đặc biệt (HC/CT/P/VR...)
-    const isSpecial = /\[(LỆNH ĐIỀU ĐỘNG|ĐIỀU ĐỘNG 0.5 NGÀY|NGHỈ PHÉP|VIỆC RIÊNG|NGHỈ ỐM|NGHỈ THAI SẢN|NGHỈ KHÔNG LƯƠNG|VẮNG KHÔNG PHÉP|CÔNG TÁC|HỌC TẬP)\]/i.test(reason);
+    const isSpecial = /\[(LỆNH ĐIỀU ĐỘNG|ĐIỀU ĐỘNG 0.5 NGÀY|NGHỈ PHÉP|VIỆC RIÊNG|NGHỈ ỐM|NGHỈ THAI SẢN|NGHỈ KHÔNG LƯƠNG|VẮNG KHÔNG PHÉP|CÔNG TÁC|HỌC TẬP|ĐIỀU DƯỠNG)\]/i.test(reason);
     if (isSpecial) return false;
     const dDoi = (r.ngayDoi || '').toString().substring(0, 10);
     const dTra = (r.ngayTra || '').toString().substring(0, 10);
