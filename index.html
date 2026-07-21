@@ -267,7 +267,7 @@ textarea{resize:none;height:80px}
     <div style="margin-top:12px; font-size:12px; color:#64748b; line-height: 1.8;">
       * Ghi chú: <span class="dp" style="padding:2px 6px;">C/N/K</span>: Các ca trực, <span style="color:#cbd5e1; font-weight: 600;">-</span>: Nghỉ (OFF). <span style="background:#fff7ed; padding:4px 10px; border-radius:4px; display:inline-block;"></span>: Đi lệch ca. <span style="background:#fecaca; padding:4px 10px; border-radius:4px; display:inline-block;"></span>: Ngày lễ. <span style="background:#f3e8ff; padding:4px 10px; border-radius:4px; border:1px dashed #a855f7; display:inline-block;"></span>: Đang chờ LĐ duyệt.<br>
       * Chế độ nghỉ: <span style="color:#0284c7; font-weight:800;">P</span> (Nghỉ phép), <span style="color:#7e22ce; font-style:italic; font-weight:700;">VR</span> (Việc riêng), <span style="color:#c2410c; font-style:italic; font-weight:700;">Ô</span> (Nghỉ ốm), <span style="color:#065f46; font-style:italic; font-weight:700;">TS</span> (Thai sản), <span style="color:#94a3b8; font-style:italic;">O</span> (Không lương), <span style="background:#fff1f2; color:#be123c; font-weight:800; padding:0 4px; border-radius:4px;">V</span> (Vắng không phép).<br>
-      * Công tác khác: <span style="color:#16a34a; font-weight:700; font-style:italic;">CT</span> (Công tác), <span style="color:#16a34a; font-weight:700; font-style:italic;">HT</span> (Học tập).
+      * Công tác khác: <span style="color:#16a34a; font-weight:700; font-style:italic;">CT</span> (Công tác), <span style="color:#16a34a; font-weight:700; font-style:italic;">HT</span> (Học tập), <span style="color:#16a34a; font-weight:700; font-style:italic;">ĐD</span> (Điều dưỡng).
     </div>
   </div>
 </div>
@@ -3491,7 +3491,7 @@ function findLeavePersonForBackup(role, kip, dateStr, leaveType) {
   const isPersonalLeave = ['P', 'VR', 'Ô', 'TS', 'O'].includes(leaveType);
   const leaveTypeMap = { 'P': 'P', 'VR': 'VR', 'Ô': 'O_m', 'TS': 'TS', 'O': 'O', 'V': 'V', 'CT': 'CT', 'HT': 'HT' };
   const targetLT = leaveTypeMap[leaveType] || 'P';
-  const LEAVE_CAS = ['P', 'VR', 'Ô', 'TS', 'O', 'V', 'CT', 'HT'];
+  const LEAVE_CAS = ['P', 'VR', 'Ô', 'TS', 'O', 'V', 'CT', 'HT', 'ĐD'];
   const inKip = NV_LIST.filter(u => u.chucDanh === role && u.kip === kip);
   
   // Bước 1: Tìm người có trạng thái khớp với loại công yêu cầu
@@ -3520,7 +3520,7 @@ function findLeavePersonForBackup(role, kip, dateStr, leaveType) {
 }
 function findLeavePersonForBackupAuto(role, dateStr, leaveType, backupName, backupKip) {
   const caBackup = getCaThucTe(backupName, backupKip, dateStr);
-  const LEAVE_CAS = ['P', 'VR', 'Ô', 'TS', 'O', 'V', 'CT', 'HT'];
+  const LEAVE_CAS = ['P', 'VR', 'Ô', 'TS', 'O', 'V', 'CT', 'HT', 'ĐD'];
   
   // Tìm tất cả những người có chức danh 'role' đang vắng mặt ngày đó
   const allAbsentees = NV_LIST.filter(u => {
@@ -3585,6 +3585,7 @@ function addRowHC() {
         <option value="HC">🛠️ Đi HC (Cả ngày)</option>
         <option value="HC/2">🌗 Đi HC (Nửa ngày)</option>
         <option value="CT">✈️ Công tác (CT)</option>
+        <option value="ĐD">💆 Điều dưỡng (ĐD)</option>
         <option value="HT">🎓 Học tập (HT)</option>
         <option value="V">🚫 Vắng không phép (V)</option>
         <option value="P">🏖️ Nghỉ Phép (P)</option>
@@ -3926,7 +3927,7 @@ function syncHCFilters(id) {
           const caGoc = getCaTrucGoc(u.name, uKip, d);
           
           // Nếu ca thực tế là P/VR/Ô/TS/O (do đơn nghỉ) → hiện ca gốc, đánh dấu cần thay
-          const isLeaveShift = ['P','VR','Ô','TS','O','V','CT','HT'].includes(caThucTe);
+          const isLeaveShift = ['P','VR','Ô','TS','O','V','CT','HT','ĐD'].includes(caThucTe);
           if (isLeaveShift) {
               const caGocLabel = caGoc === 'OFF' ? 'Nghỉ' : caGoc;
               const needReplace = caGoc !== 'OFF';
@@ -4012,7 +4013,7 @@ function _doSyncPartnerList(id) {
   // C-K hoạt động đúng — nếu không, checkViPhamAnToan() sẽ loại trừ các mã
   // này ngay từ đầu (coi như "ca nghỉ, miễn kiểm tra") và bỏ qua hoàn toàn
   // việc kiểm tra an toàn cho người được đề xuất đi thay.
-  const LEAVE_SHIFT_CODES = ['P', 'VR', 'Ô', 'TS', 'O', 'V', 'CT', 'HT', 'HC', 'HC/2'];
+  const LEAVE_SHIFT_CODES = ['P', 'VR', 'Ô', 'TS', 'O', 'V', 'CT', 'HT', 'HC', 'HC/2', 'ĐD'];
   if (dHC) {
       if (useBackup && backupPersonName) {
           // FIX QUAN TRỌNG: trước đây lấy "bInfo.kip" — kíp GỐC/tĩnh lưu trong danh sách nhân
@@ -4376,6 +4377,17 @@ function checkShiftStatus(id) {
     partnerBox.innerHTML = '<span style="color:#64748b; font-size:12px;">Không cần bố trí người thay</span>';
     retBox.style.opacity = '0.3'; retBox.style.pointerEvents = 'none'; retBox.value = '';
     chkContainer.insertAdjacentHTML('afterbegin', `<div class="warning-lbl" style="color:#16a34a; font-size:12px; font-weight:700; margin-bottom:8px;">✅ ${lbl}: Ca gốc là Ngày Nghỉ — KHÔNG CẦN bố trí người thay!</div>`);
+  } else if (type === 'ĐD' && selectedNames.length > 0) {
+    // ĐD (Điều dưỡng) CHỈ được chấm khi người đó có công đi làm thật (ca gốc
+    // là ca trực K/N/C/HC...). Nếu ca gốc là OFF thì KHÔNG được tạo lệnh —
+    // khác hẳn P/VR/Ô/TS/O ở trên (những loại đó vẫn tạo được lệnh, chỉ là
+    // không cần người thay). ĐD khi OFF thì chặn cứng hoàn toàn, không cho
+    // ban hành lệnh — tương đương "không tạo được lệnh điều động".
+    pkipBox.style.opacity = '0.3'; pkipBox.style.pointerEvents = 'none'; pkipBox.value = '';
+    partnerBox.style.opacity = '0.3'; partnerBox.style.pointerEvents = 'none';
+    partnerBox.innerHTML = '<span style="color:#64748b; font-size:12px;">—</span>';
+    retBox.style.opacity = '0.3'; retBox.style.pointerEvents = 'none'; retBox.value = '';
+    chkContainer.insertAdjacentHTML('afterbegin', `<div class="warning-lbl" style="color:#dc2626; font-size:12px; font-weight:700; margin-bottom:8px;">❌ ĐIỀU DƯỠNG: Ngày này đang là ngày NGHỈ (OFF) — không thể chấm ĐD! Chỉ áp dụng cho ngày có công đi làm.</div>`);
   }
 }
 
@@ -4420,7 +4432,7 @@ function validateHCDates(id) {
       // này — vd ông Hiếu) thì phải lấy CA GỐC làm căn cứ check an toàn,
       // không dùng mã nghỉ — nếu không checkViPhamAnToan() sẽ bỏ qua hoàn
       // toàn kiểm tra C-K (giống bug đã sửa ở syncPartnerList()).
-      const LEAVE_SHIFT_CODES = ['P', 'VR', 'Ô', 'TS', 'O', 'V', 'CT', 'HT', 'HC', 'HC/2'];
+      const LEAVE_SHIFT_CODES = ['P', 'VR', 'Ô', 'TS', 'O', 'V', 'CT', 'HT', 'HC', 'HC/2', 'ĐD'];
       caThucTeA = LEAVE_SHIFT_CODES.includes(caRawA) ? getCaTrucGoc(repA_name, personKip, dHC) : caRawA;
       isShiftA = caThucTeA !== 'OFF';
       
@@ -4667,6 +4679,20 @@ async function submitBatchHC() {
     
     if(!dHC || selectedNames.length === 0) return;
 
+    // CHẶN LỚP CUỐI (phòng khi giao diện bị bypass): ĐD (Điều dưỡng) CHỈ được
+    // chấm khi người đó có công đi làm thật ngày đó (ca gốc khác OFF). Nếu ca
+    // gốc là OFF thì KHÔNG được tạo lệnh — chặn cứng ở đây để không phụ thuộc
+    // hoàn toàn vào cảnh báo UI (checkShiftStatus), tránh trường hợp submit
+    // vẫn lọt qua nếu người dùng thao tác nhanh hoặc DOM chưa kịp cập nhật.
+    if (type === 'ĐD') {
+      const _ddOffNames = selectedNames.filter(n => getCaThucTe(n, getPersonKip(n, kip), dHC) === 'OFF');
+      if (_ddOffNames.length > 0) {
+        hasError = true;
+        showLocalAlert('batchhc-msg', `LỖI: ${_ddOffNames.join(', ')} ngày ${dHC} đang là ngày NGHỈ (OFF), không thể chấm công Điều dưỡng!`, 'ae');
+        return;
+      }
+    }
+
     const pkip = row.querySelector('.h-pkip').value;
     const selectedPartners = Array.from(row.querySelectorAll('.hc-partner-val:checked')).map(cb => cb.value);
     const retDate = row.querySelector('.h-ret').value;
@@ -4674,7 +4700,7 @@ async function submitBatchHC() {
     const isNoReplace = row.querySelector('.h-no-replace').checked;
     const isNoReturn = row.querySelector('.h-no-return').checked;
     const useBackup = row.querySelector('.h-use-backup') && row.querySelector('.h-use-backup').checked;
-    const isLeave = (type === 'P' || type === 'VR' || type === 'Ô' || type === 'TS' || type === 'O' || type === 'V' || type === 'CT' || type === 'HT');
+    const isLeave = (type === 'P' || type === 'VR' || type === 'Ô' || type === 'TS' || type === 'O' || type === 'V' || type === 'CT' || type === 'HT' || type === 'ĐD');
     const noRetRequired = (isLeave || isNoReturn);
 
     // ── CHẾ ĐỘ DỰ PHÒNG: tạo 2 lệnh điều động trong 1 thao tác ──
@@ -4778,8 +4804,8 @@ async function submitBatchHC() {
             if (loiReplacer) { hasError = true; showLocalAlert('batchhc-msg', `LỖI AN TOÀN (người thay ${replacerName}): ${loiReplacer}`, 'ae'); return; }
         }
 
-        const nonWork = ['P', 'VR', 'Ô', 'TS', 'O', 'HC', 'HC/2', 'V', 'CT', 'HT', 'OFF', 'NONE'];
-        const leaveReasonPrefix = { P:'[NGHỈ PHÉP]', VR:'[VIỆC RIÊNG]', Ô:'[NGHỈ ỐM]', TS:'[NGHỈ THAI SẢN]', O:'[NGHỈ KHÔNG LƯƠNG]', V:'[VẮNG KHÔNG PHÉP]', CT:'[CÔNG TÁC]', HT:'[HỌC TẬP]', HC:'[LỆNH ĐIỀU ĐỘNG]' }[type] || '[LỆNH ĐIỀU ĐỘNG]';
+        const nonWork = ['P', 'VR', 'Ô', 'TS', 'O', 'HC', 'HC/2', 'V', 'CT', 'HT', 'ĐD', 'OFF', 'NONE'];
+        const leaveReasonPrefix = { P:'[NGHỈ PHÉP]', VR:'[VIỆC RIÊNG]', Ô:'[NGHỈ ỐM]', TS:'[NGHỈ THAI SẢN]', O:'[NGHỈ KHÔNG LƯƠNG]', V:'[VẮNG KHÔNG PHÉP]', CT:'[CÔNG TÁC]', HT:'[HỌC TẬP]', ĐD:'[ĐIỀU DƯỠNG]', HC:'[LỆNH ĐIỀU ĐỘNG]' }[type] || '[LỆNH ĐIỀU ĐỘNG]';
 
         const cancelCheckUsers = [leavePerson.name, n];
         if (replacerName) cancelCheckUsers.push(replacerName);
@@ -4837,8 +4863,8 @@ async function submitBatchHC() {
         if (!pkip) { hasError = true; showLocalAlert('batchhc-msg', `Vui lòng chọn Kíp thay!`, 'ae'); return; }
     }
 
-    const nonWork = ['P', 'VR', 'Ô', 'TS', 'O', 'HC', 'HC/2', 'V', 'CT', 'HT', 'OFF', 'NONE'];
-    let reasonPrefix = { P:'[NGHỈ PHÉP]', VR:'[VIỆC RIÊNG]', Ô:'[NGHỈ ỐM]', TS:'[NGHỈ THAI SẢN]', O:'[NGHỈ KHÔNG LƯƠNG]', V:'[VẮNG KHÔNG PHÉP]', CT:'[CÔNG TÁC]', HT:'[HỌC TẬP]', HC:'[LỆNH ĐIỀU ĐỘNG]', 'HC/2':'[ĐIỀU ĐỘNG 0.5 NGÀY]' }[type] || '[LỆNH ĐIỀU ĐỘNG]';
+    const nonWork = ['P', 'VR', 'Ô', 'TS', 'O', 'HC', 'HC/2', 'V', 'CT', 'HT', 'ĐD', 'OFF', 'NONE'];
+    let reasonPrefix = { P:'[NGHỈ PHÉP]', VR:'[VIỆC RIÊNG]', Ô:'[NGHỈ ỐM]', TS:'[NGHỈ THAI SẢN]', O:'[NGHỈ KHÔNG LƯƠNG]', V:'[VẮNG KHÔNG PHÉP]', CT:'[CÔNG TÁC]', HT:'[HỌC TẬP]', ĐD:'[ĐIỀU DƯỠNG]', HC:'[LỆNH ĐIỀU ĐỘNG]', 'HC/2':'[ĐIỀU ĐỘNG 0.5 NGÀY]' }[type] || '[LỆNH ĐIỀU ĐỘNG]';
     
     if (isNoReplace) reasonPrefix += ' (KHÔNG THAY)';
     else if (isNoReturn && !isLeave) reasonPrefix += ' (KHÔNG TRẢ CA)'; 
@@ -5573,16 +5599,18 @@ const titleEl = document.getElementById('leave-cal-title');
 if (titleEl) titleEl.textContent = `Tháng ${mo}/${yr}`;
 for (let d = 1; d <= daysInMonth; d++) {
 const dateStr = `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-const isPast = dateStr < today;
+const isPast = dateStr < today; // chỉ dùng để tô nhạt cho dễ nhìn, KHÔNG dùng để khóa chọn nữa —
+                                 // cho phép đăng ký cả ngày trong quá khứ (VD quên đăng ký do ốm),
+                                 // việc có duyệt hay không do Lãnh đạo quyết định.
 const isSelected = selectedLeaveDates.includes(dateStr);
 const isLeaved = typeof allLeaves !== 'undefined' && allLeaves.some(lv =>
 lv.name === CU.name && (lv.status === 'approved' || lv.status === 'pending_ld') && lv.dates && lv.dates.split(',').map(s=>s.trim()).includes(dateStr)
 );
 let bg = '#f8fafc', color = '#374151', border = '1px solid #e2e8f0', cursor = 'pointer';
-if (isPast) { bg = '#f1f5f9'; color = '#cbd5e1'; cursor = 'default'; }
-else if (isLeaved) { bg = '#dcfce7'; color = '#16a34a'; border = '1px solid #86efac'; cursor = 'default'; }
+if (isLeaved) { bg = '#dcfce7'; color = '#16a34a'; border = '1px solid #86efac'; cursor = 'default'; }
 else if (isSelected) { bg = '#0284c7'; color = '#fff'; border = '1px solid #0284c7'; }
-const onclick = (!isPast && !isLeaved) ? `onclick="toggleLeaveDate('${dateStr}')"` : '';
+else if (isPast) { border = '1px dashed #cbd5e1'; color = '#64748b'; } // ngày quá khứ: vẫn chọn được, chỉ viền chấm nhạt để phân biệt
+const onclick = (!isLeaved) ? `onclick="toggleLeaveDate('${dateStr}')"` : '';
 html += `<div ${onclick} style="text-align:center; padding:6px 2px; border-radius:6px; font-size:13px; font-weight:600; background:${bg}; color:${color}; border:${border}; cursor:${cursor};">${d}</div>`;
 }
 document.getElementById('leave-calendar').innerHTML = html;
