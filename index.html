@@ -5665,7 +5665,12 @@ if (typeof allTransfers !== 'undefined' && allTransfers.length > 0) {
 }
 if (leaveType !== 'P') {
   for (const d of selectedLeaveDates) {
-    const ca = getCaTrucGoc(CU.name, myKipThucTe, d);
+    // FIX: dùng getCaThucTe (ca THỰC TẾ, đã tính mọi lệnh điều động/đổi ca đã
+    // duyệt gần đây) thay vì getCaTrucGoc (ca gốc thuần theo lịch mẫu). Trước
+    // đây nếu vừa có 1 lệnh điều động/đổi ca chuyển ngày đó thành OFF, hệ
+    // thống vẫn tưởng là ngày đi làm (vì chỉ nhìn lịch gốc) và cho đăng ký
+    // nhầm Ô/TS/VR/O vào đúng ngày đã là OFF thực tế.
+    const ca = getCaThucTe(CU.name, myKipThucTe, d);
     if (ca === 'OFF') { showLocalAlert('leave-msg', `⚠️ Ngày ${fmtDate(d)} không phải ngày đi làm của bạn!`, 'ae'); return; }
   }
 }
