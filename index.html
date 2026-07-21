@@ -3735,7 +3735,15 @@ function syncHCFilters(id) {
     let caOngNghi = null;
     if (!isAutoKip) {
       const repOfKip = getRowNV(row).find(u => u.kip === k);
-      caOngNghi = repOfKip ? getCaThucTe(repOfKip.name, k, d) : null;
+      if (repOfKip) {
+        // FIX: đồng bộ công thức fallback giống nhánh isAutoKip bên dưới và
+        // giống finalCaDoiStep1 ở submitBatchHC() — tránh lệch kết quả kiểm
+        // tra cấm ca liên tiếp giữa lúc hiển thị danh sách và lúc submit.
+        const _caThucTeRaw = getCaThucTe(repOfKip.name, k, d);
+        caOngNghi = (_caThucTeRaw !== 'OFF' && _caThucTeRaw !== 'HC')
+          ? _caThucTeRaw
+          : getCaTrucGoc(repOfKip.name, k, d);
+      }
       if (!caOngNghi || caOngNghi === 'OFF') {
         chkContainer.innerHTML = `<span style="color:#7c3aed; font-size:12px; font-weight:700;">⚠️ Kíp ${k} ngày ${fmtDate(d)} đang nghỉ (OFF), không cần điều dự phòng</span>`;
         resetRightColumns(id); // <--- Reset khi kíp nghỉ
@@ -3778,7 +3786,18 @@ function syncHCFilters(id) {
 
     // Xác định ca thực tế mà ông nghỉ đang gánh (để kiểm tra cấm ca liên tiếp cho người đi thay)
     if (isAutoKip) {
-      caOngNghi = getCaThucTe(leavePerson.name, leavePerson.kip, d);
+      // FIX: Trước đây dùng thẳng getCaThucTe() không có fallback về ca gốc khi
+      // kết quả là OFF/HC — trong khi lúc submitBatchHC() lại có bước fallback
+      // này (finalCaDoiStep1). Nếu ca thực tế của người nghỉ là 'HC' (ví dụ họ
+      // đang đi ĐD, mã hiển thị dạng HC-family) thì lúc hiển thị kiểm tra sai
+      // với ca 'HC' (thường không vi phạm cấm liên tiếp), trong khi lúc submit
+      // kiểm tra đúng với CA GỐC THẬT (ví dụ ca C — có thể vi phạm C-K). Kết
+      // quả: người vi phạm vẫn lọt vào danh sách hiển thị, chỉ bị chặn muộn ở
+      // bước submit. Đồng bộ lại đúng công thức để lọc đúng ngay từ đầu.
+      const _caThucTeRaw = getCaThucTe(leavePerson.name, leavePerson.kip, d);
+      caOngNghi = (_caThucTeRaw !== 'OFF' && _caThucTeRaw !== 'HC')
+        ? _caThucTeRaw
+        : getCaTrucGoc(leavePerson.name, leavePerson.kip, d);
     }
 
     // Loại chính ông đang nghỉ ra khỏi danh sách ứng viên thay thế
@@ -4095,9 +4114,15 @@ function _doSyncPartnerList(id) {
       if (_aGocName && u.name === _aGocName) return false;
     }
 
-    // LỌC THÊM: Nếu là chế độ dự phòng, không được chọn người có cùng CD với ông nghỉ gốc (r)
-    // Ví dụ: Điều Tùng (lái máy) dự phòng Trưởng kíp. Thì người thay Tùng phải là Lái máy, không được là Trưởng kíp khác.
-    if (useBackup && u.chucDanh === r) return false;
+    // ĐÃ REVERT: từng có thêm điều kiện chặn ứng viên trùng chức danh (r) với
+    // người nghỉ gốc khi r !== searchRole. Lý do revert: bug thật sự không nằm ở
+    // đây — nó nằm ở việc tính SAI caThucTeA (ca mà "người thay" phải gánh).
+    // Ở bước này (tìm người thay CHỖ ÔNG DỰ PHÒNG), caThucTeA phải là ca THẬT
+    // của ông dự phòng (VD Cường → ca N), không phải ca của người nghỉ gốc
+    // (VD ca C). caThucTeA đã được tính đúng theo backupPersonName ở trên, nên
+    // bước lọc an toàn (mục 5 bên dưới, dùng checkViPhamAnToan(..., caThucTeA))
+    // tự nó đã đủ để loại đúng người vi phạm — không cần thêm điều kiện chặn
+    // theo chức danh (r) ở đây, vì nó chặn nhầm cả những người hợp lệ.
 
     // 3. Nếu chọn Kíp cụ thể (Kíp 1, 2...) thì lọc đúng kíp đó
     if (pk !== 'AUTO' && u.kip !== pk) return false;
