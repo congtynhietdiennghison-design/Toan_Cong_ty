@@ -2224,6 +2224,7 @@ function getCaThucTe(userName, kipName, dateStr, ignoreReqId = null, returnFullO
                       let tempLeave = 'HC';
                       if (/\[(CÔNG TÁC)\]/i.test(reason))              tempLeave = 'CT';
                       else if (/\[(HỌC TẬP)\]/i.test(reason))          tempLeave = 'HT';
+                      else if (/\[(ĐIỀU DƯỠNG)\]/i.test(reason))       tempLeave = 'ĐD';
                       else if (/\[(VẮNG KHÔNG PHÉP)\]/i.test(reason))  tempLeave = 'V';
                       else if (/\[(ĐIỀU ĐỘNG 0.5 NGÀY)\]/i.test(reason)) tempLeave = 'HC/2';
                       else if (/\[(NGHỈ PHÉP)\]/i.test(reason))        tempLeave = 'P';
@@ -4214,6 +4215,7 @@ function isManagementDispatch(req) {
                           reason.includes('[VẮNG KHÔNG PHÉP]') || 
                           reason.includes('[CÔNG TÁC]') || 
                           reason.includes('[HỌC TẬP]') ||
+                          reason.includes('[ĐIỀU DƯỠNG]') ||
                           reason.includes('[ĐIỀU ĐỘNG 0.5 NGÀY]');
     return req.partner === 'CÔNG TÁC HC' || isSpecialReason;
 }
@@ -4547,7 +4549,7 @@ function renderAdminHCHist() {
   const hcReqs = allReqs.filter(r => {
     if (r.status !== 'approved' && r.status !== 'pending_ld') return false;
     const reason = (r.reason || "").toString();
-    const isDispatch = (r.partner === 'CÔNG TÁC HC' || !r.partner || reason.includes('[LỆNH ĐIỀU ĐỘNG]') || reason.includes('[ĐIỀU ĐỘNG 0.5 NGÀY]') || reason.includes('[NGHỈ PHÉP]') || reason.includes('[VIỆC RIÊNG]') || reason.includes('[NGHỈ ỐM]') || reason.includes('[VẮNG KHÔNG PHÉP]') || reason.includes('[CÔNG TÁC]') || reason.includes('[HỌC TẬP]'));
+    const isDispatch = (r.partner === 'CÔNG TÁC HC' || !r.partner || reason.includes('[LỆNH ĐIỀU ĐỘNG]') || reason.includes('[ĐIỀU ĐỘNG 0.5 NGÀY]') || reason.includes('[NGHỈ PHÉP]') || reason.includes('[VIỆC RIÊNG]') || reason.includes('[NGHỈ ỐM]') || reason.includes('[NGHỈ THAI SẢN]') || reason.includes('[VẮNG KHÔNG PHÉP]') || reason.includes('[CÔNG TÁC]') || reason.includes('[HỌC TẬP]') || reason.includes('[ĐIỀU DƯỠNG]'));
     if (!isDispatch) return false;
     if (CU.admin) {
       if (_hcBp) {
@@ -4579,6 +4581,7 @@ function renderAdminHCHist() {
       : reason.includes('[VẮNG KHÔNG PHÉP]') ? '🚫 Vắng không phép'
       : reason.includes('[CÔNG TÁC]') ? '✈️ Công tác'
       : reason.includes('[HỌC TẬP]') ? '📚 Học tập'
+      : reason.includes('[ĐIỀU DƯỠNG]') ? '💆 Điều dưỡng'
       : '📋 Điều động';
 
     const noiDung = escapeHTML(reason
@@ -4592,6 +4595,7 @@ function renderAdminHCHist() {
       .replace(/\[VẮNG KHÔNG PHÉP\]/gi, '')
       .replace(/\[CÔNG TÁC\]/gi, '')
       .replace(/\[HỌC TẬP\]/gi, '')
+      .replace(/\[ĐIỀU DƯỠNG\]/gi, '')
       .replace(/\[NGƯỜI THAY:[^\]]*\]/gi, '')
       .replace(/\[DỰ PHÒNG ĐI THAY[^\]]*\]/gi, '')
       .replace(/\[THAY DỰ PHÒNG[^\]]*\]/gi, '')
