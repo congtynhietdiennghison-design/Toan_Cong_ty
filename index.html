@@ -3707,11 +3707,21 @@ function syncHCFilters(id) {
   if (r) matches = matches.filter(u => u.chucDanh === r);
   if (k && k !== 'AUTO_LEAVE') matches = matches.filter(u => u.kip === k);
 
-  // MỚI: Nếu là VẮNG KHÔNG PHÉP (type='V'), chỉ hiện người đang có ca làm việc thực tế
-  if (type === 'V' && d) {
+  // MỚI: Nếu là VẮNG KHÔNG PHÉP (type='V') hoặc ĐIỀU DƯỠNG (type='ĐD'), chỉ hiện
+  // người đang có ca làm việc thực tế — ẨN HẲN người không đủ điều kiện khỏi
+  // danh sách "Người đi", thay vì để họ hiện ra rồi báo lỗi sau khi tích chọn.
+  // Áp dụng cho cả 3 chế độ (tự động, từng kíp riêng lẻ, dự phòng) vì bộ lọc
+  // này nằm ngay tại nguồn "matches" — nơi cả useBackup lẫn không-useBackup
+  // đều dùng chung để render checkbox cột trái.
+  if ((type === 'V' || type === 'ĐD') && d) {
     const NON_WORK = ['OFF', 'P', 'VR', 'Ô', 'TS', 'O'];
     matches = matches.filter(u => {
-      const caThucTe = getCaThucTe(u.name, u.kip, d);
+      // FIX: dùng getPersonKip(u.name, null) thay vì u.kip thô — nếu ứng viên
+      // từng có lệnh ĐIỀU CHUYỂN kíp, u.kip (kíp gốc lưu tĩnh) đã lỗi thời,
+      // tra ca theo kíp gốc sẽ ra sai OFF-status, có thể để lọt người thực ra
+      // đang nghỉ vào danh sách (hoặc ngược lại, ẩn nhầm người đang đi làm).
+      const uKip = getPersonKip(u.name, null);
+      const caThucTe = getCaThucTe(u.name, uKip, d);
       if (NON_WORK.includes(caThucTe)) return false;
       // Check thêm sheet Leaves: nếu có đơn nghỉ cá nhân approved ngày đó thì loại ra
       if (typeof leavesByName !== 'undefined') {
@@ -3762,6 +3772,21 @@ function syncHCFilters(id) {
       if (d) {
           const isDup = allReqs.some(req => isManagementDispatch(req) && (req.name === u.name || req.partner === u.name) && req.ngayDoi === d);
           if (isDup) return false;
+      }
+      // ĐIỀU DƯỠNG (ĐD): chỉ hiện người đang có ca làm việc thực tế ngày đó —
+      // ẨN HẲN người OFF/đang có đơn nghỉ khác, thay vì để họ hiện ra rồi báo
+      // lỗi sau khi tích chọn dự phòng. Cùng tiêu chí áp dụng cho "matches"
+      // (chế độ bình thường) ở trên, đảm bảo nhất quán dù ở chế độ dự phòng.
+      if (type === 'ĐD' && d) {
+        const NON_WORK = ['OFF', 'P', 'VR', 'Ô', 'TS', 'O'];
+        const uKip = getPersonKip(u.name, null);
+        const caThucTe = getCaThucTe(u.name, uKip, d);
+        if (NON_WORK.includes(caThucTe)) return false;
+        if (typeof leavesByName !== 'undefined') {
+          const uLeaves = leavesByName[u.name] || [];
+          const hasLeave = uLeaves.some(lv => lv.status === 'approved' && lv.dates && lv.dates.includes(d));
+          if (hasLeave) return false;
+        }
       }
       return true;
     });
