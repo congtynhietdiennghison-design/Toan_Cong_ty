@@ -3355,21 +3355,22 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
       if (status === 'pending_ld') {
          // 1. ƯU TIÊN TUYỆT ĐỐI: MÀU TÍM (Đang chờ duyệt)
          style = "background:#f3e8ff !important; color:#7e22ce !important; border:1px dashed #a855f7 !important; font-weight:800 !important;";
+      } else if (ca === 'CT' || ca === 'HT' || ca === 'ĐD') {
+         // 2. CÔNG TÁC / HỌC TẬP / ĐIỀU DƯỠNG (Xanh lá mạ) — ưu tiên trước "lệch ca"
+         // vì các loại này luôn khác ca gốc (điều động), không phải lỗi lệch ca thực sự
+         style = "color:#16a34a; font-weight:700; font-style:italic;";
       } else if (isLech) {
-         // 2. LỆCH CA ĐÃ DUYỆT (Màu Cam nhạt)
+         // 3. LỆCH CA ĐÃ DUYỆT (Màu Cam nhạt)
          style = "background:#fff7ed; color:#ea580c; font-weight:700;";
       } else if (isLe && ca !== 'OFF') {
-         // 3. ĐI LÀM NGÀY LỄ (Nền hồng, chữ đỏ)
+         // 4. ĐI LÀM NGÀY LỄ (Nền hồng, chữ đỏ)
          style = "background:#fecaca; color:#dc2626; font-weight:700;";
       } else if (ca === 'P') {
-         // 4. NGHỈ PHÉP (Xanh lam)
+         // 5. NGHỈ PHÉP (Xanh lam)
          style = "color:#0284c7; font-weight:800;";
       } else if (ca === 'HC/2') {
-         // 5. HC NỬA NGÀY (Cam đậm)
+         // 6. HC NỬA NGÀY (Cam đậm)
          style = "color:#d97706; font-weight:700;";
-      } else if (ca === 'CT' || ca === 'HT' || ca === 'ĐD') {
-         // 6. CÔNG TÁC / HỌC TẬP / ĐIỀU DƯỠNG (Xanh lá mạ)
-         style = "color:#16a34a; font-weight:700; font-style:italic;";
       } else if (ca === 'V') {
          // 7. VẮNG KHÔNG PHÉP (Đỏ đậm)
          style = "background:#fff1f2; color:#be123c; font-weight:800;";
