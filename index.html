@@ -3707,11 +3707,18 @@ function syncHCFilters(id) {
   if (r) matches = matches.filter(u => u.chucDanh === r);
   if (k && k !== 'AUTO_LEAVE') matches = matches.filter(u => u.kip === k);
 
-  // MỚI: Nếu là VẮNG KHÔNG PHÉP (type='V'), chỉ hiện người đang có ca làm việc thực tế
-  if (type === 'V' && d) {
-    const NON_WORK = ['OFF', 'P', 'VR', 'Ô', 'TS', 'O'];
+  // Nếu là VẮNG KHÔNG PHÉP (V) hoặc ĐIỀU DƯỠNG (ĐD), chỉ hiện người đang có
+  // ca làm việc thực tế — ẨN HẲN người không đủ điều kiện, không để lọt ra
+  // rồi báo lỗi sau khi tích chọn.
+  if ((type === 'V' || type === 'ĐD') && d) {
+    // Ẩn cả người ĐÃ CÓ 1 lệnh CT/HT/ĐD/V khác cùng ngày đó rồi — trước đây chỉ ẩn
+    // OFF/nghỉ cá nhân (P/VR/Ô/TS/O), còn người đã đi công tác/học tập/điều dưỡng/vắng
+    // ngày đó vẫn hiện ra, chọn vào mới bị chặn ở bước "Phê duyệt" do trùng lệnh —
+    // giờ ẩn hẳn ngay từ danh sách theo đúng nguyên tắc chung.
+    const NON_WORK = ['OFF', 'P', 'VR', 'Ô', 'TS', 'O', 'CT', 'HT', 'ĐD', 'V'];
     matches = matches.filter(u => {
-      const caThucTe = getCaThucTe(u.name, u.kip, d);
+      const uKip = getPersonKip(u.name, null);
+      const caThucTe = getCaThucTe(u.name, uKip, d);
       if (NON_WORK.includes(caThucTe)) return false;
       // Check thêm sheet Leaves: nếu có đơn nghỉ cá nhân approved ngày đó thì loại ra
       if (typeof leavesByName !== 'undefined') {
@@ -4812,8 +4819,12 @@ async function submitBatchHC() {
 
         // 3. LẤY CA THỰC TẾ CỦA ÔNG DỰ PHÒNG (Nhất)
         const caWorkBackup = getCaThucTe(n, backupKip, dHC);
-        // Chỉ chặn khi đang nghỉ có phép (P/VR/Ô/TS). OFF = nghỉ lịch, HC = giờ hành chính → đều được điều động lên thay
-        const _backupBlocked = ['P', 'VR', 'Ô', 'TS', 'O'];
+        // Chỉ chặn khi đang nghỉ có phép, vắng mặt, hoặc đang có lệnh điều
+        // động khác (P/VR/Ô/TS/O/V/CT/HT/ĐD). V (vắng không phép) nghĩa là
+        // họ ĐÃ THỰC SỰ không đi làm ngày đó — không thể điều động người
+        // đang vắng mặt đi làm dự phòng. OFF = nghỉ lịch, HC = giờ hành
+        // chính → đều được điều động lên thay.
+        const _backupBlocked = ['P', 'VR', 'Ô', 'TS', 'O', 'V', 'CT', 'HT', 'ĐD'];
         if (_backupBlocked.includes(caWorkBackup)) {
           hasError = true; showLocalAlert('batchhc-msg', `LỖI: Ông ${n} ngày ${dHC} đang nghỉ phép (${caWorkBackup}), không thể điều động lên thay!`, 'ae'); return;
         }
@@ -4839,8 +4850,10 @@ async function submitBatchHC() {
             replacerKip = replacerInfo ? replacerInfo.kip : pkip;
 
             const caReplacer = getCaThucTe(replacerName, replacerKip, dHC);
-            // Cho phép OFF (nghỉ lịch) và HC (hành chính) → đều rảnh để thay chỗ dự phòng
-            const _replacerBlocked = ['P', 'VR', 'Ô', 'TS', 'O', 'K', 'N', 'C'];
+            // V (vắng không phép) cũng phải chặn — người đó đã thực sự không
+            // đi làm, không thể điều động họ. Cho phép OFF (nghỉ lịch) và HC
+            // (hành chính) → đều rảnh để thay chỗ dự phòng.
+            const _replacerBlocked = ['P', 'VR', 'Ô', 'TS', 'O', 'V', 'CT', 'HT', 'ĐD', 'K', 'N', 'C'];
             if (_replacerBlocked.includes(caReplacer)) { hasError = true; showLocalAlert('batchhc-msg', `LỖI: Ông ${replacerName} ngày ${dHC} đang có ca ${caReplacer}, không rảnh để thay!`, 'ae'); return; }
             
             const isDupReplacer = allReqs.some(req => 
