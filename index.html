@@ -3338,7 +3338,7 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
       else if(ca === 'C') totalHours += hC; 
       else if(ca === 'HC' || ca === 'H') totalHours += hHC;
       else if(ca === 'HC/2') totalHours += (hHC / 2);
-      else if(ca === 'CT' || ca === 'HT') totalHours += hHC; // Công tác, Học tập tính như HC
+      else if(ca === 'CT' || ca === 'HT' || ca === 'ĐD') totalHours += hHC; // Công tác, Học tập, Điều dưỡng tính như HC
       else if(ca === 'VR') { countVR++; } // VR không tính vào tổng công
       else if(ca === 'P') countP++;   // P không tính vào tổng công
       else if(ca === 'Ô') countO++;   // Ô không tính
@@ -3367,8 +3367,8 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
       } else if (ca === 'HC/2') {
          // 5. HC NỬA NGÀY (Cam đậm)
          style = "color:#d97706; font-weight:700;";
-      } else if (ca === 'CT' || ca === 'HT') {
-         // 6. CÔNG TÁC / HỌC TẬP (Xanh lá mạ)
+      } else if (ca === 'CT' || ca === 'HT' || ca === 'ĐD') {
+         // 6. CÔNG TÁC / HỌC TẬP / ĐIỀU DƯỠNG (Xanh lá mạ)
          style = "color:#16a34a; font-weight:700; font-style:italic;";
       } else if (ca === 'V') {
          // 7. VẮNG KHÔNG PHÉP (Đỏ đậm)
