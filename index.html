@@ -1579,7 +1579,19 @@ async function doResetPin(){
   const n=document.getElementById('f-reset-name').value, p=document.getElementById('f-reset-pin').value;
   if(!n||!p){return;} try{ const r=await api({action:"resetPin",name:n,newPin:p}); if(r.error){return;} showAlert('app','Đã reset PIN cho '+n,'as'); }catch(ex){}
 }
-function showAlert(sc,m,cl){ const el=document.getElementById(sc==='app'?'alert-app':'alert-gl'); el.className='alert '+cl; el.textContent=m; el.style.display='block'; setTimeout(()=>el.style.display='none',4000); }
+function showAlert(sc,m,cl){
+  const el=document.getElementById(sc==='app'?'alert-app':'alert-gl');
+  el.className='alert '+cl; el.textContent=m; el.style.display='block';
+  // FIX: #alert-app nằm cố định ở ĐẦU TRANG. Nếu đang xem 1 tab cuộn xuống dưới (VD bảng
+  // "Thống kê ngày nghỉ phép"), thông báo vẫn hiện đúng nhưng NGOÀI TẦM NHÌN — lại tự ẩn
+  // sau vài giây nên người dùng không kịp thấy, tưởng nhầm là không có thông báo gì cả.
+  // Tự cuộn tới đúng vị trí thông báo mỗi lần hiện, đảm bảo luôn thấy được.
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  // Thông báo dài (nhiều tên) cần thời gian đọc lâu hơn — tăng lên 7s thay vì 4s cố định.
+  const thoiGianHien = m.length > 80 ? 7000 : 4000;
+  clearTimeout(el._hideTimer);
+  el._hideTimer = setTimeout(()=>el.style.display='none', thoiGianHien);
+}
 function showLocalAlert(elId, msg, cl) {
   const el = document.getElementById(elId);
   if (!el) { showAlert('app', msg, cl); return; }
@@ -6439,7 +6451,9 @@ async function doLeaveRecalcActionWithPin() {
   try {
     if (type === 'recalc') {
       const res = await api({ action: 'recalculateAllLeaveBalances', verifyPin: pin });
-      if (res.error) { err.textContent = '❌ ' + res.error; }
+      console.log('[recalculateAllLeaveBalances] response:', res);
+      if (!res) { err.textContent = '❌ Không nhận được phản hồi từ server (res rỗng) — kiểm tra Console (F12) để xem chi tiết.'; }
+      else if (res.error) { err.textContent = '❌ ' + res.error; }
       else {
         closeLeaveRecalcModal();
         showAlert('app', `✅ Đã đối soát xong phép năm ${res.year} cho ${res.updatedCount} nhân viên!`, 'as');
@@ -6449,22 +6463,31 @@ async function doLeaveRecalcActionWithPin() {
       }
     } else if (type === 'updateOld') {
       const yearInput = prompt('Nhập năm cũ cần cập nhật lại (VD: 2026):', new Date().getFullYear() - 1);
+      console.log('[capNhatLaiSoPhepNamCu] yearInput từ prompt():', yearInput);
       if (!yearInput) { submitBtn.disabled = false; submitBtn.textContent = oldText; return; }
       const res = await api({ action: 'capNhatLaiSoPhepNamCu', year: parseInt(yearInput), verifyPin: pin });
-      if (res.error) { err.textContent = '❌ ' + res.error; }
+      console.log('[capNhatLaiSoPhepNamCu] response:', res);
+      if (!res) { err.textContent = '❌ Không nhận được phản hồi từ server (res rỗng) — kiểm tra Console (F12) để xem chi tiết.'; }
+      else if (res.error) { err.textContent = '❌ ' + res.error; }
       else {
         closeLeaveRecalcModal();
         showAlert('app', `✅ Đã cập nhật lại phép năm ${res.year}: sửa ${res.updatedCount} người, thêm mới ${res.addedCount} người!`, 'as');
         // Cảnh báo RÕ TÊN những người chưa có dòng chốt sổ gốc cho năm này — số phép của
         // họ đang lấy tạm từ users tại thời điểm bấm nút, có thể sai nếu users đã đổi
         // sang số năm mới. Cần admin kiểm tra lại thủ công đúng những người này.
+        // Đợi 1 nhịp trước khi hiện cảnh báo thứ 2, vì cả 2 thông báo dùng chung 1 khung
+        // #alert-app — hiện liên tiếp ngay lập tức sẽ khiến thông báo đầu bị đè mất
+        // trước khi kịp hiển thị.
         if (res.fallbackNames && res.fallbackNames.length > 0) {
-          showAlert('app', `⚠️ ${res.fallbackNames.length} người sau đây CHƯA CÓ dữ liệu chốt sổ gốc cho năm ${res.year}, số phép đang lấy TẠM từ dữ liệu hiện tại — cần kiểm tra lại thủ công:\n\n${res.fallbackNames.join(', ')}`, 'ae');
+          setTimeout(() => {
+            showAlert('app', `⚠️ ${res.fallbackNames.length} người sau đây CHƯA CÓ dữ liệu chốt sổ gốc cho năm ${res.year}, số phép đang lấy TẠM từ dữ liệu hiện tại — cần kiểm tra lại thủ công:\n\n${res.fallbackNames.join(', ')}`, 'ae');
+          }, 4200);
         }
       }
     }
   } catch (e) {
-    err.textContent = 'Lỗi kết nối!';
+    console.error('[doLeaveRecalcActionWithPin] Lỗi:', e);
+    err.textContent = 'Lỗi kết nối: ' + (e && e.message ? e.message : e);
   }
   submitBtn.disabled = false; submitBtn.textContent = oldText;
 }
