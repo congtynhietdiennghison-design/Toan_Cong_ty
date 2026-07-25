@@ -6342,7 +6342,14 @@ async function renderLeaveStats() {
     const usedDates = usedDatesMap[u.name] || [];
     const usedCount = usedDates.length;
     const annual = bal.annual;
-    const remaining = bal.remaining;
+    // FIX: "Còn lại" trước đây LUÔN lấy nguyên bal.remaining (số đã lưu sẵn từ lần "Đối soát
+    // lại phép" gần nhất) — không tự trừ theo "Đã nghỉ" đang hiển thị CÙNG DÒNG, nên chỉ cần có
+    // thêm đơn phép duyệt SAU lần đối soát gần nhất là 2 cột lệch nhau ngay (VD 16 - 3 vẫn ra 16).
+    // Khi xem "Cả năm" (không lọc tháng), usedCount đã là đúng tổng cả năm -> tính trực tiếp
+    // annual - usedCount để luôn khớp với "Đã nghỉ" cùng dòng, không phụ thuộc số lưu sẵn nữa.
+    // Khi lọc theo 1 THÁNG cụ thể, usedCount chỉ là số của tháng đó -> không thể suy ra "Còn lại
+    // cả năm" bằng cách trừ, nên trường hợp này vẫn giữ nguyên lấy bal.remaining (số cả năm đã lưu).
+    const remaining = mo ? bal.remaining : (annual - usedCount);
 
     totalAnnual += annual;
     totalUsed += usedCount;
