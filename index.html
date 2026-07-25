@@ -724,12 +724,14 @@ textarea{resize:none;height:80px}
     <div class="card" id="card-leave-stat" style="margin-top:16px;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
         <div class="sec-title" style="margin:0;">🏖️ Thống kê ngày nghỉ phép</div>
-        <div class="ym-filter-wrap card-toolbar">
+        <div class="ym-filter-wrap card-toolbar" style="flex-wrap:wrap; row-gap:8px;">
+          <button id="btn-recalc-leave" class="btn" style="display:none; background:#f59e0b; color:#fff; border:none; padding:9px 16px; font-size:13px; font-weight:600; white-space:nowrap; flex-shrink:0; border-radius:8px; box-shadow:0 1px 2px rgba(0,0,0,.08);" onclick="openLeaveRecalcModal('recalc')">🔄 Đối soát lại phép</button>
+          <button id="btn-update-old-leave" class="btn" style="display:none; background:#0891b2; color:#fff; border:none; padding:9px 16px; font-size:13px; font-weight:600; white-space:nowrap; flex-shrink:0; border-radius:8px; box-shadow:0 1px 2px rgba(0,0,0,.08);" onclick="openLeaveRecalcModal('updateOld')">🗓️ Cập nhật phép năm cũ</button>
           <button id="btn-export-leave-stat" class="btn btn-success" style="display:none;" onclick="exportLeaveStatExcel()">⬇ Tải Excel</button>
           <select id="f-leave-stat-year" onchange="renderLeaveStats()" class="ym-sel-year"></select>
           <select id="f-leave-stat-month" onchange="renderLeaveStats()" class="ym-sel-month"></select>
-          <div id="f-leave-stat-bp-wrap" style="display:none;">
-            <select id="f-leave-stat-bp" onchange="renderLeaveStats()"><option value="">Tất cả bộ phận</option></select>
+          <div id="f-leave-stat-bp-wrap" style="display:none; flex-shrink:0;">
+            <select id="f-leave-stat-bp" onchange="renderLeaveStats()" style="width:auto; min-width:140px; max-width:180px; flex-shrink:0;"><option value="">Tất cả bộ phận</option></select>
           </div>
         </div>
       </div>
@@ -831,6 +833,21 @@ textarea{resize:none;height:80px}
     <div style="display:flex; gap:10px; margin-top:8px;">
       <button class="btn btn-danger" onclick="doRejectLeaveConfirm()" style="flex:2;">❌ Xác nhận từ chối</button>
       <button class="btn" onclick="closeLeaveRejectModal()" style="flex:1; background:#f1f5f9; color:#475569; border-color:#cbd5e1;">Hủy</button>
+    </div>
+  </div>
+</div>
+<div class="overlay" id="leave-recalc-pin-modal" style="display:none">
+  <div class="pbox">
+    <div class="plogo" style="font-size:18px; color:#d97706;" id="leave-recalc-modal-title">🔄 Đối soát lại phép</div>
+    <div class="psub" style="margin-bottom:12px; text-align:left; line-height:1.5; background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:10px 12px; color:#78350f;" id="leave-recalc-modal-note"></div>
+    <div class="pfield">
+      <label style="font-weight:600; color:#374151;">Mã PIN xác nhận</label>
+      <input type="password" id="leave-recalc-pin-inp" placeholder="Nhập PIN cá nhân..." minlength="4" maxlength="12" style="border-color:#d97706; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;" onkeydown="if(event.key==='Enter') doLeaveRecalcActionWithPin()">
+    </div>
+    <div class="perr" id="leave-recalc-err"></div>
+    <div style="display:flex; gap:10px; margin-top:8px;">
+      <button class="btn" id="leave-recalc-submit-btn" onclick="doLeaveRecalcActionWithPin()" style="flex:2; background:#d97706; color:#fff;">✅ Xác nhận</button>
+      <button class="btn" onclick="closeLeaveRecalcModal()" style="flex:1; background:#f1f5f9; color:#475569; border-color:#cbd5e1;">Hủy</button>
     </div>
   </div>
 </div>
@@ -1139,7 +1156,7 @@ allReqs.forEach(r => {
   }
 });
 const tasks = [loadTransfers(), loadLeaves()];
-if (CU && (CU.role === 'ld' || CU.admin)) tasks.push(loadLeaveBalances());
+if (CU && (CU.role === 'ld' || CU.admin)) tasks.push(loadLeaveBalances(new Date().getFullYear()));
 await Promise.all(tasks); }
 async function loadLeaves() {
 try {
@@ -1469,6 +1486,8 @@ async function doLogin(){
     document.getElementById('btn-export-day').style.display = isLd; 
     document.getElementById('btn-export-warn').style.display = isLd;
     document.getElementById('btn-export-leave-stat').style.display = isLd;
+    document.getElementById('btn-recalc-leave').style.display = CU.admin ? 'inline-flex' : 'none';
+    document.getElementById('btn-update-old-leave').style.display = CU.admin ? 'inline-flex' : 'none';
     document.getElementById('f-leave-hist-kip').style.display = isLd;
     document.getElementById('f-leave-hist-search').style.display = isLd;
     
@@ -6242,14 +6261,18 @@ function onVrSubtypeChange() {
 }
 </script>
 <script>
-let allLeaveBalances = {}; // Cache balances cho lãnh đạo
+let allLeaveBalances = {}; // Cache balances cho lãnh đạo — CACHE THEO TỪNG NĂM (key = năm),
+                            // vì năm hiện tại đọc sống từ sheet users, còn năm cũ đọc từ
+                            // LichSuPhep (đã khoá) — 2 nguồn khác nhau, không thể dùng chung 1 cache.
+let _leaveBalancesLoadedYears = {}; // {2025: true, 2026: true, ...}
 
-async function loadLeaveBalances() {
+async function loadLeaveBalances(year) {
   if (CU && (CU.role === 'ld' || CU.admin)) {
     try {
-      const res = await api({ action: 'getAllLeaveBalances' });
-      allLeaveBalances = res || {};
-    } catch(e) { allLeaveBalances = {}; }
+      const res = await api({ action: 'getAllLeaveBalances', year });
+      allLeaveBalances[year] = res || {};
+      _leaveBalancesLoadedYears[year] = true;
+    } catch(e) { allLeaveBalances[year] = {}; }
   }
 }
 
@@ -6261,10 +6284,10 @@ async function renderLeaveStats() {
   // Admin: bộ lọc bộ phận riêng để tìm nhanh trong toàn Công ty
   const fbp = CU.admin ? (document.getElementById('f-leave-stat-bp')?.value || '') : '';
 
-  // Với lãnh đạo: load balances nếu chưa có
-  if (isLD && Object.keys(allLeaveBalances).length === 0) {
+  // Với lãnh đạo: load balances của ĐÚNG NĂM đang xem nếu chưa có trong cache
+  if (isLD && !_leaveBalancesLoadedYears[yr]) {
     body.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#64748b; padding:20px;"><div class="spin" style="margin:0 auto;"></div></td></tr>';
-    await loadLeaveBalances();
+    await loadLeaveBalances(yr);
   }
 
   // Danh sách người cần hiển thị
@@ -6313,7 +6336,7 @@ async function renderLeaveStats() {
   let totalAnnual = 0, totalUsed = 0, totalRemain = 0;
 
   const rows = targetList.map(u => {
-    const bal = isLD ? (allLeaveBalances[u.name] || { annual: 0, remaining: 0 })
+    const bal = isLD ? (allLeaveBalances[yr]?.[u.name] || { annual: 0, remaining: 0 })
                      : { annual: parseInt(document.getElementById('lb-annual').textContent) || 0,
                          remaining: parseInt(document.getElementById('lb-remaining').textContent) || 0 };
     const usedDates = usedDatesMap[u.name] || [];
@@ -6355,6 +6378,88 @@ async function renderLeaveStats() {
   }
 
   body.innerHTML = rows.join('') || '<tr><td colspan="7" class="empty">Không có dữ liệu</td></tr>';
+}
+
+// Đối soát lại toàn bộ remaining_leave (số phép còn lại) cho tất cả nhân viên,
+// dựa trên annual_leave (đã nhập tay từ đầu năm) trừ đi số ngày phép "P" đã
+// duyệt TRONG NĂM HIỆN TẠI. Dùng khi nghi ngờ số liệu bị lệch (VD sau khi
+// admin sửa tay annual_leave, hoặc có đơn phép bị huỷ/đổi trạng thái ngoài
+// luồng bình thường) — bấm để tính lại từ đầu, không cần đợi có đơn mới.
+//
+// ── Cả 2 nút "Đối soát lại phép" và "Cập nhật lại phép năm cũ" đều đi qua chung
+// 1 modal xác nhận PIN (leave-recalc-pin-modal) — vừa để bắt buộc xác thực trước
+// khi ghi đè dữ liệu, vừa hiện ghi chú giải thích rõ tác dụng của từng nút để
+// tránh bấm nhầm.
+let _leaveRecalcPendingAction = null; // 'recalc' | 'updateOld'
+
+const LEAVE_RECALC_NOTES = {
+  recalc: {
+    title: '🔄 Đối soát lại phép',
+    note: 'Tính lại <b>số ngày phép còn lại (remaining_leave)</b> của <b>TOÀN BỘ nhân viên</b> ngay bây giờ, theo công thức: Phép năm + Phép cũ cộng dồn (nếu có nhập tay) − Số ngày phép đã duyệt trong <b>năm hiện tại</b>.<br><br>Dùng khi: mới nhập lại phép năm mới, vừa sửa "Phép cũ cộng dồn" cho ai đó, hoặc nghi ngờ số liệu đang bị lệch.<br><br>⚠️ Ghi đè trực tiếp lên sheet <b>users</b>, không thể hoàn tác.'
+  },
+  updateOld: {
+    title: '🗓️ Cập nhật lại phép năm cũ',
+    note: 'Tính lại và <b>sửa lại số đã chốt sổ của 1 năm cũ</b> trong <b>LichSuPhep</b> (không đụng đến phép năm hiện tại).<br><br>Dùng khi: có đơn phép của năm cũ nhưng bị duyệt <b>trễ</b> — tức là duyệt SAU khi hệ thống đã tự động chốt sổ đầu năm mới (0h ngày 1/1), khiến số đã chốt bị thiếu, chưa trừ đơn đó.<br><br>⚠️ Ghi đè lại dòng đã chốt của năm cũ trong LichSuPhep, không thể hoàn tác.'
+  }
+};
+
+function openLeaveRecalcModal(type) {
+  _leaveRecalcPendingAction = type;
+  const cfg = LEAVE_RECALC_NOTES[type];
+  document.getElementById('leave-recalc-modal-title').textContent = cfg.title;
+  document.getElementById('leave-recalc-modal-note').innerHTML = cfg.note;
+  document.getElementById('leave-recalc-pin-inp').value = '';
+  document.getElementById('leave-recalc-err').textContent = '';
+  document.getElementById('leave-recalc-pin-modal').style.display = 'flex';
+  setTimeout(() => document.getElementById('leave-recalc-pin-inp').focus(), 100);
+}
+function closeLeaveRecalcModal() {
+  document.getElementById('leave-recalc-pin-modal').style.display = 'none';
+  _leaveRecalcPendingAction = null;
+}
+
+async function doLeaveRecalcActionWithPin() {
+  const pin = document.getElementById('leave-recalc-pin-inp').value.trim();
+  const err = document.getElementById('leave-recalc-err');
+  if (!pin) { err.textContent = '⚠️ Vui lòng nhập mã PIN!'; return; }
+  const type = _leaveRecalcPendingAction;
+  if (!type) return;
+
+  const submitBtn = document.getElementById('leave-recalc-submit-btn');
+  const oldText = submitBtn.textContent;
+  submitBtn.disabled = true; submitBtn.textContent = '⏳ Đang xử lý...';
+
+  try {
+    if (type === 'recalc') {
+      const res = await api({ action: 'recalculateAllLeaveBalances', verifyPin: pin });
+      if (res.error) { err.textContent = '❌ ' + res.error; }
+      else {
+        closeLeaveRecalcModal();
+        showAlert('app', `✅ Đã đối soát xong phép năm ${res.year} cho ${res.updatedCount} nhân viên!`, 'as');
+        const { yr } = getYM('f-leave-stat-year', 'f-leave-stat-month');
+        delete _leaveBalancesLoadedYears[yr];
+        await renderLeaveStats();
+      }
+    } else if (type === 'updateOld') {
+      const yearInput = prompt('Nhập năm cũ cần cập nhật lại (VD: 2026):', new Date().getFullYear() - 1);
+      if (!yearInput) { submitBtn.disabled = false; submitBtn.textContent = oldText; return; }
+      const res = await api({ action: 'capNhatLaiSoPhepNamCu', year: parseInt(yearInput), verifyPin: pin });
+      if (res.error) { err.textContent = '❌ ' + res.error; }
+      else {
+        closeLeaveRecalcModal();
+        showAlert('app', `✅ Đã cập nhật lại phép năm ${res.year}: sửa ${res.updatedCount} người, thêm mới ${res.addedCount} người!`, 'as');
+        // Cảnh báo RÕ TÊN những người chưa có dòng chốt sổ gốc cho năm này — số phép của
+        // họ đang lấy tạm từ users tại thời điểm bấm nút, có thể sai nếu users đã đổi
+        // sang số năm mới. Cần admin kiểm tra lại thủ công đúng những người này.
+        if (res.fallbackNames && res.fallbackNames.length > 0) {
+          showAlert('app', `⚠️ ${res.fallbackNames.length} người sau đây CHƯA CÓ dữ liệu chốt sổ gốc cho năm ${res.year}, số phép đang lấy TẠM từ dữ liệu hiện tại — cần kiểm tra lại thủ công:\n\n${res.fallbackNames.join(', ')}`, 'ae');
+        }
+      }
+    }
+  } catch (e) {
+    err.textContent = 'Lỗi kết nối!';
+  }
+  submitBtn.disabled = false; submitBtn.textContent = oldText;
 }
 
 function exportLeaveStatExcel() {
