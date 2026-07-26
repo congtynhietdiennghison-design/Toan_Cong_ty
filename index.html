@@ -1369,6 +1369,22 @@ async function doLogin(){
     
     // ĐĂNG NHẬP THÀNH CÔNG
     CU=r.user; 
+
+    // Tải bổ sung dữ liệu phân quyền + lịch sử điều chuyển — TÁCH RIÊNG khỏi lệnh getUsers
+    // lúc mở app (chưa cần đăng nhập), để không lộ quyenDuyet/quyenDieuDong/chucDanhDuPhong/
+    // lịch sử điều chuyển ra ngoài trước khi xác thực. Chỉ gọi được SAU khi có token thật.
+    try {
+      const priv = await api({ action: 'getUserPrivilegeData' });
+      if (priv && priv.quyenMap) {
+        NV_LIST.forEach(u => { const q = priv.quyenMap[u.name]; if (q) Object.assign(u, q); });
+      }
+      if (priv && priv.transfers) {
+        allTransfers = priv.transfers.map(t => { t._date = (t.date || "").toString().substring(0, 10); return t; });
+        transfersByName = {};
+        allTransfers.forEach(t => { if (!transfersByName[t.name]) transfersByName[t.name] = []; transfersByName[t.name].push(t); });
+      }
+    } catch(privErr) { console.error('Lỗi tải dữ liệu phân quyền:', privErr); }
+
     buildSS('ss-partner', '');
 
     // Bắt buộc đổi PIN nếu đang dùng PIN tạm (reset qua Telegram)
