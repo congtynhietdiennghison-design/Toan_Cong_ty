@@ -6473,9 +6473,17 @@ async function doLeaveRecalcActionWithPin() {
       else {
         closeLeaveRecalcModal();
         showAlert('app', `✅ Đã đối soát xong phép năm ${res.year} cho ${res.updatedCount} nhân viên!`, 'as');
+        // FIX: trước đây xoá cache theo NĂM ĐANG LỌC TRÊN GIAO DIỆN (yr) — nhưng hàm
+        // recalculateAllLeaveBalances() ở server LUÔN chỉ tính năm HIỆN TẠI (res.year),
+        // không phụ thuộc người dùng đang xem năm nào. Nếu đang lọc 1 năm khác năm hiện
+        // tại thì xoá nhầm cache (không có tác dụng gì), còn cache của đúng năm vừa đối
+        // soát thì KHÔNG được xoá — lần sau chuyển qua xem năm đó vẫn thấy số liệu cũ.
+        // Giờ luôn xoá đúng cache của res.year (năm server vừa tính), rồi chỉ render lại
+        // ngay nếu người dùng đang xem đúng năm đó — còn xem năm khác thì cache đã xoá
+        // sẵn, lần sau chuyển sang sẽ tự tải mới, không cần thoát app.
+        delete _leaveBalancesLoadedYears[res.year];
         const { yr } = getYM('f-leave-stat-year', 'f-leave-stat-month');
-        delete _leaveBalancesLoadedYears[yr];
-        await renderLeaveStats();
+        if (yr === res.year) await renderLeaveStats();
       }
     } else if (type === 'updateOld') {
       const yearInput = prompt('Nhập năm cũ cần cập nhật lại (VD: 2026):', new Date().getFullYear() - 1);
@@ -6488,6 +6496,14 @@ async function doLeaveRecalcActionWithPin() {
       else {
         closeLeaveRecalcModal();
         showAlert('app', `✅ Đã cập nhật lại phép năm ${res.year}: sửa ${res.updatedCount} người, thêm mới ${res.addedCount} người!`, 'as');
+        // FIX: trước đây nhánh này KHÔNG xoá cache và KHÔNG gọi lại renderLeaveStats()
+        // — dữ liệu mới đã ghi đúng xuống LichSuPhep ở server, nhưng giao diện vẫn giữ
+        // nguyên bản đã tải trước đó trong bộ nhớ (allLeaveBalances) nên không thấy thay
+        // đổi cho tới khi thoát hẳn app (xoá sạch biến JS) rồi vào lại. Giờ xoá đúng cache
+        // của năm vừa cập nhật (res.year) và render lại ngay nếu đang xem đúng năm đó.
+        delete _leaveBalancesLoadedYears[res.year];
+        const { yr } = getYM('f-leave-stat-year', 'f-leave-stat-month');
+        if (yr === res.year) await renderLeaveStats();
         // Cảnh báo RÕ TÊN những người chưa có dòng chốt sổ gốc cho năm này — số phép của
         // họ đang lấy tạm từ users tại thời điểm bấm nút, có thể sai nếu users đã đổi
         // sang số năm mới. Cần admin kiểm tra lại thủ công đúng những người này.
