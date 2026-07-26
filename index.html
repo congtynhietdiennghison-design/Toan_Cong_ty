@@ -1544,6 +1544,36 @@ async function doRefresh(btn) {
   btn.textContent = '⏳ Đang tải...'; 
   btn.disabled = true; 
 
+  // Xóa cache số phép (theo năm) — nếu không xóa, Lãnh đạo bấm "Làm mới" vẫn thấy số
+  // cũ vì renderLeaveStats() chỉ gọi lại API khi năm đó CHƯA có trong cache; cache này
+  // chỉ được Admin tự xóa trong đúng phiên của họ khi bấm "Đối soát/Cập nhật phép năm
+  // cũ", không lan sang phiên trình duyệt của người khác.
+  if (typeof _leaveBalancesLoadedYears !== 'undefined') _leaveBalancesLoadedYears = {};
+  if (typeof allLeaveBalances !== 'undefined') allLeaveBalances = {};
+
+  // Tải lại danh sách nhân viên + phân quyền + cấu hình hệ thống — trước đây phần
+  // này (NV_LIST, APP_CONFIG, quyền hạn, MAU_LICH) chỉ tải đúng 1 LẦN lúc đăng nhập,
+  // nút "Làm mới" không đụng tới, nên nếu Admin vừa thêm nhân viên/đổi chức danh/sửa
+  // cấu hình thì người khác vẫn phải thoát ra vào lại mới thấy.
+  try {
+    const res = await api({ action: "getUsers" });
+    if (res && res.users && res.users.length > 0) {
+      NV_LIST = res.users;
+      MAU_LICH = res.mauLich || {};
+      if (res.settings) setupDynamicFields(res.settings);
+
+      const priv = await api({ action: 'getUserPrivilegeData' });
+      if (priv && priv.quyenMap) {
+        NV_LIST.forEach(u => { const q = priv.quyenMap[u.name]; if (q) Object.assign(u, q); });
+      }
+      if (priv && priv.transfers) {
+        allTransfers = priv.transfers.map(t => { t._date = (t.date || "").toString().substring(0, 10); return t; });
+        transfersByName = {};
+        allTransfers.forEach(t => { if (!transfersByName[t.name]) transfersByName[t.name] = []; transfersByName[t.name].push(t); });
+      }
+    }
+  } catch (e) { console.error('Lỗi tải lại danh sách nhân viên/cấu hình:', e); }
+
   // 2. Chạy ngầm lệnh lấy dữ liệu mới từ máy chủ
   await loadAll(); 
   const activeBtn = document.querySelector('.tab.active'); 
