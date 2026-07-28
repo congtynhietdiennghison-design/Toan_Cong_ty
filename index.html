@@ -3869,15 +3869,18 @@ function syncHCFilters(id) {
     }
 
     // Xác định ca thực tế mà ông nghỉ đang gánh (để kiểm tra cấm ca liên tiếp cho người đi thay)
-    if (isAutoKip) {
-      // FIX: Trước đây dùng thẳng getCaThucTe() không có fallback về ca gốc khi
-      // kết quả là OFF/HC — trong khi lúc submitBatchHC() lại có bước fallback
-      // này (finalCaDoiStep1). Nếu ca thực tế của người nghỉ là 'HC' (ví dụ họ
-      // đang đi ĐD, mã hiển thị dạng HC-family) thì lúc hiển thị kiểm tra sai
-      // với ca 'HC' (thường không vi phạm cấm liên tiếp), trong khi lúc submit
-      // kiểm tra đúng với CA GỐC THẬT (ví dụ ca C — có thể vi phạm C-K). Kết
-      // quả: người vi phạm vẫn lọt vào danh sách hiển thị, chỉ bị chặn muộn ở
-      // bước submit. Đồng bộ lại đúng công thức để lọc đúng ngay từ đầu.
+    // FIX QUAN TRỌNG: Trước đây, ở nhánh CHỌN KÍP CỤ THỂ (!isAutoKip), caOngNghi
+    // được tính từ "repOfKip" (bất kỳ ai đang trực đúng kíp K được chọn) NGAY TỪ
+    // ĐẦU (dòng phía trên, trước khi biết chính xác leavePerson là ai). Nhưng
+    // repOfKip CHƯA CHẮC là đúng người thực sự đang nghỉ (leavePerson) — ví dụ
+    // chọn "Kíp 2" thì repOfKip có thể là 1 người bất kỳ đang thuộc Kíp 2 hôm
+    // đó, trong khi ông Cường (leavePerson thật sự nghỉ) lại có ca thực tế khác
+    // hẳn. Kết quả: kiểm tra cấm ca liên tiếp (checkViPhamAnToan bên dưới) dùng
+    // SAI giá trị caOngNghi, khiến người đáng lẽ phải bị chặn (như ông Cường có
+    // ca K ngày 30/07, không thể đi ca C ngày 29/07) vẫn lọt qua danh sách.
+    // Giờ LUÔN tính lại caOngNghi theo ĐÚNG leavePerson (đã xác định ở trên) cho
+    // CẢ 2 nhánh (chọn kíp cụ thể lẫn tự động), đảm bảo nhất quán.
+    {
       const _caThucTeRaw = getCaThucTe(leavePerson.name, leavePerson.kip, d);
       caOngNghi = (_caThucTeRaw !== 'OFF' && _caThucTeRaw !== 'HC')
         ? _caThucTeRaw
