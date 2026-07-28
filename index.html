@@ -6370,12 +6370,13 @@ async function renderLeaveStats() {
   }
 
   // Tính ngày đã nghỉ từ allLeaves (chỉ đơn approved trong năm yr)
-  const usedDatesMap = {}; // name -> mảng ngày đã nghỉ (approved)
+  const usedDatesMap = {}; // name -> mảng ngày đã nghỉ (approved) — dùng để HIỂN THỊ cột "Đã nghỉ" (lọc theo tháng nếu có)
+  const usedCountFullYearMap = {}; // name -> SỐ ngày đã nghỉ CẢ NĂM (không lọc tháng) — dùng để TÍNH "Còn lại", luôn đúng dù đang xem tháng nào
   allLeaves.forEach(lv => {
     if (lv.status !== 'approved') return;
     if (!lv.dates) return;
     if ((lv.leaveType || 'P') !== 'P') return; // Chỉ tính nghỉ phép năm
-    const daysInPeriod = lv.dates.split(',').map(d => d.trim()).filter(d => {
+    const parseYM = (d) => {
       let y = 0, m = 0;
       if (d.includes('-')) {
         const parts = d.split('-').map(Number);
@@ -6384,11 +6385,21 @@ async function renderLeaveStats() {
         const parts = d.split('/').map(Number);
         y = parts[2]; m = parts[1];
       }
+      return { y, m };
+    };
+    const allDatesThisLeave = (lv.dates || '').split(',').map(d => d.trim());
+    const daysInPeriod = allDatesThisLeave.filter(d => {
+      const { y, m } = parseYM(d);
       if (!y) return false;
       return mo ? (y === yr && m === mo) : y === yr;
     });
+    const daysInFullYear = allDatesThisLeave.filter(d => {
+      const { y } = parseYM(d);
+      return y === yr;
+    });
     if (!usedDatesMap[lv.name]) usedDatesMap[lv.name] = [];
     usedDatesMap[lv.name].push(...daysInPeriod);
+    usedCountFullYearMap[lv.name] = (usedCountFullYearMap[lv.name] || 0) + daysInFullYear.length;
   });
 
   let totalAnnual = 0, totalUsed = 0, totalRemain = 0;
@@ -6400,14 +6411,14 @@ async function renderLeaveStats() {
     const usedDates = usedDatesMap[u.name] || [];
     const usedCount = usedDates.length;
     const annual = bal.annual;
-    // FIX: "Còn lại" trước đây LUÔN lấy nguyên bal.remaining (số đã lưu sẵn từ lần "Đối soát
-    // lại phép" gần nhất) — không tự trừ theo "Đã nghỉ" đang hiển thị CÙNG DÒNG, nên chỉ cần có
-    // thêm đơn phép duyệt SAU lần đối soát gần nhất là 2 cột lệch nhau ngay (VD 16 - 3 vẫn ra 16).
-    // Khi xem "Cả năm" (không lọc tháng), usedCount đã là đúng tổng cả năm -> tính trực tiếp
-    // annual - usedCount để luôn khớp với "Đã nghỉ" cùng dòng, không phụ thuộc số lưu sẵn nữa.
-    // Khi lọc theo 1 THÁNG cụ thể, usedCount chỉ là số của tháng đó -> không thể suy ra "Còn lại
-    // cả năm" bằng cách trừ, nên trường hợp này vẫn giữ nguyên lấy bal.remaining (số cả năm đã lưu).
-    const remaining = mo ? bal.remaining : (annual - usedCount);
+    // FIX: trước đây có 2 nhánh song song — xem theo tháng thì lấy bal.remaining (số đã lưu
+    // sẵn từ lần "Đối soát lại phép" gần nhất, dễ lệch nếu có đơn duyệt SAU lần đối soát đó);
+    // xem cả năm thì tự tính annual - usedCount. 2 nhánh cho cùng kết quả khi bal.remaining
+    // còn mới, nhưng là 2 đường tính riêng biệt — rủi ro lệch nhau nếu sau này chỉ sửa 1 nhánh.
+    // Giờ hợp nhất thành 1 công thức DUY NHẤT, luôn tính SỐNG theo đúng số đã nghỉ CẢ NĂM
+    // (usedCountFullYearMap không phụ thuộc bộ lọc tháng đang xem), không dùng số lưu sẵn nữa.
+    const usedCountFullYear = usedCountFullYearMap[u.name] || 0;
+    const remaining = annual - usedCountFullYear;
 
     totalAnnual += annual;
     totalUsed += usedCount;
