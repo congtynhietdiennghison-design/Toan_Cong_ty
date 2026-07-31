@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title id="page-title">Quản lý đổi ca</title>
+<title id="page-title">Quản lý chấm công</title>
 <link rel="preconnect" href="https://script.google.com" crossorigin>
 <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin>
 <style>
@@ -4028,9 +4028,15 @@ function syncHCFilters(id) {
 
   // AUTO_LEAVE: tìm tất cả người có chức danh r, có đơn nghỉ approved ngày d (không giới hạn kíp)
   const isAutoLeave = (k === 'AUTO_LEAVE');
+  // FIX (bổ sung — lần trước chỉ sửa guard clause ở đầu hàm, sót đoạn này):
+  // đoạn này tính lại `matches` từ đầu, độc lập với `matches` đã lọc ở trên.
+  // Trước đây luôn bắt buộc u.chucDanh === r, kể cả khi r rỗng (chưa chọn CD)
+  // -> luôn ra danh sách trống khi ở chế độ "KHÔNG bố trí người thay" mà chưa
+  // chọn CD. Giờ: nếu r rỗng thì chỉ giữ điều kiện lọc theo CD khi KHÔNG phải
+  // chế độ isNoReplace (để không phá vỡ hành vi cũ ở các trường hợp khác).
   matches = isAutoLeave
-    ? getRowNV(row).filter(u => u.chucDanh === r)
-    : getRowNV(row).filter(u => u.chucDanh === r && u.kip === k);
+    ? getRowNV(row).filter(u => r ? u.chucDanh === r : isNoReplace)
+    : getRowNV(row).filter(u => (r ? u.chucDanh === r : isNoReplace) && u.kip === k);
 
   // --- LỌC BỔ SUNG: ẨN NGƯỜI NGHỈ (OFF) KHI Ở CHẾ ĐỘ "VẮNG KHÔNG PHÉP" (V) ---
   if (type === 'V' && d) {
