@@ -1611,6 +1611,14 @@ async function doLogin(){
     resetDataLoadedFlags();
     await ensureDataForTab('dang-ky');
     switchTab('dang-ky');
+
+    // Tải NGẦM (không chặn màn hình, không await) dữ liệu các nhóm còn lại ngay sau khi
+    // vào được app — để lần đầu bấm sang tab khác (Nghỉ phép/Điều động/Thống kê) không bị
+    // khựng lại chờ tải như hiện tại, giữ cảm giác mượt gần như bản cũ (tải hết 1 lần) mà
+    // vẫn không làm chậm bước đăng nhập ban đầu.
+    setTimeout(() => {
+      ['dong-y', 'nghi-phep', 'admin-hc', 'thong-ke'].forEach(t => ensureDataForTab(t).catch(() => {}));
+    }, 800);
   } catch(ex){e.style.color='#dc2626'; e.textContent='Lỗi kết nối mạng';}
   
   // TỰ ĐỘNG CẬP NHẬT — giãn ra 120s, và CHỈ chạy khi tab đang mở (giảm số lệnh gọi GAS)
