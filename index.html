@@ -256,7 +256,7 @@ textarea{resize:none;height:80px}
       <select id="f-sched-bp" onchange="renderScheduleTable()" style="display:none;"></select>
       <select id="f-sched-kip" onchange="renderScheduleTable()"><option value="">Tất cả kíp</option></select>
       <select id="f-sched-chucdanh" onchange="renderScheduleTable()"><option value="">Tất cả chức danh</option></select>
-      <input type="text" id="f-sched-name" class="hist-search-input" oninput="renderScheduleTable()" placeholder="🔍 Tìm theo tên...">
+      <input type="text" id="f-sched-name" class="hist-search-input" oninput="renderScheduleTableDebounced()" placeholder="🔍 Tìm theo tên...">
     </div>
     <div class="table-wrapper">
       <table class="dt" id="table-schedule" style="min-width: 1200px;">
@@ -279,7 +279,7 @@ textarea{resize:none;height:80px}
         <div class="sec-title">Reset PIN</div>
         <div class="form-row three">
           <div><label>Người dùng</label><div class="ss" id="ss-reset"><button class="ss-btn ph"><span id="ss-reset-lbl">-- Chọn --</span><span>▾</span></button><div class="ss-drop" id="ss-reset-drop"><input class="ss-inp" oninput="filterSS('ss-reset',this.value)" placeholder="Tìm..."><div class="ss-list" id="ss-reset-list"></div></div></div><input type="hidden" id="f-reset-name"></div>
-          <div><label>Mật khẩu mới</label><input type="text" id="f-reset-pin" minlength="4" maxlength="12" onkeydown="if(event.key==='Enter')doResetPin()"></div>
+          <div><label>Mật khẩu mới</label><input type="password" id="f-reset-pin" minlength="4" maxlength="12" onkeydown="if(event.key==='Enter')doResetPin()"></div>
         </div>
         <button class="btn btn-warn" style="width:100%; margin-top:8px" onclick="doResetPin()">Reset PIN</button>
         <div id="admin-msg" class="alert"></div>
@@ -894,6 +894,53 @@ let MAU_LICH={};
 let autoRefreshTimer = null;
 let leavePollTimer = null;
 let reqPollTimer = null;
+let _schedRenderTimer = null;
+const _dataLoaded = { requests: false, leaves: false, transfers: false, balances: false };
+
+const TAB_DATA_NEEDS = {
+  'dang-ky': ['requests'],
+  'dong-y': ['requests'],
+  'phe-duyet': ['requests'],
+  'lich-su': ['requests'],
+  'bang-di-ca': ['requests', 'leaves'],
+  'nghi-phep': ['leaves'],
+  'lich-su-np': ['leaves'],
+  'duyet-np': ['leaves'],
+  'thong-ke': ['requests', 'leaves', 'balances'],
+  'admin-hc': ['transfers'],
+  'admin': []
+};
+
+function resetDataLoadedFlags() {
+  _dataLoaded.requests = false;
+  _dataLoaded.leaves = false;
+  _dataLoaded.transfers = false;
+  _dataLoaded.balances = false;
+}
+
+async function ensureDataForTab(tab) {
+  const keys = TAB_DATA_NEEDS[tab];
+  if (!keys || keys.length === 0) return;
+  const opts = {};
+  if (keys.includes('requests') && !_dataLoaded.requests) opts.requests = true;
+  if (keys.includes('leaves') && !_dataLoaded.leaves) opts.leaves = true;
+  if (keys.includes('transfers') && !_dataLoaded.transfers) opts.transfers = true;
+  if (keys.includes('balances') && !_dataLoaded.balances) opts.balances = true;
+  if (!opts.requests && !opts.leaves && !opts.transfers && !opts.balances) return;
+  await refreshData(opts);
+  if (opts.requests) _dataLoaded.requests = true;
+  if (opts.leaves) _dataLoaded.leaves = true;
+  if (opts.transfers) _dataLoaded.transfers = true;
+  if (opts.balances) _dataLoaded.balances = true;
+}
+
+function renderScheduleTableDebounced() {
+  if (_schedRenderTimer) clearTimeout(_schedRenderTimer);
+  _schedRenderTimer = setTimeout(() => {
+    _schedRenderTimer = null;
+    renderScheduleTable();
+  }, 350);
+}
 
 // Báo lỗi ngay lập tức nếu có lỗi script
 window.onerror = function(msg, url, line) {
@@ -1197,8 +1244,10 @@ async function refreshData(opts = {}) {
   await Promise.all(tasks);
 }
 
-async function loadAll(){
-await refreshData({ requests: true, leaves: true, transfers: true, balances: true });
+async function loadAll(force) {
+  if (force) resetDataLoadedFlags();
+  await refreshData({ requests: true, leaves: true, transfers: true, balances: true });
+  _dataLoaded.requests = _dataLoaded.leaves = _dataLoaded.transfers = _dataLoaded.balances = true;
 }
 
 function showApiError(targetId, res, fallback) {
@@ -1559,7 +1608,9 @@ async function doLogin(){
     // Lọc kíp và tìm tên luôn hiện cho tất cả (kể cả nhân viên)
     const now = new Date(); const curYear = now.getFullYear(); const curMonthStr = curYear + '-' + String(now.getMonth()+1).padStart(2,'0'); 
     initYearMonthFilters();
-    await loadAll(); 
+    resetDataLoadedFlags();
+    await ensureDataForTab('dang-ky');
+    switchTab('dang-ky');
   } catch(ex){e.style.color='#dc2626'; e.textContent='Lỗi kết nối mạng';}
   
   // TỰ ĐỘNG CẬP NHẬT — giãn ra 120s, và CHỈ chạy khi tab đang mở (giảm số lệnh gọi GAS)
@@ -1583,6 +1634,7 @@ function doLogout() {
   }
   
   CU = null; allReqs = [];
+  resetDataLoadedFlags();
   document.getElementById('overlay').style.display = 'flex'; document.getElementById('app').style.display = 'none'; document.getElementById('login-box').style.display = 'block'; document.getElementById('login-loading').style.display = 'none';
   document.getElementById('f-login-name').value = ''; document.getElementById('pin-inp').value = ''; document.getElementById('pin-err').textContent = ''; document.getElementById('f-name').value = '';
 } 
@@ -1623,7 +1675,8 @@ async function doRefresh(btn) {
   } catch (e) { console.error('Lỗi tải lại danh sách nhân viên/cấu hình:', e); }
 
   // 2. Chạy ngầm lệnh lấy dữ liệu mới từ máy chủ
-  await loadAll(); 
+  resetDataLoadedFlags();
+  await loadAll(true);
   const activeBtn = document.querySelector('.tab.active'); 
   if(activeBtn){ 
     const t = activeBtn.getAttribute('onclick').match(/'([^']+)'/)[1]; 
@@ -1707,11 +1760,18 @@ async function doArchive() {
   showAlert('app','Đang xác thực và đóng gói dữ liệu...','ai'); 
   try {
     const r = await api({action: "archive", year: yr, name: CU.name, pin: xacNhanPin});
-    if(r.error) { showAlert('app', r.error, 'ae'); } else { showAlert('app', r.message, 'as'); document.getElementById('f-archive-year').value = ''; await loadAll(); switchTab('lich-su'); }
+    if(r.error) { showAlert('app', r.error, 'ae'); } else { showAlert('app', r.message, 'as'); document.getElementById('f-archive-year').value = ''; await loadAll(true); switchTab('lich-su'); }
   } catch(ex) { showAlert('app','Lỗi kết nối. Vui lòng thử lại.','ae'); }
 }
 
 function switchTab(t){
+  ensureDataForTab(t).then(() => switchTabRender(t)).catch(err => {
+    console.error('ensureDataForTab:', err);
+    switchTabRender(t);
+  });
+}
+
+function switchTabRender(t){
 ['dang-ky','dong-y','phe-duyet','admin','admin-hc','nghi-phep','lich-su-np','duyet-np','lich-su','thong-ke','bang-di-ca'].forEach(s=>{
 const btn=document.querySelector(`.tab[onclick="switchTab('${s}')"]`); if(btn) btn.classList.toggle('active',s===t);
     const sec=document.getElementById('tab-'+s); if(sec) sec.classList.toggle('active',s===t);
