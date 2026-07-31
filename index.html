@@ -902,37 +902,66 @@ window.onerror = function(msg, url, line) {
   return false;
 };
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isBusyError(msg) {
+  const s = (msg || '').toString();
+  return s.includes('Hệ thống đang bận') || s.includes('Hệ thống bận');
+}
+
+function apiOnce(p) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("Yêu cầu quá thời gian (90s). Vui lòng kiểm tra mạng hoặc Apps Script!"));
+    }, 90000);
+
+    if (typeof google !== 'undefined' && google.script && google.script.run) {
+      google.script.run
+        .withSuccessHandler(res => { clearTimeout(timeout); resolve(res); })
+        .withFailureHandler(err => { clearTimeout(timeout); reject(err); })
+        .apiRun(p);
+    } else {
+      fetch(SCRIPT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(p).toString()
+      })
+        .then(r => {
+          if (!r.ok) throw new Error("Mã lỗi HTTP: " + r.status);
+          return r.json();
+        })
+        .then(res => { clearTimeout(timeout); resolve(res); })
+        .catch(err => { clearTimeout(timeout); reject(err); });
+    }
+  });
+}
+
 async function api(p) {
   if (typeof CU !== 'undefined' && CU && CU.token) {
     p.reqName = CU.name;
     p.reqToken = CU.token;
   }
 
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error("Yêu cầu quá thời gian (90s). Vui lòng kiểm tra mạng hoặc Apps Script!"));
-    }, 90000);
-
-    if (typeof google !== 'undefined' && google.script && google.script.run) { 
-        google.script.run
-          .withSuccessHandler(res => { clearTimeout(timeout); resolve(res); })
-          .withFailureHandler(err => { clearTimeout(timeout); reject(err); })
-          .apiRun(p); 
-    } 
-    else { 
-        fetch(SCRIPT_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams(p).toString()
-        })
-        .then(r => {
-          if (!r.ok) throw new Error("Mã lỗi HTTP: " + r.status);
-          return r.json();
-        })
-        .then(res => { clearTimeout(timeout); resolve(res); })
-        .catch(err => { clearTimeout(timeout); reject(err); }); 
+  const busyDelays = [2000, 4000];
+  for (let attempt = 0; attempt <= busyDelays.length; attempt++) {
+    try {
+      const res = await apiOnce(p);
+      if (res && res.error && isBusyError(res.error) && attempt < busyDelays.length) {
+        await sleep(busyDelays[attempt]);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      const msg = (err && err.message) ? err.message : String(err);
+      if (isBusyError(msg) && attempt < busyDelays.length) {
+        await sleep(busyDelays[attempt]);
+        continue;
+      }
+      throw err;
     }
-  });
+  }
 }
 
 /** Tùy chọn tháng: Cả năm + Tháng 1–12 (lịch trực: bắt buộc chọn tháng). */
@@ -1131,33 +1160,53 @@ window.onload = async () => {
   }
 };
 
+async function applyRequestsFromApi(d) {
+  allReqs = (d.requests||[]).map(r => {
+    const req = {...r, id: r.id.toString()};
+    if (req.kip === 'AUTO_LEAVE' || !req.kip) req.kip = getPersonKip(req.name, req.kip);
+    req._dDoi = normalizeDate(r.ngayDoi);
+    req._dTra = normalizeDate(r.ngayTra);
+    return req;
+  });
+  reqsByName = {};
+  allReqs.forEach(r => {
+    const nameTrim = (r.name || "").toString().trim();
+    const partnerTrim = (r.partner || "").toString().trim();
+    if (!reqsByName[nameTrim]) reqsByName[nameTrim] = [];
+    reqsByName[nameTrim].push(r);
+    if (partnerTrim && partnerTrim !== nameTrim) {
+      if (!reqsByName[partnerTrim]) reqsByName[partnerTrim] = [];
+      reqsByName[partnerTrim].push(r);
+    }
+  });
+}
+
+async function loadRequests() {
+  const d = await api({ action: 'getAll' });
+  applyRequestsFromApi(d);
+}
+
+/** Tải lại có chọn lọc — giảm tải server khi nhiều người dùng cùng lúc. */
+async function refreshData(opts = {}) {
+  const o = Object.assign({ requests: true, leaves: false, transfers: false, balances: false }, opts);
+  const tasks = [];
+  if (o.requests) tasks.push(loadRequests());
+  if (o.leaves) tasks.push(loadLeaves());
+  if (o.transfers) tasks.push(loadTransfers());
+  if (o.balances && CU && (CU.role === 'ld' || CU.admin)) tasks.push(loadLeaveBalances(new Date().getFullYear()));
+  await Promise.all(tasks);
+}
+
 async function loadAll(){
-const d = await api({action:"getAll"});
-allReqs = (d.requests||[]).map(r => {
-  const req = {...r, id: r.id.toString()};
-  if (req.kip === 'AUTO_LEAVE' || !req.kip) req.kip = getPersonKip(req.name, req.kip);
-  // Tối ưu: Lưu sẵn chuỗi ngày đã chuẩn hóa
-  req._dDoi = normalizeDate(r.ngayDoi);
-  req._dTra = normalizeDate(r.ngayTra);
-  return req;
-});
-// Tối ưu: Index theo tên (đã trim) để tìm kiếm nhanh hơn
-reqsByName = {};
-allReqs.forEach(r => {
-  const nameTrim = (r.name || "").toString().trim();
-  const partnerTrim = (r.partner || "").toString().trim();
-  
-  if (!reqsByName[nameTrim]) reqsByName[nameTrim] = [];
-  reqsByName[nameTrim].push(r);
-  
-  if (partnerTrim && partnerTrim !== nameTrim) {
-    if (!reqsByName[partnerTrim]) reqsByName[partnerTrim] = [];
-    reqsByName[partnerTrim].push(r);
-  }
-});
-const tasks = [loadTransfers(), loadLeaves()];
-if (CU && (CU.role === 'ld' || CU.admin)) tasks.push(loadLeaveBalances(new Date().getFullYear()));
-await Promise.all(tasks); }
+await refreshData({ requests: true, leaves: true, transfers: true, balances: true });
+}
+
+function showApiError(targetId, res, fallback) {
+  const msg = (res && res.error) ? res.error : fallback;
+  if (targetId === 'app') showAlert('app', msg, 'ae');
+  else showLocalAlert(targetId, msg, 'ae');
+}
+
 async function loadLeaves() {
 try {
 const res = await api({ action: 'getLeaves' });
@@ -1518,12 +1567,11 @@ async function doLogin(){
   
   autoRefreshTimer = setInterval(async () => {
     if (CU && document.visibilityState === 'visible') {
-      await loadAll(); 
       const activeBtn = document.querySelector('.tab.active');
-      if (activeBtn) {
-        const t = activeBtn.getAttribute('onclick').match(/'([^']+)'/)[1];
-        if (['dong-y', 'phe-duyet', 'lich-su', 'duyet-np'].includes(t)) switchTab(t);
-      }
+      const t = activeBtn?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1] || '';
+      if (['nghi-phep', 'duyet-np', 'lich-su-np'].includes(t)) await loadLeaves();
+      else await loadRequests();
+      if (activeBtn && ['dong-y', 'phe-duyet', 'lich-su', 'duyet-np'].includes(t)) switchTab(t);
     }
   }, 120000);
 }
@@ -1829,8 +1877,9 @@ async function partnerOk(id, btn){
   showAlert('app', 'Đang xử lý...', 'ai'); 
   
   try{ 
-    await api({action:"updateStatus",id,status:"pending_ld",by:CU.name}); 
-    await loadAll(); 
+    const res = await api({action:"updateStatus",id,status:"pending_ld",by:CU.name}); 
+    if (res.error) { showAlert('app', res.error, 'ae'); return; }
+    await loadRequests(); 
     renderDongY(); 
     showAlert('app', 'Đã đồng ý!', 'as'); 
   }catch(e){ 
@@ -1844,8 +1893,9 @@ async function partnerNo(id, btn){
   if(btn){ btn.disabled=true; btn.innerHTML='⏳ Đang xử lý...'; btn.style.opacity='0.6'; btn.style.cursor='not-allowed'; } 
   showAlert('app', 'Đang xử lý...', 'ai'); 
   try{ 
-    await api({action:"updateStatus",id,status:"rejected",by:CU.name,rejectReason:rs}); 
-    await loadAll(); 
+    const res = await api({action:"updateStatus",id,status:"rejected",by:CU.name,rejectReason:rs}); 
+    if (res.error) { showAlert('app', res.error, 'ae'); return; }
+    await loadRequests(); 
     renderDongY(); 
     showAlert('app', 'Đã từ chối.', 'ae'); 
   }catch(e){ 
@@ -1935,7 +1985,7 @@ async function doApproveNoImage() {
     if(res.error) {
       btn.disabled = false; btn.innerHTML = 'Duyệt'; showAlert('app', res.error, 'ae');
     } else {
-      await loadAll(); renderPheDuyet(); showAlert('app', 'Đã phê duyệt thành công!', 'as'); 
+      await loadRequests(); renderPheDuyet(); showAlert('app', 'Đã phê duyệt thành công!', 'as'); 
     }
   } catch(e) { btn.disabled = false; btn.innerHTML = 'Duyệt'; showAlert('app', 'Lỗi mạng!', 'ae'); }
 }
@@ -2015,7 +2065,7 @@ document.getElementById('camera-upload').addEventListener('change', function(e) 
                 
                 if (res.error) throw new Error(res.error);
 
-                await loadAll(); 
+                await loadRequests(); 
                 renderPheDuyet(); 
                 showAlert('app', 'Đã phê duyệt kèm ảnh minh chứng!', 'as'); 
             } catch(err) { 
@@ -2042,9 +2092,9 @@ async function ldNo(id, btn){
   if(btn){ btn.disabled=true; btn.innerHTML='⏳ Đang xử lý...'; btn.style.opacity='0.6'; btn.style.cursor='not-allowed'; } 
   showAlert('app', 'Đang xử lý...', 'ai'); 
   try{ 
-    // ĐÃ SỬA: Gửi đúng 'id', đổi trạng thái thành 'rejected', và truyền lý do từ chối 'rejectReason: rs'
-    await api({action:"updateStatus", id: id, status:"rejected", by:CU.name, rejectReason: rs}); 
-    await loadAll(); 
+    const res = await api({action:"updateStatus", id: id, status:"rejected", by:CU.name, rejectReason: rs}); 
+    if (res.error) { showAlert('app', res.error, 'ae'); return; }
+    await loadRequests(); 
     renderPheDuyet(); 
     showAlert('app', 'Đã từ chối.', 'ae'); 
   }catch(e){ 
@@ -2581,8 +2631,9 @@ if (document.getElementById('f-no-return').checked) {
   
   const btn = document.getElementById('btn-submit'); btn.disabled = true; btn.textContent = 'Đang gửi...';
   try{ 
-    await api({ action: "add", data: JSON.stringify({name, kip, caDoi, ngayDoi, caTra, ngayTra, partner, partnerKip, partnerRole, reason}) }); 
-    await loadAll(); showLocalAlert('submit-msg','Đã gửi đơn thành công!','as'); 
+    const res = await api({ action: "add", data: JSON.stringify({name, kip, caDoi, ngayDoi, caTra, ngayTra, partner, partnerKip, partnerRole, reason}) }); 
+    if (res.error) { showApiError('submit-msg', res, 'Không gửi được đơn. Vui lòng thử lại.'); return; }
+    await loadRequests(); showLocalAlert('submit-msg','Đã gửi đơn thành công!','as'); 
     ['f-ca-doi','f-ca-tra','f-partner-kip','f-partner-role','f-ngay-doi','f-ngay-tra','f-reason','f-partner'].forEach(id=>document.getElementById(id).value='');
     document.getElementById('f-partner-role').disabled = false;
     document.getElementById('f-no-return').checked = false; toggleNoReturn();
@@ -2670,7 +2721,7 @@ async function deleteReq(id, btn){
   try{
     // Đẩy lệnh hủy lên máy chủ
     await api({action:"updateStatus", id, status:"cancelled", by:CU.name});
-    await loadAll();
+    await loadRequests();
     renderHistory(); renderSummary();
     showAlert('app', 'Đã hủy đơn thành công!', 'as');
   }catch(e){
@@ -3760,7 +3811,22 @@ function syncHCFilters(id) {
   const useBackup = row.querySelector('.h-use-backup') && row.querySelector('.h-use-backup').checked;
   const LEAVE_TYPES = ['P', 'VR', 'Ô', 'TS', 'O'];
 
-  if(!r || !k) { 
+  const isNoReplace = row.querySelector('.h-no-replace') && row.querySelector('.h-no-replace').checked;
+
+  // FIX: Khi tích "KHÔNG bố trí người thay" và đã chọn Kíp nhưng CHƯA chọn
+  // Chức danh, cho phép hiện TOÀN BỘ người trong kíp đó (không bắt buộc lọc
+  // theo chức danh nữa). Lý do: có nhiều trường hợp cần điều động cả 1 kíp đi
+  // (nhiều chức danh khác nhau) cùng lúc mà không cần bố trí người thay — nếu
+  // vẫn bắt chọn từng chức danh một thì rất mất thời gian. Chế độ bình thường
+  // (không tích "KHÔNG bố trí người thay") vẫn giữ nguyên yêu cầu phải chọn cả
+  // Chức danh lẫn Kíp như trước, để tránh chọn nhầm người khi còn cần bố trí
+  // người thay (lúc đó vẫn cần biết đúng chức danh để tìm người thay phù hợp).
+  if(!r && !(isNoReplace && k)) {
+    chkContainer.innerHTML = '<span style="color:#64748b; font-size:12px;">Vui lòng chọn CD & Kíp</span>'; 
+    resetRightColumns(id); 
+    return; 
+  }
+  if(!k) { 
     chkContainer.innerHTML = '<span style="color:#64748b; font-size:12px;">Vui lòng chọn CD & Kíp</span>'; 
     resetRightColumns(id); 
     return; 
@@ -4785,7 +4851,7 @@ async function deleteAdminHC(id, btn) {
   btn.disabled = true; btn.textContent = 'Đang xóa...'; showAlert('app', 'Đang thu hồi lệnh...', 'ai');
   try {
     await api({action: "updateStatus", id: id, status: "cancelled", by: CU.name});
-    await loadAll(); renderAdminHCHist(); renderScheduleTable(); showAlert('app', 'Đã thu hồi thành công!', 'as');
+    await loadRequests(); renderAdminHCHist(); renderScheduleTable(); showAlert('app', 'Đã thu hồi thành công!', 'as');
   } catch(e) {
     btn.disabled = false; btn.textContent = 'Thu hồi'; showAlert('app', 'Lỗi kết nối mạng!', 'ae');
   }
@@ -5110,13 +5176,13 @@ async function submitBatchHC() {
         }
     }
     
-    await loadAll(); showLocalAlert('batchhc-msg', 'Đã ban hành lệnh thành công!', 'as');
+    await loadRequests(); showLocalAlert('batchhc-msg', 'Đã ban hành lệnh thành công!', 'as');
     document.getElementById('hc-table-body').innerHTML = ''; document.getElementById('hc-group-reason').value = '';
     document.getElementById('hc-pin').value = '';
     renderAdminHCHist(); renderScheduleTable(); 
   } catch(e) { 
     // Dù timeout vẫn reload để kiểm tra lệnh có lên không
-    try { await loadAll(); renderAdminHCHist(); renderScheduleTable(); } catch(_) {}
+    try { await loadRequests(); renderAdminHCHist(); renderScheduleTable(); } catch(_) {}
     const msg = (e && e.message && e.message.includes('quá thời gian'))
       ? '⚠️ Máy chủ xử lý lâu quá (timeout), nhưng lệnh có thể đã được lưu. Vui lòng kiểm tra bảng phía trên!'
       : 'Lỗi mạng hoặc máy chủ: ' + (e && e.message ? e.message : e);
@@ -6029,7 +6095,7 @@ function syncReqPollTimer(activeTab) {
   reqPollTimer = setInterval(async () => {
     const pendingIds = allReqs.filter(trackReq).map(r => r.id);
     if (pendingIds.length === 0) { syncReqPollTimer(activeTab); return; }
-    await loadAll();
+    await loadRequests();
     const resolved = pendingIds.filter(id => {
       const r = allReqs.find(x => x.id === id);
       return r && !trackReq(r);
