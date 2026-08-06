@@ -985,7 +985,14 @@ function apiOnce(p) {
   });
 }
 
+function makeClientRequestId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  return 'cr_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '_' + Math.random().toString(36).slice(2);
+}
+
 async function api(p) {
+  const writeActions = ['add','updateStatus','addDispatchBatch','submitLeave','approveLeaveWeb','rejectLeaveWeb'];
+  if (writeActions.includes(p.action) && !p.clientRequestId) p.clientRequestId = makeClientRequestId();
   if (typeof CU !== 'undefined' && CU && CU.token) {
     p.reqName = CU.name;
     p.reqToken = CU.token;
@@ -5239,18 +5246,20 @@ async function submitBatchHC() {
   btn.disabled = true; btn.innerHTML = '⏳ Đang đồng bộ...';
   try {
     const cancelArr = Array.from(cancelIds);
-    for(let id of cancelArr) await api({action: "updateStatus", id: id, status: "cancelled", by: "Hệ thống (Auto)"});
-    
-    for(let data of allReqsHC) {
-        const res = await api({ action: "add", data: JSON.stringify(data), verifyPin: pin }); 
-        if (res && res.error) {
-            showLocalAlert('batchhc-msg', '❌ LỖI: ' + res.error, 'ae');
-            btn.disabled = false; btn.innerHTML = '⚡ PHÊ DUYỆT LỆNH';
-            return; // Dừng ngay và hiện lỗi nếu sai PIN hoặc lỗi khác
-        }
+    // Gộp toàn bộ hủy đơn trùng + thêm lệnh thành MỘT lần gọi GAS, MỘT lock.
+    // Backend tự rollback nếu bất kỳ lệnh nào lỗi, tránh trạng thái lưu dở dang.
+    const res = await api({
+      action: "addDispatchBatch",
+      data: JSON.stringify({ cancelIds: cancelArr, requests: allReqsHC }),
+      verifyPin: pin
+    });
+    if (res && res.error) {
+      showLocalAlert('batchhc-msg', '❌ LỖI: ' + res.error, 'ae');
+      btn.disabled = false; btn.innerHTML = '⚡ PHÊ DUYỆT LỆNH';
+      return;
     }
     
-    await loadRequests(); showLocalAlert('batchhc-msg', 'Đã ban hành lệnh thành công!', 'as');
+    await loadRequests(); showLocalAlert('batchhc-msg', `Đã ban hành ${res.addedCount || allReqsHC.length} lệnh thành công!`, 'as');
     document.getElementById('hc-table-body').innerHTML = ''; document.getElementById('hc-group-reason').value = '';
     document.getElementById('hc-pin').value = '';
     renderAdminHCHist(); renderScheduleTable(); 
