@@ -1654,55 +1654,93 @@ function doLogout() {
   document.getElementById('f-login-name').value = ''; document.getElementById('pin-inp').value = ''; document.getElementById('pin-err').textContent = ''; document.getElementById('f-name').value = '';
 } 
 async function doRefresh(btn) {
-  // 1. Đổi nút sang màu xanh, hiện chữ đang tải và khóa nút
-  btn.classList.add('btn-success'); 
-  btn.textContent = '⏳ Đang tải...'; 
-  btn.disabled = true; 
+  const oldText = btn.textContent;
+  btn.classList.add('btn-success');
+  btn.textContent = '⏳ Đang tải...';
+  btn.disabled = true;
 
-  // Xóa cache số phép (theo năm) — nếu không xóa, Lãnh đạo bấm "Làm mới" vẫn thấy số
-  // cũ vì renderLeaveStats() chỉ gọi lại API khi năm đó CHƯA có trong cache; cache này
-  // chỉ được Admin tự xóa trong đúng phiên của họ khi bấm "Đối soát/Cập nhật phép năm
-  // cũ", không lan sang phiên trình duyệt của người khác.
+  // Xóa cache số phép phía trình duyệt trước khi nhận bundle mới.
   if (typeof _leaveBalancesLoadedYears !== 'undefined') _leaveBalancesLoadedYears = {};
   if (typeof allLeaveBalances !== 'undefined') allLeaveBalances = {};
 
-  // Tải lại danh sách nhân viên + phân quyền + cấu hình hệ thống — trước đây phần
-  // này (NV_LIST, APP_CONFIG, quyền hạn, MAU_LICH) chỉ tải đúng 1 LẦN lúc đăng nhập,
-  // nút "Làm mới" không đụng tới, nên nếu Admin vừa thêm nhân viên/đổi chức danh/sửa
-  // cấu hình thì người khác vẫn phải thoát ra vào lại mới thấy.
   try {
-    const res = await api({ action: "getUsers" });
-    if (res && res.users && res.users.length > 0) {
-      NV_LIST = res.users;
-      MAU_LICH = res.mauLich || {};
-      if (res.settings) setupDynamicFields(res.settings);
-
-      const priv = await api({ action: 'getUserPrivilegeData' });
-      if (priv && priv.quyenMap) {
-        NV_LIST.forEach(u => { const q = priv.quyenMap[u.name]; if (q) Object.assign(u, q); });
-      }
-      if (priv && priv.transfers) {
-        allTransfers = priv.transfers.map(t => { t._date = (t.date || "").toString().substring(0, 10); return t; });
-        transfersByName = {};
-        allTransfers.forEach(t => { if (!transfersByName[t.name]) transfersByName[t.name] = []; transfersByName[t.name].push(t); });
-      }
+    // V12.2: CHỈ 1 LẦN gọi Apps Script cho toàn bộ dữ liệu cần làm mới.
+    const bundle = await api({ action: 'getRefreshBundle' });
+    if (!bundle || bundle.error) {
+      throw new Error((bundle && bundle.error) || 'Không nhận được dữ liệu làm mới từ máy chủ.');
     }
-  } catch (e) { console.error('Lỗi tải lại danh sách nhân viên/cấu hình:', e); }
 
-  // 2. Chạy ngầm lệnh lấy dữ liệu mới từ máy chủ
-  resetDataLoadedFlags();
-  await loadAll(true);
-  const activeBtn = document.querySelector('.tab.active'); 
-  if(activeBtn){ 
-    const t = activeBtn.getAttribute('onclick').match(/'([^']+)'/)[1]; 
-    switchTab(t); 
-  } 
-  showAlert('app','Đã cập nhật dữ liệu mới','as');
+    // 1) Nhân sự + cấu hình công khai
+    if (Array.isArray(bundle.users) && bundle.users.length > 0) {
+      NV_LIST = bundle.users;
+    }
+    MAU_LICH = bundle.mauLich || {};
+    if (bundle.settings) setupDynamicFields(bundle.settings);
 
-  // 3. Xong xuôi thì xóa màu xanh đi, trả lại nút màu trắng
-  btn.classList.remove('btn-success'); 
-  btn.textContent = '🔄 Làm mới'; 
-  btn.disabled = false; 
+    // 2) Dữ liệu phân quyền — chỉ có sau khi đã xác thực token trên server
+    const quyenMap = bundle.quyenMap || {};
+    NV_LIST.forEach(u => {
+      const q = quyenMap[u.name];
+      if (q) Object.assign(u, q);
+    });
+
+    // 3) Lịch sử điều chuyển
+    allTransfers = (bundle.transfers || []).map(t => {
+      t._date = (t.date || '').toString().substring(0, 10);
+      return t;
+    });
+    transfersByName = {};
+    allTransfers.forEach(t => {
+      if (!transfersByName[t.name]) transfersByName[t.name] = [];
+      transfersByName[t.name].push(t);
+    });
+
+    // 4) Đơn đổi ca — dùng chung hàm dựng index hiện có
+    applyRequestsFromApi({ requests: bundle.requests || [] });
+
+    // 5) Đơn nghỉ cá nhân — dựng lại index theo tên giống loadLeaves()
+    allLeaves = (bundle.leaves || []).map(lv => {
+      lv._dateList = lv.dates ? lv.dates.toString().split(',').map(x => x.trim()) : [];
+      return lv;
+    });
+    leavesByName = {};
+    allLeaves.forEach(lv => {
+      if (!leavesByName[lv.name]) leavesByName[lv.name] = [];
+      leavesByName[lv.name].push(lv);
+    });
+
+    // 6) Số phép năm hiện tại cho lãnh đạo/admin (nếu server có trả)
+    if (bundle.balanceYear && bundle.balances && CU && (CU.role === 'ld' || CU.admin)) {
+      allLeaveBalances[bundle.balanceYear] = bundle.balances;
+      _leaveBalancesLoadedYears[bundle.balanceYear] = true;
+    }
+
+    // Đánh dấu các nhóm đã có dữ liệu để ensureDataForTab() không gọi GAS lại ngay sau refresh.
+    _dataLoaded.requests = true;
+    _dataLoaded.leaves = true;
+    _dataLoaded.transfers = true;
+    _dataLoaded.balances = !!(bundle.balanceYear && bundle.balances);
+
+    // Dựng lại dropdown người dùng vì NV_LIST/quyền có thể vừa thay đổi.
+    buildSS('ss-partner', '');
+    if (CU && CU.admin) buildSS('ss-reset', '');
+
+    const activeBtn = document.querySelector('.tab.active');
+    if (activeBtn) {
+      const mm = activeBtn.getAttribute('onclick')?.match(/'([^']+)'/);
+      if (mm) switchTab(mm[1]);
+    }
+
+    showAlert('app', 'Đã cập nhật dữ liệu mới', 'as');
+  } catch (e) {
+    console.error('[doRefresh] Lỗi:', e);
+    showAlert('app', '❌ Làm mới thất bại: ' + (e && e.message ? e.message : e), 'ae');
+  } finally {
+    // Dù thành công hay lỗi, luôn trả nút về trạng thái bấm được.
+    btn.classList.remove('btn-success');
+    btn.textContent = oldText || '🔄 Làm mới';
+    btn.disabled = false;
+  }
 }
 
 // ── FORCED CHANGE PIN (PIN tạm từ reset Telegram) ──────────
