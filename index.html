@@ -286,9 +286,18 @@ textarea{resize:none;height:80px}
         
         <hr style="margin: 20px 0; border: none; border-top: 1px dashed #cbd5e1;">
         <div class="sec-title" style="color:#991b1b">Chốt sổ dữ liệu năm</div>
-        <div class="form-row three">
+        <div class="form-row" style="grid-template-columns:minmax(120px,.8fr) minmax(210px,1.4fr) minmax(120px,.7fr); align-items:end;">
           <div><label>Năm cần chốt</label><input type="number" id="f-archive-year" placeholder="VD: 2025" style="border-color:#fca5a5;"></div>
-          <div><label>&nbsp;</label><button class="btn btn-danger" style="width:100%" onclick="doArchive()">Chốt sổ</button></div>
+          <div><label>Tác vụ cần chốt</label><select id="f-archive-type" style="border-color:#fca5a5;">
+            <option value="all">Tất cả dữ liệu cần chốt</option>
+            <option value="requests">Đơn đổi ca (Requests)</option>
+            <option value="login_log">Nhật ký đăng nhập (login_log)</option>
+            <option value="leave_history">Lịch sử nghỉ cá nhân (leave_history)</option>
+          </select></div>
+          <div><label>&nbsp;</label><button class="btn btn-danger" id="btn-archive" style="width:100%" onclick="doArchive()">Chốt sổ</button></div>
+        </div>
+        <div style="font-size:12px;color:#64748b;line-height:1.6;margin-top:-4px;">
+          Transfers không chốt/xóa để giữ đúng mốc điều chuyển kíp qua các năm.
         </div>
       </div>
     </div>
@@ -1806,15 +1815,41 @@ function showLocalAlert(elId, msg, cl) {
 }
 async function doArchive() {
   const yr = document.getElementById('f-archive-year').value;
+  const typeEl = document.getElementById('f-archive-type');
+  const archiveType = typeEl ? typeEl.value : 'all';
+  const btn = document.getElementById('btn-archive');
   if(!yr || yr < 2024) { showAlert('app','Vui lòng nhập năm hợp lệ (VD: 2025)!','ae'); return; }
-  if(!confirm(`CẢNH BÁO:\nBạn có chắc chắn muốn CHỐT SỔ toàn bộ dữ liệu hiện tại sang năm ${yr}?\n\nHành động này sẽ dọn sạch Lịch sử trên phần mềm để bắt đầu một năm mới!`)) return;
-  const xacNhanPin = prompt(`BẢO MẬT KÉP:\nĐể an toàn, vui lòng nhập mã PIN của ${CU.name} để xác nhận chốt sổ:`);
+
+  const labels = {
+    all: 'TẤT CẢ dữ liệu cần chốt',
+    requests: 'ĐƠN ĐỔI CA (Requests)',
+    login_log: 'NHẬT KÝ ĐĂNG NHẬP (login_log)',
+    leave_history: 'LỊCH SỬ NGHỈ CÁ NHÂN (leave_history)'
+  };
+  const selectedLabel = labels[archiveType] || labels.all;
+
+  if(!confirm(`CẢNH BÁO:\nBạn đang chọn chốt sổ: ${selectedLabel}\nNăm: ${yr}\n\nDữ liệu đúng năm sẽ được chuyển sang sheet lưu trữ và xóa khỏi sheet đang hoạt động.\nTransfers sẽ KHÔNG bị xóa.\n\nTiếp tục?`)) return;
+  const xacNhanPin = prompt(`BẢO MẬT KÉP:\nNhập mã PIN của ${CU.name} để xác nhận chốt sổ ${selectedLabel}:`);
   if(!xacNhanPin) { showAlert('app','Đã hủy thao tác chốt sổ.','ae'); return; }
-  showAlert('app','Đang xác thực và đóng gói dữ liệu...','ai'); 
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Đang chốt...'; }
+  showAlert('app','Đang xác thực và chốt sổ dữ liệu đã chọn...','ai');
   try {
-    const r = await api({action: "archive", year: yr, name: CU.name, pin: xacNhanPin});
-    if(r.error) { showAlert('app', r.error, 'ae'); } else { showAlert('app', r.message, 'as'); document.getElementById('f-archive-year').value = ''; await loadAll(true); switchTab('lich-su'); }
-  } catch(ex) { showAlert('app','Lỗi kết nối. Vui lòng thử lại.','ae'); }
+    const r = await api({action: 'archive', year: yr, archiveType, name: CU.name, pin: xacNhanPin});
+    if(r.error) {
+      showAlert('app', r.error, 'ae');
+    } else {
+      showAlert('app', r.message || 'Đã chốt sổ thành công.', 'as');
+      // Giữ lại năm và lựa chọn tác vụ để Admin có thể chốt tiếp tác vụ khác ngay sau đó.
+      await loadAll(true);
+      if (archiveType === 'requests' || archiveType === 'all') switchTab('lich-su');
+    }
+  } catch(ex) {
+    showAlert('app','Lỗi kết nối. Vui lòng thử lại.','ae');
+  } finally {
+    // Dù lỗi/timeout vẫn luôn mở lại nút để có thể bấm tiếp.
+    if (btn) { btn.disabled = false; btn.textContent = 'Chốt sổ'; }
+  }
 }
 
 function switchTab(t){
