@@ -5275,6 +5275,14 @@ async function submitBatchHC() {
 
   if (hasError) return; 
   if (allReqsHC.length === 0) { showLocalAlert('batchhc-msg', 'Chưa chọn nhân sự nào.', 'ae'); return; }
+
+  // V12.3: chặn ngay trên giao diện để tránh gửi một batch quá lớn lên Apps Script.
+  // Backend vẫn kiểm tra lại cùng ngưỡng 50, nên không thể bypass bằng sửa client.
+  const MAX_DISPATCH_BATCH = 50;
+  if (allReqsHC.length > MAX_DISPATCH_BATCH) {
+    showLocalAlert('batchhc-msg', `❌ Một lần chỉ được ban hành tối đa ${MAX_DISPATCH_BATCH} lệnh. Hiện có ${allReqsHC.length} lệnh — vui lòng chia thành nhiều đợt.`, 'ae');
+    return;
+  }
   
   let confirmMsg = `Xác nhận PHÊ DUYỆT ${allReqsHC.length} lệnh điều động?`;
   if (cancelIds.size > 0) confirmMsg += `\n\n⚠️ LƯU Ý: Phát hiện có ${cancelIds.size} đơn xin đổi ca đang chờ duyệt bị TRÙNG LỊCH. Hệ thống sẽ TỰ ĐỘNG HỦY các đơn đó!`;
