@@ -1,3 +1,4 @@
+<!-- V13.6 - rà soát toàn diện state-machine, phân quyền, phép năm, nhắc đơn, schema -->
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -153,9 +154,8 @@ textarea{resize:none;height:80px}
     <div id="loading-text" style="font-weight:500;">Đang tải dữ liệu...</div>
   </div>
   <div class="pbox" id="login-box" style="display:none">
-   <img src="./logocongty.png" style="width:180px;height:auto;display:block;margin:0 auto 0;object-fit:contain;" alt="Logo công ty">
+   <img src="./logocongty.png" style="max-width:220px;max-height:120px;width:auto;height:auto;display:block;margin:0 auto;object-fit:contain;" alt="Logo công ty">
     <div class="plogo" style="text-align: center">Hệ thống chấm công</div>
-    <div class="plogo" style="text-align: center">Công ty Nhiệt điện Nghi Sơn</div>
     <div style="font-size:18px; font-weight:600; color:#64748b; margin-bottom:4px;">🔑 Đăng nhập</div>
     <div class="psub">Nhập số điện thoại và mã PIN cá nhân</div>
     <div class="pfield">
@@ -281,23 +281,24 @@ textarea{resize:none;height:80px}
           <div><label>Người dùng</label><div class="ss" id="ss-reset"><button class="ss-btn ph"><span id="ss-reset-lbl">-- Chọn --</span><span>▾</span></button><div class="ss-drop" id="ss-reset-drop"><input class="ss-inp" oninput="filterSS('ss-reset',this.value)" placeholder="Tìm..."><div class="ss-list" id="ss-reset-list"></div></div></div><input type="hidden" id="f-reset-name"></div>
           <div><label>Mật khẩu mới</label><input type="password" id="f-reset-pin" minlength="4" maxlength="12" onkeydown="if(event.key==='Enter')doResetPin()"></div>
         </div>
-        <button class="btn btn-warn" style="width:100%; margin-top:8px" onclick="doResetPin()">Reset PIN</button>
+        <button class="btn btn-warn" id="btn-reset-pin" style="width:100%; margin-top:8px" onclick="doResetPin()">Reset PIN</button>
         <div id="admin-msg" class="alert"></div>
         
         <hr style="margin: 20px 0; border: none; border-top: 1px dashed #cbd5e1;">
         <div class="sec-title" style="color:#991b1b">Chốt sổ dữ liệu năm</div>
         <div class="form-row" style="grid-template-columns:minmax(120px,.8fr) minmax(210px,1.4fr) minmax(120px,.7fr); align-items:end;">
-          <div><label>Năm cần chốt</label><input type="number" id="f-archive-year" placeholder="VD: 2025" style="border-color:#fca5a5;"></div>
+          <div><label>Năm cần chốt</label><input type="number" id="f-archive-year" placeholder="VD: 2023" style="border-color:#fca5a5;"></div>
           <div><label>Tác vụ cần chốt</label><select id="f-archive-type" style="border-color:#fca5a5;">
             <option value="all">Tất cả dữ liệu cần chốt</option>
             <option value="requests">Đơn đổi ca (Requests)</option>
+            <option value="leaves">Đơn nghỉ cá nhân (Leaves)</option>
             <option value="login_log">Nhật ký đăng nhập (login_log)</option>
             <option value="leave_history">Lịch sử nghỉ cá nhân (leave_history)</option>
           </select></div>
           <div><label>&nbsp;</label><button class="btn btn-danger" id="btn-archive" style="width:100%" onclick="doArchive()">Chốt sổ</button></div>
         </div>
         <div style="font-size:12px;color:#64748b;line-height:1.6;margin-top:-4px;">
-          Transfers không chốt/xóa để giữ đúng mốc điều chuyển kíp qua các năm.
+          Phần mềm tải cửa sổ ±2 năm quanh năm hiện tại. Chỉ được chốt các năm cũ hơn 2 năm lùi (VD năm 2026: chốt 2023 trở về trước). Dữ liệu không tự xóa; Transfers không chốt/xóa để giữ mốc điều chuyển kíp.
         </div>
       </div>
     </div>
@@ -867,6 +868,18 @@ textarea{resize:none;height:80px}
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw7fHZBn_Bzfma2td2PoP72JhrfasO1h_BYn_mF5o87Vx7Af85DgmCh3Tivaypc-L9yxA/exec";
 let APP_CONFIG = { tenPX: "Phân xưởng", lechMax: 10 };
 let NV_LIST=[]; let CA = {}; let CU=null;
+let userByName = {};
+
+function rebuildUserByName() {
+  userByName = {};
+  (NV_LIST || []).forEach(u => {
+    if (u && u.name) userByName[u.name] = u;
+  });
+}
+
+function getUserInfo(name) {
+  return userByName[(name || '').toString().trim()] || null;
+}
 // ── HỖ TRỢ NHIỀU BỘ PHẬN TRONG 1 HỆ THỐNG ──────────────────────────────
 // sameBoPhan: 2 người được coi là "cùng bộ phận" nếu boPhan trùng nhau,
 // HOẶC nếu 1 trong 2 chưa có boPhan (cột chưa tồn tại / dữ liệu chưa nhập) → fail-open,
@@ -893,12 +906,34 @@ function getNVMine() {
 // "rò rỉ" thêm nhân sự bộ phận khác khi duyệt qua danh sách đơn của toàn Công ty.
 function isMineName(name) {
   if (!CU) return true;
-  const u = NV_LIST.find(x => x.name === name);
+  const u = getUserInfo(name);
   return sameBoPhan(u, CU);
 }
 let allReqs=[]; let reqsByName = {}; 
 let allLeaves=[]; let leavesByName = {}; 
-let allTransfers = []; let transfersByName = {}; 
+let allTransfers = []; let transfersByName = {};
+
+function rebuildTransfersByName() {
+  transfersByName = {};
+  (allTransfers || []).forEach(t => {
+    if (!t || !t.name) return;
+    if (!transfersByName[t.name]) transfersByName[t.name] = [];
+    transfersByName[t.name].push(t);
+  });
+  Object.keys(transfersByName).forEach(name => {
+    transfersByName[name].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  });
+}
+
+function getLatestTransfer(name, onOrBeforeDate) {
+  const arr = transfersByName[(name || '').toString().trim()] || [];
+  const d = onOrBeforeDate || '9999-12-31';
+  for (let i = 0; i < arr.length; i++) {
+    if ((arr[i].date || '') <= d && arr[i].newKip) return arr[i];
+  }
+  return null;
+}
+
 let MAU_LICH={};
 let autoRefreshTimer = null;
 let leavePollTimer = null;
@@ -954,7 +989,10 @@ function renderScheduleTableDebounced() {
 // Báo lỗi ngay lập tức nếu có lỗi script
 window.onerror = function(msg, url, line) {
   const loadTxt = document.getElementById('loading-text');
-  if (loadTxt) loadTxt.innerHTML = '<span style="color:red">LỖI SCRIPT: ' + msg + ' (Dòng ' + line + ')</span>';
+  if (loadTxt) {
+    loadTxt.style.color = 'red';
+    loadTxt.textContent = 'LỖI SCRIPT: ' + String(msg || '') + ' (Dòng ' + String(line || '') + ')';
+  }
   return false;
 };
 
@@ -1000,7 +1038,7 @@ function makeClientRequestId() {
 }
 
 async function api(p) {
-  const writeActions = ['add','updateStatus','addDispatchBatch','submitLeave','approveLeaveWeb','rejectLeaveWeb'];
+  const writeActions = ['add','updateStatus','addDispatchBatch','addTransfer','addTransferBatch','submitLeave','cancelLeave','approveLeaveWeb','rejectLeaveWeb','resetPin'];
   if (writeActions.includes(p.action) && !p.clientRequestId) p.clientRequestId = makeClientRequestId();
   if (typeof CU !== 'undefined' && CU && CU.token) {
     p.reqName = CU.name;
@@ -1150,10 +1188,10 @@ function getLechWarn(boPhan) {
 }
 // Tra theo TÊN nhân sự (tự tìm bộ phận qua NV_LIST).
 function getLechMaxByName(name) {
-  return getLechMax((NV_LIST.find(u => u.name === name) || {}).boPhan || '');
+  return getLechMax((getUserInfo(name) || {}).boPhan || '');
 }
 function getLechWarnByName(name) {
-  return getLechWarn((NV_LIST.find(u => u.name === name) || {}).boPhan || '');
+  return getLechWarn((getUserInfo(name) || {}).boPhan || '');
 }
 
 function setupDynamicFields(settings) {
@@ -1169,58 +1207,21 @@ function setupDynamicFields(settings) {
     document.getElementById('page-title').textContent = "Quản lý chấm công – " + APP_CONFIG.tenPX; 
     document.getElementById('tb-ten-px').textContent = APP_CONFIG.tenPX;
   }
-  let kipHtml = '<option value="">-- Kíp --</option>' + settings.kips.map(k => `<option>${k}</option>`).join('');
-  document.getElementById('f-kip').innerHTML = kipHtml; document.getElementById('f-partner-kip').innerHTML = kipHtml; document.getElementById('f-fkp').innerHTML = '<option value="">Tất cả kíp</option>' + settings.kips.map(k => `<option>${k}</option>`).join('');
-  const kipFilterHtml = '<option value="">Tất cả kíp</option>' + settings.kips.map(k => `<option>${k}</option>`).join('');
+  let kipHtml = '<option value="">-- Kíp --</option>' + settings.kips.map(k => `<option>${escapeHTML(k)}</option>`).join('');
+  document.getElementById('f-kip').innerHTML = kipHtml; document.getElementById('f-partner-kip').innerHTML = kipHtml; document.getElementById('f-fkp').innerHTML = '<option value="">Tất cả kíp</option>' + settings.kips.map(k => `<option>${escapeHTML(k)}</option>`).join('');
+  const kipFilterHtml = '<option value="">Tất cả kíp</option>' + settings.kips.map(k => `<option>${escapeHTML(k)}</option>`).join('');
   document.getElementById('f-leave-hist-kip').innerHTML = kipFilterHtml;
-  document.getElementById('f-partner-role').innerHTML = '<option value="">-- Chọn --</option>' + settings.chucDanhs.map(c => `<option>${c}</option>`).join('');
-  let caHtml = '<option value="">-- Chọn ca --</option>' + settings.cas.map(c => `<option value="${c.ma}">${c.ten}</option>`).join('');
+  document.getElementById('f-partner-role').innerHTML = '<option value="">-- Chọn --</option>' + settings.chucDanhs.map(c => `<option>${escapeHTML(c)}</option>`).join('');
+  let caHtml = '<option value="">-- Chọn ca --</option>' + settings.cas.map(c => `<option value="${escapeAttr(c.ma)}">${escapeHTML(c.ten)}</option>`).join('');
   document.getElementById('f-ca-doi').innerHTML = caHtml; document.getElementById('f-ca-tra').innerHTML = caHtml;
   CA = {}; settings.cas.forEach(c => { CA[c.ma] = { label: c.thoiGian ? `${c.ten} (${c.thoiGian})` : c.ten }; });
 }
 
-window.onload = async () => {
+window.onload = () => {
   const loadingText = document.getElementById('loading-text');
-  try { 
-    if (loadingText) loadingText.innerHTML = "Đang kết nối máy chủ...";
-    const res = await api({action: "getUsers"}); 
-    if (loadingText) loadingText.innerHTML = "Đang xử lý dữ liệu...";
-
-    if (res && res.users && res.users.length > 0) { 
-      NV_LIST = res.users; 
-      MAU_LICH = res.mauLich || {}; 
-      
-      allTransfers = (res.transfers || []).map(t => {
-        t._date = (t.date || "").toString().substring(0, 10);
-        return t;
-      });
-      transfersByName = {};
-      allTransfers.forEach(t => {
-        if (!transfersByName[t.name]) transfersByName[t.name] = [];
-        transfersByName[t.name].push(t);
-      });
-
-      initSS(); 
-      if (res.settings) setupDynamicFields(res.settings);
-      
-      document.getElementById('login-loading').style.display = 'none'; 
-      document.getElementById('login-box').style.display = 'block'; 
-    } else {
-      throw new Error("Không tìm thấy dữ liệu nhân sự trên máy chủ.");
-    }
-  } catch(e) { 
-    console.error("Lỗi khởi tạo App:", e);
-    const spinIcon = document.getElementById('spin-icon');
-    if (spinIcon) spinIcon.style.display = 'none'; 
-    if (loadingText) {
-      loadingText.innerHTML = 
-        `<div style="color:#dc2626; font-weight:bold; margin-bottom:10px;">❌ KHÔNG THỂ TẢI DỮ LIỆU</div>` +
-        `<div style="color:#64748b; font-size:12px; margin-bottom:15px; text-align:left; background:#f8fafc; padding:10px; border-radius:6px; border:1px solid #e2e8f0;">` +
-        `<b>Chi tiết lỗi:</b><br>${e.message || e}<br><br>` +
-        `<b>Gợi ý:</b><br>1. Kiểm tra kết nối Internet.<br>2. Nhấn Ctrl + F5 để làm mới hoàn toàn.<br>3. Kiểm tra Apps Script đã "Triển khai" chưa.</div>` +
-        `<button onclick="location.reload()" style="width:100%; padding:10px; background:#1a56a0; color:white; border:none; border-radius:6px; cursor:pointer; font-weight:bold;">Thử lại ngay</button>`;
-    }
-  }
+  if (loadingText) loadingText.innerHTML = "Sẵn sàng đăng nhập";
+  document.getElementById('login-loading').style.display = 'none';
+  document.getElementById('login-box').style.display = 'block';
 };
 
 async function applyRequestsFromApi(d) {
@@ -1341,56 +1342,11 @@ const SS_SOURCES = {
 // ===============================================================
 // 2. CẬP NHẬT DANH SÁCH & BÁO LỖI NGAY LẬP TỨC
 // ===============================================================
-function updatePartnerListRealtime() {
-    buildSS('ss-partner', ''); 
-    const curP = document.getElementById('f-partner').value;
-    const valids = SS_SOURCES['ss-partner']();
-    if (curP && !valids.includes(curP)) {
-        document.getElementById('f-partner').value = '';
-        document.getElementById('ss-partner-lbl').textContent = '-- Chọn --';
-    }
-}
 
-function validateRealtimeDoi() {
-    const n = document.getElementById('f-name').value, k = document.getElementById('f-kip').value;
-    const cD = document.getElementById('f-ca-doi').value, nD = document.getElementById('f-ngay-doi').value;
-    const box = document.getElementById('err-ca-doi');
-    if (!nD || !cD) { box.style.display = 'none'; updatePartnerListRealtime(); return; }
 
-    const thucTe = getCaThucTe(n, k, nD);
-    if (thucTe !== cD) {
-        box.innerHTML = `❌ Ngày ${fmtDate(nD)} bạn có lịch là ${thucTe==='OFF'?'NGHỈ':('Ca '+thucTe)}. Không thể nghỉ Ca ${cD}!`;
-        box.style.display = 'block';
-        document.getElementById('f-ca-doi').value = ''; 
-    } else { box.style.display = 'none'; }
-    updatePartnerListRealtime();
-}
 
-function validateRealtimeTra() {
-    const n = document.getElementById('f-name').value, k = document.getElementById('f-kip').value;
-    const cT = document.getElementById('f-ca-tra').value, nT = document.getElementById('f-ngay-tra').value;
-    const box = document.getElementById('err-ca-tra');
-    if (!nT || !cT) { box.style.display = 'none'; updatePartnerListRealtime(); return; }
 
-    const thucTe = getCaThucTe(n, k, nT);
-    const nD = document.getElementById('f-ngay-doi').value;
-    
-    // Kiểm tra vướng lịch làm việc
-    if (thucTe !== 'OFF' && nD !== nT) {
-        box.innerHTML = `❌ Ngày ${fmtDate(nT)} bạn vướng lịch Ca ${thucTe}. Phải chọn ngày NGHỈ để trả ca!`;
-        box.style.display = 'block';
-        document.getElementById('f-ca-tra').value = '';
-    } else {
-        // KIỂM TRA AN TOÀN (C-K, 4K) CHO CHIỀU TRẢ - BÁO LỖI NGAY TẠI ĐÂY
-        const loiAT = checkViPhamAnToan(n, k, nT, cT);
-        if (loiAT) {
-            box.innerHTML = `❌ Vi phạm An toàn khi Trả ca: ${loiAT}`;
-            box.style.display = 'block';
-            document.getElementById('f-ca-tra').value = ''; // Xóa ngay để không cho gửi
-        } else { box.style.display = 'none'; }
-    }
-    updatePartnerListRealtime();
-}
+
 const SS_HIDDEN={'ss-partner':'f-partner','ss-reset':'f-reset-name'};
 // Hàm tự động làm sạch ô "Người đi thay" mỗi khi đổi Ngày/Ca
 function refreshPartnerList() {
@@ -1406,7 +1362,15 @@ function refreshPartnerList() {
 }
 function buildSS(id,q){
   const items=SS_SOURCES[id](); const el=document.getElementById(id+'-list');
-  const f=q?items.filter(n=>n.toLowerCase().includes(q.toLowerCase())):items; el.innerHTML=f.map(n=>`<div class="ss-opt" data-val="${n}">${n}</div>`).join('');
+  const f=q?items.filter(n=>n.toLowerCase().includes(q.toLowerCase())):items;
+  el.textContent='';
+  f.forEach(n=>{
+    const opt=document.createElement('div');
+    opt.className='ss-opt';
+    opt.dataset.val=String(n);
+    opt.textContent=String(n);
+    el.appendChild(opt);
+  });
 }
 function filterSS(id,q){buildSS(id,q);}
 
@@ -1423,7 +1387,7 @@ document.addEventListener('click',e=>{
         // Lấy kíp thực tế của người đi thay theo lệnh điều động
         let partnerKipThucTe = pInfo.kip;
         if (allTransfers && allTransfers.length > 0) {
-          const today = new Date().toISOString().substring(0,10);
+          const today = localTodayYmd();
           const sorted = allTransfers
           .filter(t => t.name === val && t.date <= today && t.newKip)
             .sort((a,b) => b.date.localeCompare(a.date));
@@ -1442,22 +1406,27 @@ document.addEventListener('click',e=>{
 function initSS(){Object.keys(SS_SOURCES).forEach(id=>buildSS(id,''));}
 
 async function doForgotPin() {
-  const n = document.getElementById('f-login-name').value;
+  const n = document.getElementById('f-login-name').value.trim();
   const err = document.getElementById('pin-err');
-  if(!n) { err.style.color = '#dc2626'; err.textContent = 'Vui lòng chọn Tên của bạn trước.'; return; }
-  
-  err.style.color = '#1a56a0'; 
-  err.textContent = 'Đang kiểm tra và gửi mã PIN...';
+  if (!n) {
+    err.style.color = '#dc2626';
+    err.textContent = 'Vui lòng nhập số điện thoại trước.';
+    return;
+  }
+  err.style.color = '#1a56a0';
+  err.textContent = '⏳ Đang gửi PIN tạm về Email đã đăng ký...';
   try {
-    const r = await api({action: "forgotPin", name: n});
-    if(r.error) { 
-      err.style.color = '#dc2626'; err.textContent = r.error; 
-    } else { 
-      // Thông báo rõ ràng là gửi về email nào
-      err.style.color = '#166534'; err.textContent = r.message; 
+    const r = await api({ action: 'forgotPin', name: n });
+    if (r && r.error) {
+      err.style.color = '#dc2626';
+      err.textContent = r.error;
+    } else {
+      err.style.color = '#166534';
+      err.textContent = (r && r.message) || 'Đã tiếp nhận yêu cầu khôi phục PIN.';
     }
-  } catch(ex) { 
-    err.style.color = '#dc2626'; err.textContent = 'Lỗi hệ thống!'; 
+  } catch (ex) {
+    err.style.color = '#dc2626';
+    err.textContent = 'Không gửi được PIN tạm. Vui lòng thử lại sau hoặc dùng bot Telegram /resetpin.';
   }
 }
 
@@ -1484,31 +1453,49 @@ async function doLogin(){
     // ĐĂNG NHẬP THÀNH CÔNG
     CU=r.user; 
 
-    // Tải bổ sung dữ liệu phân quyền + lịch sử điều chuyển — TÁCH RIÊNG khỏi lệnh getUsers
-    // lúc mở app (chưa cần đăng nhập), để không lộ quyenDuyet/quyenDieuDong/chucDanhDuPhong/
-    // lịch sử điều chuyển ra ngoài trước khi xác thực. Chỉ gọi được SAU khi có token thật.
-    try {
-      const priv = await api({ action: 'getUserPrivilegeData' });
-      if (priv && priv.quyenMap) {
-        NV_LIST.forEach(u => { const q = priv.quyenMap[u.name]; if (q) Object.assign(u, q); });
-      }
-      if (priv && priv.transfers) {
-        allTransfers = priv.transfers.map(t => { t._date = (t.date || "").toString().substring(0, 10); return t; });
-        transfersByName = {};
-        allTransfers.forEach(t => { if (!transfersByName[t.name]) transfersByName[t.name] = []; transfersByName[t.name].push(t); });
-      }
-    } catch(privErr) { console.error('Lỗi tải dữ liệu phân quyền:', privErr); }
-
-    buildSS('ss-partner', '');
-
-    // Bắt buộc đổi PIN nếu đang dùng PIN tạm (reset qua Telegram)
-    if (r.user && r.user.currentToken === 'TEMP_PIN') {
+    // PIN tạm dùng cờ server riêng, không phụ thuộc currentToken.
+    // Kiểm tra NGAY trước khi tải dữ liệu khác để session bắt buộc đổi PIN không làm việc gì ngoài đổi PIN.
+    if (r.forcePinChange) {
       document.getElementById('overlay').style.display='none';
       document.getElementById('app').style.display='block';
       document.getElementById('forced-pin-modal').style.display='flex';
       document.getElementById('fcp-new').focus();
       return;
     }
+
+    // V13.7.4: chỉ sau khi có session thật mới tải danh sách nhân sự, cấu hình được
+    // whitelist, mẫu lịch, phân quyền và điều chuyển. Nếu bootstrap lỗi thì thu hồi phiên.
+    try {
+      const boot = await api({ action: 'getBootstrap' });
+      if (!boot || boot.error || !boot.users || boot.users.length === 0) {
+        try { await api({ action: 'logout' }); } catch(_) {}
+        CU = null;
+        e.style.color = '#dc2626';
+        e.textContent = (boot && boot.error) || 'Không tải được dữ liệu sau đăng nhập.';
+        return;
+      }
+
+      NV_LIST = boot.users;
+      if (boot.quyenMap) {
+        NV_LIST.forEach(u => { const q = boot.quyenMap[u.name]; if (q) Object.assign(u, q); });
+      }
+      rebuildUserByName();
+      MAU_LICH = boot.mauLich || {};
+      allTransfers = (boot.transfers || []).map(t => { t._date = (t.date || "").toString().substring(0, 10); return t; });
+      rebuildTransfersByName();
+      if (boot.settings) setupDynamicFields(boot.settings);
+      initSS();
+    } catch(bootErr) {
+      console.error('Lỗi tải dữ liệu sau đăng nhập:', bootErr);
+      try { await api({ action: 'logout' }); } catch(_) {}
+      CU = null;
+      e.style.color = '#dc2626';
+      e.textContent = 'Không tải được dữ liệu sau đăng nhập. Vui lòng thử lại.';
+      return;
+    }
+
+    buildSS('ss-partner', '');
+
 
 // CẢI TIẾN 3: NHẮC ĐỔI PIN NẾU QUÁ 6 THÁNG
     if (r.nhacDoiPin) {
@@ -1551,15 +1538,15 @@ async function doLogin(){
         if (vA !== vB) return vA - vB;
         return a.localeCompare(b, 'vi');
       });
-      document.getElementById('f-fcd').innerHTML = '<option value="">Tất cả chức danh</option>' + cdList.map(cd => `<option>${cd}</option>`).join('');
+      document.getElementById('f-fcd').innerHTML = '<option value="">Tất cả chức danh</option>' + cdList.map(cd => `<option>${escapeHTML(cd)}</option>`).join('');
       document.getElementById('f-leave-hist-cd-wrap').style.display = 'contents';
-      document.getElementById('f-leave-hist-cd').innerHTML = '<option value="">Tất cả chức danh</option>' + cdList.map(cd => `<option>${cd}</option>`).join('');
+      document.getElementById('f-leave-hist-cd').innerHTML = '<option value="">Tất cả chức danh</option>' + cdList.map(cd => `<option>${escapeHTML(cd)}</option>`).join('');
     }
     // Bộ lọc BỘ PHẬN — chỉ dành cho admin (thấy toàn Công ty), để tìm kiếm nhanh
     // trong các tab Lịch sử đổi ca / Lịch sử nghỉ / Thống kê phép năm.
     if (CU.admin) {
       const _bpAll = [...new Set(NV_LIST.map(u => u.boPhan).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'vi'));
-      const _bpOptions = '<option value="">Tất cả bộ phận</option>' + _bpAll.map(bp => `<option>${bp}</option>`).join('');
+      const _bpOptions = '<option value="">Tất cả bộ phận</option>' + _bpAll.map(bp => `<option>${escapeHTML(bp)}</option>`).join('');
       const _bpWraps = [
         ['f-hist-bp-wrap', 'f-hist-bp'],
         ['f-leave-hist-bp-wrap', 'f-leave-hist-bp'],
@@ -1588,7 +1575,7 @@ async function doLogin(){
   // Lấy kíp thực tế sau điều động
   let displayKip = myInfo.kip;
   if (typeof allTransfers !== 'undefined' && allTransfers.length > 0) {
-    const today = new Date().toISOString().substring(0, 10);
+    const today = localTodayYmd();
     const sorted = allTransfers
       .filter(t => t.name === CU.name && t.date <= today)
       .sort((a, b) => b.date.localeCompare(a.date));
@@ -1682,6 +1669,7 @@ async function doRefresh(btn) {
     // 1) Nhân sự + cấu hình công khai
     if (Array.isArray(bundle.users) && bundle.users.length > 0) {
       NV_LIST = bundle.users;
+      rebuildUserByName();
     }
     MAU_LICH = bundle.mauLich || {};
     if (bundle.settings) setupDynamicFields(bundle.settings);
@@ -1698,11 +1686,7 @@ async function doRefresh(btn) {
       t._date = (t.date || '').toString().substring(0, 10);
       return t;
     });
-    transfersByName = {};
-    allTransfers.forEach(t => {
-      if (!transfersByName[t.name]) transfersByName[t.name] = [];
-      transfersByName[t.name].push(t);
-    });
+    rebuildTransfersByName();
 
     // 4) Đơn đổi ca — dùng chung hàm dựng index hiện có
     applyRequestsFromApi({ requests: bundle.requests || [] });
@@ -1752,7 +1736,7 @@ async function doRefresh(btn) {
   }
 }
 
-// ── FORCED CHANGE PIN (PIN tạm từ reset Telegram) ──────────
+// ── FORCED CHANGE PIN (PIN tạm từ Email hoặc reset Telegram) ──────────
 async function doForcedChangePin() {
   const newPin  = document.getElementById('fcp-new').value.trim();
   const newPin2 = document.getElementById('fcp-new2').value.trim();
@@ -1768,8 +1752,9 @@ async function doForcedChangePin() {
     const r = await api({ action: 'changeTempPin', name: CU.name, currentPin, newPin });
     if (r.error) { err.textContent = r.error; btn.disabled = false; btn.textContent = '✅ Xác nhận đặt PIN mới'; return; }
     document.getElementById('forced-pin-modal').style.display = 'none';
-    CU.currentToken = '';
-    showAlert('app', '🎉 Đặt PIN mới thành công! Chào mừng ' + CU.name, 'as');
+    showAlert('app', '✅ Đặt PIN mới thành công. Hệ thống sẽ quay lại màn hình đăng nhập để xác thực bằng PIN mới.', 'as');
+    CU = null;
+    setTimeout(() => window.location.reload(), 900);
   } catch(ex) {
     err.textContent = 'Lỗi kết nối, thử lại!';
     btn.disabled = false; btn.textContent = '✅ Xác nhận đặt PIN mới';
@@ -1785,8 +1770,27 @@ async function doChangePin(){
   try{ const r=await api({action:"changePin",name:CU.name,oldPin:o,newPin:n}); if(r.error){err.textContent=r.error;return;} closePinModal(); showAlert('app','Đổi thành công','as'); } catch(ex){err.textContent='Lỗi';}
 }
 async function doResetPin(){
-  const n=document.getElementById('f-reset-name').value, p=document.getElementById('f-reset-pin').value;
-  if(!n||!p){return;} try{ const r=await api({action:"resetPin",name:n,newPin:p}); if(r.error){return;} showAlert('app','Đã reset PIN cho '+n,'as'); }catch(ex){}
+  const n = document.getElementById('f-reset-name').value;
+  const p = document.getElementById('f-reset-pin').value;
+  const btn = document.getElementById('btn-reset-pin');
+  if(!n || !p){ showAlert('app','Vui lòng chọn nhân sự và nhập PIN mới.','ae'); return; }
+
+  const adminPin = prompt(`XÁC NHẬN BẢO MẬT:
+Nhập PIN của Admin ${CU.name} để reset PIN cho ${n}:`);
+  if(!adminPin) return;
+
+  const oldText = btn ? btn.textContent : 'Reset PIN';
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Đang reset...'; }
+  try{
+    const r = await api({action:"resetPin", name:n, newPin:p, verifyPin:adminPin});
+    if(r.error){ showAlert('app', r.error, 'ae'); return; }
+    document.getElementById('f-reset-pin').value = '';
+    showAlert('app','Đã reset PIN cho '+n+' và thu hồi phiên đăng nhập cũ của tài khoản này.','as');
+  } catch(ex) {
+    showAlert('app','Lỗi kết nối khi reset PIN. Vui lòng thử lại.','ae');
+  } finally {
+    if(btn){ btn.disabled = false; btn.textContent = oldText; }
+  }
 }
 function showAlert(sc,m,cl){
   const el=document.getElementById(sc==='app'?'alert-app':'alert-gl');
@@ -1818,17 +1822,26 @@ async function doArchive() {
   const typeEl = document.getElementById('f-archive-type');
   const archiveType = typeEl ? typeEl.value : 'all';
   const btn = document.getElementById('btn-archive');
-  if(!yr || yr < 2024) { showAlert('app','Vui lòng nhập năm hợp lệ (VD: 2025)!','ae'); return; }
+  const currentYear = new Date().getFullYear();
+  const minActiveYear = currentYear - 2;
+  const yNum = parseInt(yr, 10);
+  if(!yNum || yNum < 2000 || yNum >= minActiveYear) {
+    showAlert('app', `Chỉ được chốt năm ${minActiveYear - 1} trở về trước. Các năm ${minActiveYear}-${currentYear + 2} đang nằm trong cửa sổ dữ liệu hoạt động.`, 'ae');
+    return;
+  }
 
   const labels = {
     all: 'TẤT CẢ dữ liệu cần chốt',
     requests: 'ĐƠN ĐỔI CA (Requests)',
+    leaves: 'ĐƠN NGHỈ CÁ NHÂN (Leaves)',
     login_log: 'NHẬT KÝ ĐĂNG NHẬP (login_log)',
     leave_history: 'LỊCH SỬ NGHỈ CÁ NHÂN (leave_history)'
   };
   const selectedLabel = labels[archiveType] || labels.all;
 
-  if(!confirm(`CẢNH BÁO:\nBạn đang chọn chốt sổ: ${selectedLabel}\nNăm: ${yr}\n\nDữ liệu đúng năm sẽ được chuyển sang sheet lưu trữ và xóa khỏi sheet đang hoạt động.\nTransfers sẽ KHÔNG bị xóa.\n\nTiếp tục?`)) return;
+  const detailText = `Chỉ khi bạn xác nhận, dữ liệu đúng năm ${yr} của tác vụ đã chọn mới được chuyển sang sheet lưu trữ và xóa khỏi sheet đang hoạt động.\nNếu không chốt sổ, dữ liệu cũ vẫn giữ nguyên trong Google Sheets và phần mềm không tự xóa.`;
+
+  if(!confirm(`CẢNH BÁO:\nBạn đang chọn: ${selectedLabel}\nNăm chốt: ${yr}\n\n${detailText}\nTransfers sẽ KHÔNG bị xóa.\n\nTiếp tục?`)) return;
   const xacNhanPin = prompt(`BẢO MẬT KÉP:\nNhập mã PIN của ${CU.name} để xác nhận chốt sổ ${selectedLabel}:`);
   if(!xacNhanPin) { showAlert('app','Đã hủy thao tác chốt sổ.','ae'); return; }
 
@@ -1842,7 +1855,9 @@ async function doArchive() {
       showAlert('app', r.message || 'Đã chốt sổ thành công.', 'as');
       // Giữ lại năm và lựa chọn tác vụ để Admin có thể chốt tiếp tác vụ khác ngay sau đó.
       await loadAll(true);
-      if (archiveType === 'requests' || archiveType === 'all') switchTab('lich-su');
+      if (archiveType === 'requests') switchTab('lich-su');
+      else if (archiveType === 'leaves') switchTab('lich-su-np');
+      else if (archiveType === 'all') switchTab('lich-su');
     }
   } catch(ex) {
     showAlert('app','Lỗi kết nối. Vui lòng thử lại.','ae');
@@ -1881,8 +1896,23 @@ const btn=document.querySelector(`.tab[onclick="switchTab('${s}')"]`); if(btn) b
   }
 }
 
+function localTodayYmd(){ try{ const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()); const m=Object.fromEntries(parts.map(p=>[p.type,p.value])); return `${m.year}-${m.month}-${m.day}`; }catch(e){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; } }
+// Chuẩn hóa mọi timestamp đang dùng trong app về YYYY-MM-DD để so với ngày điều chuyển.
+// Hỗ trợ cả "HH:mm dd/MM/yyyy" (getVNTime), "dd/MM/yyyy HH:mm" và ISO.
+function dateOnlyYmdFromAny(v){
+  if(!v) return localTodayYmd();
+  if(v instanceof Date && !isNaN(v.getTime())){
+    try{ const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(v); const m=Object.fromEntries(parts.map(p=>[p.type,p.value])); return `${m.year}-${m.month}-${m.day}`; }catch(e){}
+  }
+  const x=String(v).trim();
+  let m=x.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if(m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m=x.match(/(?:^|\s)(\d{2})\/(\d{2})\/(\d{4})(?:\s|$)/);
+  if(m) return `${m[3]}-${m[2]}-${m[1]}`;
+  return localTodayYmd();
+}
 function fmtDate(d){ if(!d) return ''; const s = d.toString().trim().substring(0,10); const p=s.split('-'); return p.length===3 ? p[2]+'/'+p[1]+'/'+p[0] : d; }
-function caLabel(k){return CA[k]?CA[k].label:k;}
+function caLabel(k){return escapeHTML(CA[k]?CA[k].label:k);}
 function badge(s){ return {pending_partner:'<span class="badge bp">Chờ xác nhận</span>',pending_ld:'<span class="badge bld">Chờ LĐ duyệt</span>',approved:'<span class="badge bok">Đã duyệt</span>',rejected:'<span class="badge bno">Từ chối</span>'}[s]||''; }
 function flowBar(s){ const steps=[['pending_partner','Xác nhận'],['pending_ld','Duyệt PX'],['approved','Xong']]; const cur={pending_partner:0,pending_ld:1,approved:2}[s]??0; return`<div class="flow">${steps.map(([,l],i)=>`<div class="fs${s!=='rejected'&&i<cur?' done':s!=='rejected'&&i===cur?' active':''}">${l}</div>`).join('')}</div>`; }
 // Thêm hàm "khử mã độc" (Sanitize)
@@ -1891,6 +1921,17 @@ function escapeHTML(str) {
   return str.toString().replace(/[&<>'"]/g, 
     tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
   );
+}
+function escapeAttr(str) { return escapeHTML(str); }
+function safeActionId(value) {
+  const id = String(value == null ? '' : value).trim();
+  return /^[A-Za-z0-9_.:-]{1,160}$/.test(id) ? id : '';
+}
+function safeHttpUrl(value) {
+  try {
+    const url = new URL(String(value || ''), window.location.href);
+    return (url.protocol === 'https:' || url.protocol === 'http:') ? escapeAttr(url.href) : '';
+  } catch (e) { return ''; }
 }
 
 // Hàm phụ trợ: Chuyển đổi chuỗi thời gian thành định dạng Giờ:Phút Ngày/Tháng/Năm
@@ -1962,17 +2003,18 @@ function reqCard(r, a = '') {
     // Lấy kíp thực tế theo lệnh điều động
     function getKipTT(name, defaultKip) {
       if (!allTransfers || !allTransfers.length) return defaultKip;
-      const today = new Date().toISOString().substring(0,10);
+      const today = localTodayYmd();
       const sorted = allTransfers.filter(t => t.name === name && t.date <= today && t.newKip).sort((a,b) => b.date.localeCompare(a.date));
       return sorted.length > 0 ? sorted[0].newKip : defaultKip;
     }
-    const uKip = uInfo?.kip ? ` - ${getKipTT(r.name, uInfo.kip)}` : '';
-    const pKip = pInfo?.kip ? ` - ${getKipTT(r.partner, pInfo.kip)}` : '';
-    uRoleDisplay = ` <small style="color:#64748b; font-weight:500;">(${commonRole}${uSuffix}${uKip})</small>`;
-    pRoleDisplay = ` <small style="color:#64748b; font-weight:500;">(${commonRole}${pSuffix}${pKip})</small>`;
+    const uKip = uInfo?.kip ? ` - ${escapeHTML(getKipTT(r.name, uInfo.kip))}` : '';
+    const pKip = pInfo?.kip ? ` - ${escapeHTML(getKipTT(r.partner, pInfo.kip))}` : '';
+    uRoleDisplay = ` <small style="color:#64748b; font-weight:500;">(${escapeHTML(commonRole)}${escapeHTML(uSuffix)}${uKip})</small>`;
+    pRoleDisplay = ` <small style="color:#64748b; font-weight:500;">(${escapeHTML(commonRole)}${escapeHTML(pSuffix)}${pKip})</small>`;
   }
 
-  const imgLink = r.minhChung ? `<br>🖼️ <a href="${r.minhChung}" target="_blank" style="color:#2563eb; font-weight:600; text-decoration:none;">Xem ảnh minh chứng</a>` : '';
+  const safeImgUrl = safeHttpUrl(r.minhChung);
+  const imgLink = safeImgUrl ? `<br>🖼️ <a href="${safeImgUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb; font-weight:600; text-decoration:none;">Xem ảnh minh chứng</a>` : '';
   const textDoi = r.ngayDoi ? `📅 Đổi ${caLabel(r.caDoi)} - ${fmtDate(r.ngayDoi)}` : `📅 Đổi: <i>Chưa xác định</i>`;
   let textTra = `🔄 Trả: <i>Chưa xác định</i>`;
 if (r.caTra === 'NONE') {
@@ -1986,11 +2028,11 @@ if (r.caTra === 'NONE') {
   if (r.partnerApprovedAt) timeLogs += `🔸 <b>Người thay OK:</b> ${fmtDateTime(r.partnerApprovedAt)}<br>`;
  // Hiển thị thêm tên người duyệt hoặc người từ chối
   if (r.approvedAt) {
-    const approverName = r.approvedBy ? ` (Duyệt bởi: ${r.approvedBy})` : "";
+    const approverName = r.approvedBy ? ` (Duyệt bởi: ${escapeHTML(r.approvedBy)})` : "";
     timeLogs += `🔸 <b>LĐ duyệt:</b> ${fmtDateTime(r.approvedAt)}${approverName}<br>`;
   }
   if (r.rejectedAt) {
-    const rejecterName = r.approvedBy ? ` (Bởi: ${r.approvedBy})` : "";
+    const rejecterName = r.approvedBy ? ` (Bởi: ${escapeHTML(r.approvedBy)})` : "";
     timeLogs += `🔸 <b>Từ chối lúc:</b> ${fmtDateTime(r.rejectedAt)}${rejecterName}<br>`;
   }
   const timeHtml = timeLogs ? `<div style="margin-top:10px; padding-top:8px; border-top:1px dashed #cbd5e1; font-size:11px; color:#64748b; line-height:1.6;">${timeLogs}</div>` : '';
@@ -2010,7 +2052,7 @@ if (r.caTra === 'NONE') {
 function renderDongY(){ 
   const el=document.getElementById('list-dong-y'); 
   const its=allReqs.filter(r=>r.status==='pending_partner'&&r.partner===CU.name); 
-  el.innerHTML=its.length?its.map(r=>reqCard(r,`<button class="btn btn-success" onclick="partnerOk('${r.id}', this)">Đồng ý</button> <button class="btn btn-danger" onclick="partnerNo('${r.id}', this)">Từ chối</button>`)).join(''):'<div class="empty">Không có đơn</div>'; 
+  el.innerHTML=its.length?its.map(r=>reqCard(r,`<button class="btn btn-success" onclick="partnerOk('${safeActionId(r.id)}', this)">Đồng ý</button> <button class="btn btn-danger" onclick="partnerNo('${safeActionId(r.id)}', this)">Từ chối</button>`)).join(''):'<div class="empty">Không có đơn</div>'; 
 }
 
 async function partnerOk(id, btn){ 
@@ -2084,7 +2126,7 @@ function renderPheDuyet(){
   }); 
 
   el.innerHTML = its.length 
-    ? its.map(r => reqCard(r, `<button class="btn btn-success" onclick="ldOk('${r.id}', this)">Duyệt</button> <button class="btn btn-danger" onclick="ldNo('${r.id}', this)">Từ chối</button>`)).join('') 
+    ? its.map(r => reqCard(r, `<button class="btn btn-success" onclick="ldOk('${safeActionId(r.id)}', this)">Duyệt</button> <button class="btn btn-danger" onclick="ldNo('${safeActionId(r.id)}', this)">Từ chối</button>`)).join('') 
     : '<div class="empty">Không có đơn chờ duyệt thuộc thẩm quyền của bạn</div>'; 
 }
 
@@ -2197,7 +2239,8 @@ document.getElementById('camera-upload').addEventListener('change', function(e) 
               base64: compressedBase64, 
               fileName: fileName,
               verifyPin: currentApprovePin,
-              by: CU.name
+              by: CU.name,
+              requestId: currentApproveId
               });
                 if (imgRes.error) throw new Error(imgRes.error);
 
@@ -2257,7 +2300,7 @@ function getCurrentKip(userName, baseKip) {
       allTransfers &&
       allTransfers.length > 0) {
 
-    const today = new Date().toISOString().substring(0,10);
+    const today = localTodayYmd();
 
     const transfers = allTransfers
       .filter(t => t.name === userName && t.date <= today)
@@ -2855,7 +2898,7 @@ if (r.reason && r.reason.match(/^\[/)) return false;
     let action = '';
     // Cho phép Hủy đơn nếu mình tạo và chưa ai xác nhận
     if (r.status === 'pending_partner' && r.name === CU.name) {
-      action = `<button class="btn btn-danger" style="width:100%" onclick="deleteReq('${r.id}', this)">🗑️ Hủy & Rút đơn</button>`;
+      action = `<button class="btn btn-danger" style="width:100%" onclick="deleteReq('${safeActionId(r.id)}', this)">🗑️ Hủy & Rút đơn</button>`;
     }
     return reqCard(r, action);
   }).join('') : '<div class="empty">Không có lịch sử liên quan đến bạn</div>'; 
@@ -2867,14 +2910,15 @@ async function deleteReq(id, btn){
   if(btn){ btn.disabled=true; btn.textContent='⏳ Đang hủy...'; }
   showAlert('app', 'Đang xử lý...', 'ai');
   try{
-    // Đẩy lệnh hủy lên máy chủ
-    await api({action:"updateStatus", id, status:"cancelled", by:CU.name});
+    const res = await api({action:"updateStatus", id, status:"cancelled", by:CU.name});
+    if (res && res.error) { showAlert('app', res.error, 'ae'); return; }
     await loadRequests();
     renderHistory(); renderSummary();
     showAlert('app', 'Đã hủy đơn thành công!', 'as');
   }catch(e){
-    if(btn){ btn.disabled=false; btn.textContent='🗑️ Hủy & Rút đơn'; }
     showAlert('app', 'Lỗi kết nối mạng!', 'ae');
+  } finally {
+    if(btn){ btn.disabled=false; btn.textContent='🗑️ Hủy & Rút đơn'; }
   }
 }
 
@@ -2986,8 +3030,8 @@ function renderDayTable(){
           ${tableRows.map(row => `
             <tr>
               <td>${row.label}</td>
-              <td>${row.doi.map(n => `<span class="dp">${n}</span>`).join('')}</td>
-              <td>${row.tra.map(n => `<span class="dp t">${n}</span>`).join('')}</td>
+              <td>${row.doi.map(n => `<span class="dp">${escapeHTML(n)}</span>`).join('')}</td>
+              <td>${row.tra.map(n => `<span class="dp t">${escapeHTML(n)}</span>`).join('')}</td>
             </tr>
           `).join('')}
         </tbody>
@@ -3003,7 +3047,7 @@ function renderWarn() {
   // Hàm lấy kíp thực tế có tính đến lệnh điều động
   function getKipThucTe(name, defaultKip) {
     if (!allTransfers || !allTransfers.length) return defaultKip;
-    const now = new Date().toISOString().substring(0,10);
+    const now = localTodayYmd();
     const sorted = allTransfers
       .filter(t => t.name === name && t.date <= now && t.newKip)
       .sort((a,b) => b.date.localeCompare(a.date));
@@ -3087,21 +3131,21 @@ function renderWarn() {
   if(critList.length){ 
     const _hdrCrit = lMax !== null ? `(≥ ${lMax} ca)` : `(theo định mức riêng của từng bộ phận)`;
     wHtml+=`<p style="font-size:12px;font-weight:700;color:#991b1b;margin-bottom:8px">❌ Đã chạm/vượt định mức ${_hdrCrit}</p>`; 
-    wHtml+=critList.map(([n,v])=>{ const _lim = lMax===null ? ` · giới hạn ${getLechMaxByName(n)} ca` : ''; return `<div class="wcard crit"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${n} <small>(${NV_LIST.find(u=>u.name===n)?.chucDanh||''} - ${v.kip}${_lim})</small></span><span style="font-weight:700;color:#dc2626">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.join('<br>')}</div></div>`; }).join(''); 
+    wHtml+=critList.map(([n,v])=>{ const _lim = lMax===null ? ` · giới hạn ${getLechMaxByName(n)} ca` : ''; return `<div class="wcard crit"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${escapeHTML(n)} <small>(${escapeHTML(NV_LIST.find(u=>u.name===n)?.chucDanh||'')} - ${escapeHTML(v.kip)}${escapeHTML(_lim)})</small></span><span style="font-weight:700;color:#dc2626">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.map(escapeHTML).join('<br>')}</div></div>`; }).join(''); 
   }
   
   // 2. NHÓM CAM
   if(warnList.length){ 
     const _hdrWarn = (lMax !== null && lWarn !== null) ? `(Từ ${lWarn} đến ${lMax - 1} ca)` : `(theo định mức riêng của từng bộ phận)`;
     wHtml+=`<p style="font-size:12px;font-weight:700;color:#c2410c;margin:12px 0 8px">⚠️ Mức Cảnh báo ${_hdrWarn}</p>`; 
-    wHtml+=warnList.map(([n,v])=>{ const _lim = lMax===null ? ` · giới hạn ${getLechMaxByName(n)} ca` : ''; return `<div class="wcard" style="background:#fff7ed; border-color:#fb923c;"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${n} <small>(${NV_LIST.find(u=>u.name===n)?.chucDanh||''} - ${v.kip}${_lim})</small></span><span style="font-weight:700;color:#ea580c">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.join('<br>')}</div></div>`; }).join(''); 
+    wHtml+=warnList.map(([n,v])=>{ const _lim = lMax===null ? ` · giới hạn ${getLechMaxByName(n)} ca` : ''; return `<div class="wcard" style="background:#fff7ed; border-color:#fb923c;"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${escapeHTML(n)} <small>(${escapeHTML(NV_LIST.find(u=>u.name===n)?.chucDanh||'')} - ${escapeHTML(v.kip)}${escapeHTML(_lim)})</small></span><span style="font-weight:700;color:#ea580c">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.map(escapeHTML).join('<br>')}</div></div>`; }).join(''); 
   }
 
   // 3. NHÓM VÀNG
   if(monList.length){ 
     const _hdrMon = lWarn !== null ? `(< ${lWarn} ca)` : `(theo định mức riêng của từng bộ phận)`;
     wHtml+=`<p style="font-size:12px;font-weight:600;color:#64748b;margin:12px 0 8px">📋 Mức an toàn ${_hdrMon}</p>`; 
-    wHtml+=monList.map(([n,v])=>`<div class="wcard"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${n} <small>(${NV_LIST.find(u=>u.name===n)?.chucDanh||''} - ${v.kip})</small></span><span style="font-weight:600;color:#d97706">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.join('<br>')}</div></div>`).join(''); 
+    wHtml+=monList.map(([n,v])=>`<div class="wcard"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${escapeHTML(n)} <small>(${escapeHTML(NV_LIST.find(u=>u.name===n)?.chucDanh||'')} - ${escapeHTML(v.kip)})</small></span><span style="font-weight:600;color:#d97706">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.map(escapeHTML).join('<br>')}</div></div>`).join(''); 
   } 
 
   // =======================================================
@@ -3126,7 +3170,7 @@ function renderStaffStats() {
   // Hàm lấy kíp thực tế theo lệnh điều động gần nhất
   function getKipThucTe(name, defaultKip) {
     if (!allTransfers || !allTransfers.length) return defaultKip;
-    const today = new Date().toISOString().substring(0,10);
+    const today = localTodayYmd();
     const sorted = allTransfers
       .filter(t => t.name === name && t.date <= today && t.newKip)
       .sort((a,b) => b.date.localeCompare(a.date));
@@ -3181,7 +3225,7 @@ function renderStaffStats() {
     const lMax = getLechMaxByName(n);
     let clr = v.lech > lMax ? '#dc2626' : (v.lech > 0 ? '#d97706' : '#4b5563'); 
     const chucDanh = NV_LIST.find(u => u.name === n)?.chucDanh || '';
-    return `<tr><td>${n}</td><td>${chucDanh}</td><td>${v.kip}</td><td>${v.tao}</td><td>${v.dongY}</td><td style=\"font-weight:600; color:${clr}\">+${v.lech}</td></tr>`;
+    return `<tr><td>${escapeHTML(n)}</td><td>${escapeHTML(chucDanh)}</td><td>${escapeHTML(v.kip)}</td><td>${v.tao}</td><td>${v.dongY}</td><td style=\"font-weight:600; color:${clr}\">+${v.lech}</td></tr>`;
   }).join('');
   
   if (!tableHtml) {
@@ -3276,9 +3320,9 @@ function renderNoCa() {
       : `<span style="color:#16a34a;font-weight:600;">🟢 Họ đang nợ bạn</span>`;
     const mauSo = laNoDuong ? '#dc2626' : '#16a34a';
     return `<tr>
-      <td>${other}</td>
-      <td>${info.chucDanh || ''}</td>
-      <td>${info.kip || ''}</td>
+      <td>${escapeHTML(other)}</td>
+      <td>${escapeHTML(info.chucDanh || '')}</td>
+      <td>${escapeHTML(info.kip || '')}</td>
       <td style="font-weight:700;color:${mauSo};text-align:center;">${soHienThi}</td>
       <td>${trangThai}</td>
     </tr>`;
@@ -3381,12 +3425,12 @@ rows.push({
 
   body.innerHTML = rows.map(({ nguoiNo, nguoiDuocNo, infoNo, infoDuocNo, soHienThi }) => `
     <tr>
-      <td style="color:#dc2626;font-weight:600;">${nguoiNo}</td>
-      <td>${infoNo.chucDanh || ''}</td>
-      <td>${infoNo.displayKip || ''}</td>
-      <td style="color:#16a34a;font-weight:600;">${nguoiDuocNo}</td>
-      <td>${infoDuocNo.chucDanh || ''}</td>
-      <td>${infoDuocNo.displayKip || ''}</td>
+      <td style="color:#dc2626;font-weight:600;">${escapeHTML(nguoiNo)}</td>
+      <td>${escapeHTML(infoNo.chucDanh || '')}</td>
+      <td>${escapeHTML(infoNo.displayKip || '')}</td>
+      <td style="color:#16a34a;font-weight:600;">${escapeHTML(nguoiDuocNo)}</td>
+      <td>${escapeHTML(infoDuocNo.chucDanh || '')}</td>
+      <td>${escapeHTML(infoDuocNo.displayKip || '')}</td>
       <td style="text-align:center;font-weight:700;color:#dc2626;">${soHienThi}</td>
     </tr>
   `).join('');
@@ -3557,10 +3601,10 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
     const cds  = [...new Set(displayList.map(u => u.chucDanh).filter(Boolean))];
     const BO_PHAN_ORDER = ['Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
     const bps  = [...new Set(NV_LIST.map(u => u.boPhan).filter(Boolean))].sort((a,b)=>{const ia=BO_PHAN_ORDER.indexOf(a),ib=BO_PHAN_ORDER.indexOf(b);return(ia===-1?99:ia)-(ib===-1?99:ib);});
-    kipSel.innerHTML = '<option value="">Tất cả kíp</option>' + kips.map(k => `<option${k===kipCur?' selected':''}>${k}</option>`).join('');
-    cdSel.innerHTML  = '<option value="">Tất cả chức danh</option>' + cds.map(c => `<option${c===cdCur?' selected':''}>${c}</option>`).join('');
+    kipSel.innerHTML = '<option value="">Tất cả kíp</option>' + kips.map(k => `<option${k===kipCur?' selected':''}>${escapeHTML(k)}</option>`).join('');
+    cdSel.innerHTML  = '<option value="">Tất cả chức danh</option>' + cds.map(c => `<option${c===cdCur?' selected':''}>${escapeHTML(c)}</option>`).join('');
     if (bpSel) {
-      bpSel.innerHTML = '<option value="">Tất cả bộ phận</option>' + bps.map(b=>`<option${b===bpCur?' selected':''}>${b}</option>`).join('');
+      bpSel.innerHTML = '<option value="">Tất cả bộ phận</option>' + bps.map(b=>`<option${b===bpCur?' selected':''}>${escapeHTML(b)}</option>`).join('');
       bpSel.style.display = CU.admin ? '' : 'none';
     }
     if (CU.role !== 'ld' && !CU.admin) { cdSel.style.display = 'none'; }
@@ -3586,10 +3630,10 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
       const curBp = u.boPhan || 'Chưa phân loại';
       if (curBp !== _lastBpSeen) {
         _lastBpSeen = curBp;
-        rowPrefix = `<tr><td colspan="${_totalColsSched}" style="background:#dbeafe; color:#1e3a5f; font-weight:700; padding:8px 12px; position:sticky; left:0;">▶ ${curBp}</td></tr>`;
+        rowPrefix = `<tr><td colspan="${_totalColsSched}" style="background:#dbeafe; color:#1e3a5f; font-weight:700; padding:8px 12px; position:sticky; left:0;">▶ ${escapeHTML(curBp)}</td></tr>`;
       }
     }
-    let row = rowPrefix + `<tr><td style="position:sticky; left:0; background:#fff; font-weight:600; border-right:2px solid #e2e8f0;">${u.name} ${u.name === CU.name ? '(Tôi)' : ''}</td>`;
+    let row = rowPrefix + `<tr><td style="position:sticky; left:0; background:#fff; font-weight:600; border-right:2px solid #e2e8f0;">${escapeHTML(u.name)} ${u.name === CU.name ? '(Tôi)' : ''}</td>`;
     
     const firstDayOfMonth = `${yr}-${String(mo).padStart(2,'0')}-01`;
     let displayKip = u.kip;
@@ -3598,8 +3642,8 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
       if (sortedTransfers.length > 0) displayKip = sortedTransfers[0].newKip;
     }
 
-    if (CU.role === 'ld') { row += `<td>${u.chucDanh || ''}</td><td style="font-weight:700; color:#ea580c;">${displayKip || ''}</td>`; } 
-    else { row += `<td style="font-weight:700; color:#ea580c;">${displayKip || ''}</td>`; }
+    if (CU.role === 'ld') { row += `<td>${escapeHTML(u.chucDanh || '')}</td><td style="font-weight:700; color:#ea580c;">${escapeHTML(displayKip || '')}</td>`; } 
+    else { row += `<td style="font-weight:700; color:#ea580c;">${escapeHTML(displayKip || '')}</td>`; }
 
     let totalHours = 0, countK = 0, countP = 0, countVR = 0, countO = 0, countTS = 0, countV = 0;
     for(let d=1; d<=daysInMonth; d++) {
@@ -3745,7 +3789,7 @@ function exportExcelSched() {
   const bpList = BO_PHAN_ORDER.filter(bp => NV_LIST.some(u=>(u.boPhan||'')===bp));
   bpList.forEach((bp, i) => {
     const bpNamesInOrder = orderedNames.filter(name => {
-      const u = NV_LIST.find(x => x.name === name);
+      const u = getUserInfo(name);
       return u && (u.boPhan||'')===bp && (u.chucDanh||'').trim()!=='ADMIN';
     });
     if (!bpNamesInOrder.length) return;
@@ -3880,16 +3924,16 @@ function addRowHC() {
       <input type="date" class="h-date" style="padding:8px; width:100%; border-radius:4px;" onchange="syncHCFilters(${id}); checkShiftStatus(${id}); validateHCDates(${id})">
     </td>
     <td>
-      ${CU.admin ? `<select class="h-bophan" style="padding:6px; width:100%; border-radius:4px; margin-bottom:6px; font-size:12px; color:#0f766e; background:#f0fdfa; border:1px solid #99f6e4;" onchange="onHCBoPhanChange(${id})"><option value="">-- Tất cả bộ phận --</option>${[...new Set(NV_LIST.map(u=>u.boPhan).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi')).map(bp=>`<option>${bp}</option>`).join('')}</select>` : ''}
-      <select class="h-role" style="padding:8px; width:100%; border-radius:4px;" onchange="syncHCFilters(${id}); checkShiftStatus(${id}); validateHCDates(${id})"><option value="">- Chọn -</option>${roles.map(r=>`<option>${r}</option>`).join('')}</select>
+      ${CU.admin ? `<select class="h-bophan" style="padding:6px; width:100%; border-radius:4px; margin-bottom:6px; font-size:12px; color:#0f766e; background:#f0fdfa; border:1px solid #99f6e4;" onchange="onHCBoPhanChange(${id})"><option value="">-- Tất cả bộ phận --</option>${[...new Set(NV_LIST.map(u=>u.boPhan).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi')).map(bp=>`<option>${escapeHTML(bp)}</option>`).join('')}</select>` : ''}
+      <select class="h-role" style="padding:8px; width:100%; border-radius:4px;" onchange="syncHCFilters(${id}); checkShiftStatus(${id}); validateHCDates(${id})"><option value="">- Chọn -</option>${roles.map(r=>`<option>${escapeHTML(r)}</option>`).join('')}</select>
     </td>
-    <td><select class="h-kip" style="padding:8px; width:100%; border-radius:4px;" onchange="syncHCFilters(${id}); checkShiftStatus(${id}); validateHCDates(${id})"><option value="">- Kíp -</option><option value="AUTO_LEAVE" style="color:#7e22ce; font-weight:700;">🔍 Tự động tìm</option>${kips.map(k=>`<option>${k}</option>`).join('')}</select></td>
+    <td><select class="h-kip" style="padding:8px; width:100%; border-radius:4px;" onchange="syncHCFilters(${id}); checkShiftStatus(${id}); validateHCDates(${id})"><option value="">- Kíp -</option><option value="AUTO_LEAVE" style="color:#7e22ce; font-weight:700;">🔍 Tự động tìm</option>${kips.map(k=>`<option>${escapeHTML(k)}</option>`).join('')}</select></td>
     <td>
       <div class="h-main-chk" style="height:140px; overflow-y:auto; border:2px solid #3b82f6; background:#eff6ff; border-radius:6px; padding:8px; font-size:14px;">
         <span style="color:#64748b; font-size:12px;">Vui lòng chọn CD & Kíp</span>
       </div>
     </td>
-    <td><select class="h-pkip" style="padding:8px; width:100%; border-radius:4px; border-color:#f59e0b; background:#fffbeb; transition:0.2s;" onchange="syncPartnerList(${id}); setTimeout(()=>{validateHCDates(${id});},0)"><option value="">- Kíp -</option><option value="AUTO" style="color:#16a34a; font-weight:700;">✨ Tự động tìm</option>${kips.map(k=>`<option>${k}</option>`).join('')}</select></td>
+    <td><select class="h-pkip" style="padding:8px; width:100%; border-radius:4px; border-color:#f59e0b; background:#fffbeb; transition:0.2s;" onchange="syncPartnerList(${id}); setTimeout(()=>{validateHCDates(${id});},0)"><option value="">- Kíp -</option><option value="AUTO" style="color:#16a34a; font-weight:700;">✨ Tự động tìm</option>${kips.map(k=>`<option>${escapeHTML(k)}</option>`).join('')}</select></td>
     <td>
       <div class="h-partner" style="height:140px; overflow-y:auto; border:2px solid #f59e0b; background:#fffbeb; border-radius:6px; padding:8px; font-size:14px; transition:0.2s;">
         <span style="color:#64748b; font-size:12px;">Chọn Kíp thay trước</span>
@@ -3928,8 +3972,8 @@ function onHCBoPhanChange(id) {
 
   const roleSel = row.querySelector('.h-role');
   const kipSel = row.querySelector('.h-kip');
-  roleSel.innerHTML = `<option value="">- Chọn -</option>${roles.map(r=>`<option>${r}</option>`).join('')}`;
-  kipSel.innerHTML = `<option value="">- Kíp -</option><option value="AUTO_LEAVE" style="color:#7e22ce; font-weight:700;">🔍 Tự động tìm</option>${kips.map(k=>`<option>${k}</option>`).join('')}`;
+  roleSel.innerHTML = `<option value="">- Chọn -</option>${roles.map(r=>`<option>${escapeHTML(r)}</option>`).join('')}`;
+  kipSel.innerHTML = `<option value="">- Kíp -</option><option value="AUTO_LEAVE" style="color:#7e22ce; font-weight:700;">🔍 Tự động tìm</option>${kips.map(k=>`<option>${escapeHTML(k)}</option>`).join('')}`;
 
   syncHCFilters(id); checkShiftStatus(id); validateHCDates(id);
 }
@@ -4043,7 +4087,7 @@ function syncHCFilters(id) {
           : getCaTrucGoc(repOfKip.name, k, d);
       }
       if (!caOngNghi || caOngNghi === 'OFF') {
-        chkContainer.innerHTML = `<span style="color:#7c3aed; font-size:12px; font-weight:700;">⚠️ Kíp ${k} ngày ${fmtDate(d)} đang nghỉ (OFF), không cần điều dự phòng</span>`;
+        chkContainer.innerHTML = `<span style="color:#7c3aed; font-size:12px; font-weight:700;">⚠️ Kíp ${escapeHTML(k)} ngày ${escapeHTML(fmtDate(d))} đang nghỉ (OFF), không cần điều dự phòng</span>`;
         resetRightColumns(id); // <--- Reset khi kíp nghỉ
         return;
       }
@@ -4077,7 +4121,7 @@ function syncHCFilters(id) {
     }
 
     if (!leavePerson) {
-        chkContainer.innerHTML = `<div style="color:#dc2626; font-size:12px; font-weight:700; padding:10px; background:#fee2e2; border-radius:6px; border:1px solid #fecaca;">⚠️ Không tìm thấy bất kỳ ai có chức danh "${r}" đang nghỉ hoặc có lệnh điều động vào ngày ${fmtDate(d)}. <br><br> <small>(Vui lòng tích chọn người đi HC trước khi bật "Điều dự phòng")</small></div>`;
+        chkContainer.innerHTML = `<div style="color:#dc2626; font-size:12px; font-weight:700; padding:10px; background:#fee2e2; border-radius:6px; border:1px solid #fecaca;">⚠️ Không tìm thấy bất kỳ ai có chức danh "${escapeHTML(r)}" đang nghỉ hoặc có lệnh điều động vào ngày ${escapeHTML(fmtDate(d))}. <br><br> <small>(Vui lòng tích chọn người đi HC trước khi bật "Điều dự phòng")</small></div>`;
         resetRightColumns(id); // <--- Reset khi không tìm thấy người nghỉ
         return;
     }
@@ -4118,13 +4162,13 @@ function syncHCFilters(id) {
       const msg = soBiCam > 0
         ? `Không tìm thấy ai phù hợp: tất cả ${soBiCam} người có chức danh "${r}" (chính hoặc dự phòng) đều vướng quy định cấm ca liên tiếp ngày ${fmtDate(d)}.`
         : `Không tìm thấy ai có chức danh chính hoặc dự phòng "${r}" trong ngày ${fmtDate(d)}`;
-      chkContainer.innerHTML = `<span style="color:#dc2626; font-size:12px; font-weight:700;">⚠️ ${msg}</span>`;
+      chkContainer.innerHTML = `<span style="color:#dc2626; font-size:12px; font-weight:700;">⚠️ ${escapeHTML(msg)}</span>`;
       resetRightColumns(id); // <--- Reset khi không có dự phòng
       return;
     }
 
     const headerNote = `trong ngày ${fmtDate(d)}`;
-    let leaveHint = ` · <span style="color:#dc2626; background:#fee2e2; padding:2px 4px; border-radius:4px;">Thay cho: ${leavePerson.name}</span>`;
+    let leaveHint = ` · <span style="color:#dc2626; background:#fee2e2; padding:2px 4px; border-radius:4px;">Thay cho: ${escapeHTML(leavePerson.name)}</span>`;
     // Lưu lại tên người được thay vào dataset để submitBatchHC sử dụng chính xác
     row.dataset.actualReplace = leavePerson.name;
 
@@ -4136,16 +4180,16 @@ function syncHCFilters(id) {
     const shouldAutoCheck = (backupCandidates.length === 1);
     html += backupCandidates.map(u => {
       const caThucTe = getCaThucTe(u.name, u.kip, d);
-      const caTag = `<span style="color:#dc2626; margin-left:4px; font-size:11px; font-weight:700;">(${caThucTe === 'OFF' ? 'Nghỉ' : 'Ca ' + caThucTe})</span>`;
+      const caTag = `<span style="color:#dc2626; margin-left:4px; font-size:11px; font-weight:700;">(${caThucTe === 'OFF' ? 'Nghỉ' : 'Ca ' + escapeHTML(caThucTe)})</span>`;
       const laChinh = (u.chucDanh === r);
       const roleTag = laChinh
-        ? `<span style="color:#065f46; margin-left:6px; font-size:11px; background:#d1fae5; padding:2px 6px; border-radius:4px;">${u.chucDanh} (Chính)</span>`
-        : `<span style="color:#7c3aed; margin-left:6px; font-size:11px; background:#ede9fe; padding:2px 6px; border-radius:4px;">${u.chucDanh} (Dự phòng)</span>`;
+        ? `<span style="color:#065f46; margin-left:6px; font-size:11px; background:#d1fae5; padding:2px 6px; border-radius:4px;">${escapeHTML(u.chucDanh)} (Chính)</span>`
+        : `<span style="color:#7c3aed; margin-left:6px; font-size:11px; background:#ede9fe; padding:2px 6px; border-radius:4px;">${escapeHTML(u.chucDanh)} (Dự phòng)</span>`;
       return `
       <label style="display:flex; align-items:center; margin-bottom:6px; cursor:pointer; font-weight:500;">
-        <input type="checkbox" class="hc-chk-val" value="${u.name}" ${shouldAutoCheck ? 'checked' : ''} onchange="handleHCSelection(this, '${d}', ${id})" style="width:18px; height:18px; margin:0 8px 0 0; padding:0; appearance:auto; -webkit-appearance:auto; cursor:pointer;">
-        ${u.name}
-        <span style="color:#ea580c; margin-left:4px; font-size:11px; font-weight:700;">[${u.kip}]</span>
+        <input type="checkbox" class="hc-chk-val" value="${escapeAttr(u.name)}" ${shouldAutoCheck ? 'checked' : ''} onchange="handleHCSelection(this, '${d}', ${id})" style="width:18px; height:18px; margin:0 8px 0 0; padding:0; appearance:auto; -webkit-appearance:auto; cursor:pointer;">
+        ${escapeHTML(u.name)}
+        <span style="color:#ea580c; margin-left:4px; font-size:11px; font-weight:700;">[${escapeHTML(u.kip)}]</span>
         ${caTag}
         ${roleTag}
       </label>`;
@@ -4248,7 +4292,7 @@ function syncHCFilters(id) {
     });
     if (matches.length === 0) {
       const kipLabel = isAutoLeave ? 'tất cả kíp' : k;
-      chkContainer.innerHTML = `<span style="color:#dc2626; font-size:12px; font-weight:700;">⚠️ Không có ai (${kipLabel}) phù hợp để điều động cho ${type} ngày ${fmtDate(d)}</span>`;
+      chkContainer.innerHTML = `<span style="color:#dc2626; font-size:12px; font-weight:700;">⚠️ Không có ai (${escapeHTML(kipLabel)}) phù hợp để điều động cho ${escapeHTML(type)} ngày ${escapeHTML(fmtDate(d))}</span>`;
       return;
     }
   }
@@ -4261,7 +4305,7 @@ function syncHCFilters(id) {
     let matchesFiltered = matches;
     if (matchesFiltered.length === 0) {
         const kipLabel = isAutoLeave ? 'tất cả kíp' : k;
-        chkContainer.innerHTML = `<span style="color:#dc2626; font-size:12px; font-weight:700;">⚠️ Không có ai (${kipLabel}) phù hợp để điều động cho ${type} ngày ${fmtDate(d)}</span>`;
+        chkContainer.innerHTML = `<span style="color:#dc2626; font-size:12px; font-weight:700;">⚠️ Không có ai (${escapeHTML(kipLabel)}) phù hợp để điều động cho ${escapeHTML(type)} ngày ${escapeHTML(fmtDate(d))}</span>`;
         resetRightColumns(id); // <--- Reset cột bên phải khi danh sách trống
         return;
     }
@@ -4283,19 +4327,19 @@ function syncHCFilters(id) {
               const needReplace = caGoc !== 'OFF';
               const color = needReplace ? '#b45309' : '#16a34a';
               const note = needReplace ? `⚠️ Cần người thay` : `✅ Ngày nghỉ, không cần thay`;
-              shiftStr = `<span style="color:${color}; margin-left:6px; font-weight:700; font-size:11px;">(Gốc: ${caGocLabel} · ${note})</span>`;
+              shiftStr = `<span style="color:${color}; margin-left:6px; font-weight:700; font-size:11px;">(Gốc: ${escapeHTML(caGocLabel)} · ${note})</span>`;
           } else if (caThucTe === 'OFF') {
               shiftStr = `<span style="color:#16a34a; margin-left:6px; font-weight:700; font-size:12px;">(Nghỉ)</span>`;
           } else {
               const isSwap = caThucTe !== caGoc;
               const swapTag = isSwap ? '<span style="color:#0284c7; font-size:10px;">[Đổi]</span> ' : '';
-              shiftStr = `<span style="color:#ea580c; margin-left:6px; font-weight:700; font-size:12px;">(${swapTag}Ca ${caThucTe})</span>`;
+              shiftStr = `<span style="color:#ea580c; margin-left:6px; font-weight:700; font-size:12px;">(${swapTag}Ca ${escapeHTML(caThucTe)})</span>`;
           }
       }
       return `
       <label style="display:flex; align-items:center; margin-bottom:6px; cursor:pointer; font-weight:500;">
-        <input type="checkbox" class="hc-chk-val" value="${u.name}" onchange="handleHCSelection(this, '${d}', ${id})" style="width:18px; height:18px; margin:0 8px 0 0; padding:0; appearance:auto; -webkit-appearance:auto; cursor:pointer;"> 
-        ${u.name} ${shiftStr}
+        <input type="checkbox" class="hc-chk-val" value="${escapeAttr(u.name)}" onchange="handleHCSelection(this, '${d}', ${id})" style="width:18px; height:18px; margin:0 8px 0 0; padding:0; appearance:auto; -webkit-appearance:auto; cursor:pointer;"> 
+        ${escapeHTML(u.name)} ${shiftStr}
       </label>`;
     }).join('');
     chkContainer.innerHTML = html;
@@ -4414,7 +4458,7 @@ function _doSyncPartnerList(id) {
   // vòng tìm và tự gợi ý người thay dù không có ca nào cần gánh cả.
   if (caThucTeA === 'OFF') {
     const _offMsg = useBackup ? '✅ Dự phòng đang nghỉ, không cần người thay.' : '✅ Người đi vốn đang nghỉ (OFF) hôm đó, không cần người thay.';
-    partnerChkContainer.innerHTML = `<div style="color:#16a34a; font-size:12px; font-weight:700; padding:10px; background:#f0fdf4; border-radius:6px; border:1px solid #bbf7d0;">${_offMsg}</div>`;
+    partnerChkContainer.innerHTML = `<div style="color:#16a34a; font-size:12px; font-weight:700; padding:10px; background:#f0fdf4; border-radius:6px; border:1px solid #bbf7d0;">${escapeHTML(_offMsg)}</div>`;
     return;
   }
 
@@ -4519,15 +4563,15 @@ function _doSyncPartnerList(id) {
       }
       
       const backupTag = isBackup ? `<span style="color:#2563eb; font-size:11px; font-weight:700; margin-left:6px; background:#dbeafe; padding:2px 6px; border-radius:4px;">(Dự phòng)</span>` : '';
-      const kipTag = (pk === 'AUTO') ? `<span style="color:#ea580c; font-size:11px; font-weight:700; margin-left:4px;">[${u.kip}]</span>` : '';
+      const kipTag = (pk === 'AUTO') ? `<span style="color:#ea580c; font-size:11px; font-weight:700; margin-left:4px;">[${escapeHTML(u.kip)}]</span>` : '';
       
       // Nếu là AUTO thì tự động tích ông đầu tiên nếu chưa có ai được tích
       const isChecked = (shouldAutoCheck && pIdx === 0);
 
       return `
       <label style="display:flex; align-items:center; margin-bottom:6px; cursor:pointer; font-weight:500;">
-        <input type="checkbox" class="hc-partner-val" value="${u.name}" ${isChecked ? 'checked' : ''} onchange="handlePartnerSelection(this, ${id}); checkShiftStatus(${id}); validateHCDates(${id});" style="width:18px; height:18px; margin:0 8px 0 0; padding:0; appearance:auto; -webkit-appearance:auto; cursor:pointer;"> 
-        ${u.name} ${kipTag} ${backupTag}
+        <input type="checkbox" class="hc-partner-val" value="${escapeAttr(u.name)}" ${isChecked ? 'checked' : ''} onchange="handlePartnerSelection(this, ${id}); checkShiftStatus(${id}); validateHCDates(${id});" style="width:18px; height:18px; margin:0 8px 0 0; padding:0; appearance:auto; -webkit-appearance:auto; cursor:pointer;"> 
+        ${escapeHTML(u.name)} ${kipTag} ${backupTag}
       </label>
     `}).join('');
     partnerChkContainer.innerHTML = html;
@@ -4797,7 +4841,7 @@ function validateHCDates(id) {
           // Lỗi an toàn check theo ca THỰC TẾ (vì ông này đang trực ca đó thật)
           const loiA_HC = checkViPhamAnToan(repA_name, personKip, dHC, type);
           if (loiA_HC) {
-              partnerBox.insertAdjacentHTML('afterbegin', `<div class="realtime-err" style="color:#dc2626; font-size:12px; font-weight:700; margin-bottom:8px; padding-bottom:6px; border-bottom:1px dashed #fca5a5;">❌ Lỗi người đi HC: ${loiA_HC}</div>`);
+              partnerBox.insertAdjacentHTML('afterbegin', `<div class="realtime-err" style="color:#dc2626; font-size:12px; font-weight:700; margin-bottom:8px; padding-bottom:6px; border-bottom:1px dashed #fca5a5;">❌ Lỗi người đi HC: ${escapeHTML(loiA_HC)}</div>`);
           }
       }
   }
@@ -4814,11 +4858,11 @@ function validateHCDates(id) {
       // (Các dòng check caB_Doi bên dưới bác giữ nguyên, chỉ cần đổi biến pkip thành realPkip là xong)
       
       if(caB_Doi !== 'OFF') {
-        partnerBox.insertAdjacentHTML('afterbegin', `<div class="realtime-err" style="color:#dc2626; font-size:12px; font-weight:700; margin-bottom:8px; padding-bottom:6px; border-bottom:1px dashed #fca5a5;">❌ Kíp thay đang có lịch (Ca ${caB_Doi}). Họ phải NGHỈ mới đi thay được!</div>`);
+        partnerBox.insertAdjacentHTML('afterbegin', `<div class="realtime-err" style="color:#dc2626; font-size:12px; font-weight:700; margin-bottom:8px; padding-bottom:6px; border-bottom:1px dashed #fca5a5;">❌ Kíp thay đang có lịch (Ca ${escapeHTML(caB_Doi)}). Họ phải NGHỈ mới đi thay được!</div>`);
       } else {
         // ĐÃ SỬA: Dùng realPkip thay vì pkip
         const loiB_Thay = checkViPhamAnToan(repB.name, realPkip, dHC, caThucTeA);
-        if (loiB_Thay) partnerBox.insertAdjacentHTML('afterbegin', `<div class="realtime-err" style="color:#dc2626; font-size:12px; font-weight:700; margin-bottom:8px; padding-bottom:6px; border-bottom:1px dashed #fca5a5;">❌ Lỗi An toàn (Người thay): ${loiB_Thay}</div>`);
+        if (loiB_Thay) partnerBox.insertAdjacentHTML('afterbegin', `<div class="realtime-err" style="color:#dc2626; font-size:12px; font-weight:700; margin-bottom:8px; padding-bottom:6px; border-bottom:1px dashed #fca5a5;">❌ Lỗi An toàn (Người thay): ${escapeHTML(loiB_Thay)}</div>`);
       }
       
       // BỎ QUA KIỂM TRA TRẢ CA NẾU LÀ NGHỈ PHÉP HOẶC TÍCH VÀO "KHÔNG TRẢ CA"
@@ -4835,10 +4879,10 @@ function validateHCDates(id) {
             const caA_Tra = getCaThucTe(repA_name, personKip, dRet);
             
             if(caA_Tra !== 'OFF') {
-              partnerBox.insertAdjacentHTML('afterbegin', `<div class="realtime-err" style="color:#dc2626; font-size:12px; font-weight:700; margin-bottom:8px; padding-bottom:6px; border-bottom:1px dashed #fca5a5;">❌ Ngày trả ca, Kíp đi HC đang vướng ca ${caA_Tra}. Phải chọn ngày NGHỈ để đi trả ca!</div>`);
+              partnerBox.insertAdjacentHTML('afterbegin', `<div class="realtime-err" style="color:#dc2626; font-size:12px; font-weight:700; margin-bottom:8px; padding-bottom:6px; border-bottom:1px dashed #fca5a5;">❌ Ngày trả ca, Kíp đi HC đang vướng ca ${escapeHTML(caA_Tra)}. Phải chọn ngày NGHỈ để đi trả ca!</div>`);
             } else if (caB_Tra !== 'OFF' && caB_Tra !== 'HC' && caB_Tra !== 'P') {
                 const loiA_Tra = checkViPhamAnToan(repA_name, personKip, dRet, caB_Tra);
-                if (loiA_Tra) partnerBox.insertAdjacentHTML('afterbegin', `<div class="realtime-err" style="color:#dc2626; font-size:12px; font-weight:700; margin-bottom:8px; padding-bottom:6px; border-bottom:1px dashed #fca5a5;">❌ Lỗi An toàn (Lúc trả ca): ${loiA_Tra}</div>`);
+                if (loiA_Tra) partnerBox.insertAdjacentHTML('afterbegin', `<div class="realtime-err" style="color:#dc2626; font-size:12px; font-weight:700; margin-bottom:8px; padding-bottom:6px; border-bottom:1px dashed #fca5a5;">❌ Lỗi An toàn (Lúc trả ca): ${escapeHTML(loiA_Tra)}</div>`);
             }
         }
       }
@@ -4967,26 +5011,26 @@ function renderAdminHCHist() {
     return `
     <tr>
       <td style="font-weight:600">${fmtDate(r.ngayDoi)}</td>
-      <td style="color:#1a56a0; font-weight:700">${r.name}</td>
-      <td style="font-size:12px; color:#475569;">${chucDanh}</td>
+      <td style="color:#1a56a0; font-weight:700">${escapeHTML(r.name)}</td>
+      <td style="font-size:12px; color:#475569;">${escapeHTML(chucDanh)}</td>
       <td>
-        <span class="dp">${displayKip}</span><br>
-        <span class="dp" style="background:#f0fdf4;color:#15803d;font-size:11px;margin-top:3px;display:inline-block;">Ca ${caThucTeNgayDoi}</span>
+        <span class="dp">${escapeHTML(displayKip)}</span><br>
+        <span class="dp" style="background:#f0fdf4;color:#15803d;font-size:11px;margin-top:3px;display:inline-block;">Ca ${escapeHTML(caThucTeNgayDoi)}</span>
       </td>
       <td style="font-size:12px;">${escapeHTML(lyDo)}</td>
-      <td>${hasPartner ? `<span style="color:#ea580c; font-weight:700">${r.partner}</span>` : '--'}</td>
-      <td style="font-size:12px; color:#475569;">${hasPartner ? partnerChucDanh : '--'}</td>
-      <td>${hasPartner ? `<span class="dp">${r.partnerKip || '--'}</span>` : '--'}</td>
+      <td>${hasPartner ? `<span style="color:#ea580c; font-weight:700">${escapeHTML(r.partner)}</span>` : '--'}</td>
+      <td style="font-size:12px; color:#475569;">${hasPartner ? escapeHTML(partnerChucDanh) : '--'}</td>
+      <td>${hasPartner ? `<span class="dp">${escapeHTML(r.partnerKip || '--')}</span>` : '--'}</td>
       <td>
         ${!hasPartner 
           ? '<span style="color:#16a34a; font-weight:600">Ngày nghỉ (OFF)</span>' 
           : (isPhep ? '<span style="color:#0284c7; font-weight:600; font-style:italic;">Không có (Nghỉ phép)</span>' 
-                    : `<span style="color:#64748b; font-weight:700">${fmtDate(r.ngayTra)}</span> <span class="dp" style="background:#fef3c7; color:#b45309; border: 1px solid #fde68a;">Ca ${r.caTra}</span>`)
+                    : `<span style="color:#64748b; font-weight:700">${escapeHTML(fmtDate(r.ngayTra))}</span> <span class="dp" style="background:#fef3c7; color:#b45309; border: 1px solid #fde68a;">Ca ${escapeHTML(r.caTra)}</span>`)
         }
       </td>
       <td style="font-size:12px;">${noiDung}</td>
       <td style="font-size:12px; color:#475569;">${escapeHTML((r.approvedBy || '').replace(' (Lãnh đạo PX)', '').replace(' (Lãnh đạo PX - Telegram)', '') || '--')}</td>
-      <td style="text-align:center;">${CU.admin ? `<button class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="deleteAdminHC('${r.id}', this)">Thu hồi</button>` : '--'}</td>
+      <td style="text-align:center;">${CU.admin ? `<button class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="deleteAdminHC('${safeActionId(r.id)}', this)">Thu hồi</button>` : '--'}</td>
     </tr>`
   }).join('');
 }
@@ -5002,12 +5046,16 @@ function exportExcelAdminHC() {
 
 async function deleteAdminHC(id, btn) {
   if(!confirm("⚠️ CẢNH BÁO:\nBạn có chắc chắn muốn THU HỒI (Xóa) lệnh điều động này?\nHệ thống sẽ tự động hoàn trả lại lịch gốc cho kíp trực.")) return;
-  btn.disabled = true; btn.textContent = 'Đang xóa...'; showAlert('app', 'Đang thu hồi lệnh...', 'ai');
+  if (btn) { btn.disabled = true; btn.textContent = 'Đang xóa...'; }
+  showAlert('app', 'Đang thu hồi lệnh...', 'ai');
   try {
-    await api({action: "updateStatus", id: id, status: "cancelled", by: CU.name});
+    const res = await api({action: "updateStatus", id: id, status: "cancelled", by: CU.name});
+    if (res && res.error) { showAlert('app', res.error, 'ae'); return; }
     await loadRequests(); renderAdminHCHist(); renderScheduleTable(); showAlert('app', 'Đã thu hồi thành công!', 'as');
   } catch(e) {
-    btn.disabled = false; btn.textContent = 'Thu hồi'; showAlert('app', 'Lỗi kết nối mạng!', 'ae');
+    showAlert('app', 'Lỗi kết nối mạng!', 'ae');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Thu hồi'; }
   }
 }
 
@@ -5381,7 +5429,7 @@ function refreshTCRoleOptions() {
   });
   const roles = (!qddRawTC || qddRawTC === '*') ? allRolesTCSorted
     : allRolesTCSorted.filter(r => qddRawTC.split(',').map(s => s.trim().toLowerCase()).includes(r.toLowerCase()));
-  document.getElementById('tc-role').innerHTML = '<option value="">-- Tất cả --</option>' + roles.map(r=>`<option>${r}</option>`).join('');
+  document.getElementById('tc-role').innerHTML = '<option value="">-- Tất cả --</option>' + roles.map(r=>`<option>${escapeHTML(r)}</option>`).join('');
 }
 
 // Khi Admin đổi bộ phận lọc: làm mới danh sách chức danh theo đúng bộ phận đó,
@@ -5399,8 +5447,8 @@ function initTransferForm() {
   : [...new Set(NV_LIST.map(u => u.kip))].filter(Boolean);
   const patterns = Object.keys(MAU_LICH); 
   
-  document.getElementById('tc-newkip').innerHTML = '<option value="">-- Giữ nguyên Kíp --</option>' + kips.map(k=>`<option>${k}</option>`).join('');
-  document.getElementById('tc-newpattern').innerHTML = '<option value="">-- Giữ nguyên Mẫu --</option>' + patterns.map(p=>`<option>${p}</option>`).join('');
+  document.getElementById('tc-newkip').innerHTML = '<option value="">-- Giữ nguyên Kíp --</option>' + kips.map(k=>`<option>${escapeHTML(k)}</option>`).join('');
+  document.getElementById('tc-newpattern').innerHTML = '<option value="">-- Giữ nguyên Mẫu --</option>' + patterns.map(p=>`<option>${escapeHTML(p)}</option>`).join('');
   
   const now = new Date();
   fillYearSelect(document.getElementById('f-transfer-year'), now.getFullYear());
@@ -5426,11 +5474,9 @@ function _getTCKips() {
 }
 
 function _getCurrentKipOfUser(name, defaultKip, selectedDate) {
-  if (typeof allTransfers !== 'undefined' && allTransfers && allTransfers.length > 0) {
-    const sorted = allTransfers
-      .filter(t => t.name === name && selectedDate >= t.date)
-      .sort((a, b) => b.date.localeCompare(a.date));
-    if (sorted.length > 0) return sorted[0].newKip;
+  if (typeof transfersByName !== 'undefined') {
+    const latest = getLatestTransfer(name, selectedDate);
+    if (latest) return latest.newKip;
   }
   return defaultKip;
 }
@@ -5444,7 +5490,7 @@ function filterTCUsers() {
 
   const r = document.getElementById('tc-role').value;
   const searchText = document.getElementById('tc-user-search').value.trim().toLowerCase();
-  const selectedDate = document.getElementById('tc-date').value || new Date().toISOString().substring(0, 10);
+  const selectedDate = document.getElementById('tc-date').value || localTodayYmd();
   const isMulti = document.getElementById('tc-multi-kip-mode') && document.getElementById('tc-multi-kip-mode').checked;
   const kips = _getTCKips();
 
@@ -5483,31 +5529,31 @@ function filterTCUsers() {
       // Chế độ thường: checkbox + tên + kíp hiện tại
       return `
       <label style="display:flex; align-items:center; margin-bottom:6px; cursor:pointer; padding:4px 6px; border-radius:6px;" onmouseover="this.style.background='#fff7ed'" onmouseout="this.style.background=''">
-        <input type="checkbox" class="tc-user-val" value="${u.name}" style="width:18px; height:18px; margin-right:8px; appearance:auto; -webkit-appearance:auto; cursor:pointer; flex-shrink:0;">
-        <span style="flex:1;">${u.name}</span>
-        <span style="color:#94a3b8; font-size:12px; margin-left:5px; white-space:nowrap;">${currentKip}</span>
+        <input type="checkbox" class="tc-user-val" value="${escapeAttr(u.name)}" style="width:18px; height:18px; margin-right:8px; appearance:auto; -webkit-appearance:auto; cursor:pointer; flex-shrink:0;">
+        <span style="flex:1;">${escapeHTML(u.name)}</span>
+        <span style="color:#94a3b8; font-size:12px; margin-left:5px; white-space:nowrap;">${escapeHTML(currentKip)}</span>
       </label>`;
     } else {
       // Chế độ nhiều kíp: mỗi người có ngày riêng + kíp riêng
       const kipOptions = kips.map(k =>
-        `<option value="${k}" ${k === currentKip ? 'selected' : ''}>${k}</option>`
+        `<option value="${escapeAttr(k)}" ${k === currentKip ? 'selected' : ''}>${escapeHTML(k)}</option>`
       ).join('');
       return `
       <div style="margin-bottom:6px; border:1px solid #e2e8f0; border-radius:8px; background:#fff; overflow:hidden;" id="tc-row-${safeId}">
         <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; background:#fafafa; border-bottom:1px solid #f1f5f9;">
-          <input type="checkbox" class="tc-user-val" value="${u.name}" data-safe-id="${safeId}"
+          <input type="checkbox" class="tc-user-val" value="${escapeAttr(u.name)}" data-safe-id="${safeId}"
             onchange="var w=document.getElementById('tc-kip-wrap-${safeId}'); w.style.opacity=this.checked?'1':'0.4'; w.style.pointerEvents=this.checked?'':'none';"
             style="width:18px; height:18px; appearance:auto; -webkit-appearance:auto; cursor:pointer; flex-shrink:0;">
-          <span style="flex:1; font-size:14px; font-weight:600;">${u.name}</span>
-          <span style="font-size:11px; background:#e2e8f0; color:#64748b; border-radius:4px; padding:2px 7px; white-space:nowrap;">Hiện: ${currentKip}</span>
+          <span style="flex:1; font-size:14px; font-weight:600;">${escapeHTML(u.name)}</span>
+          <span style="font-size:11px; background:#e2e8f0; color:#64748b; border-radius:4px; padding:2px 7px; white-space:nowrap;">Hiện: ${escapeHTML(currentKip)}</span>
         </div>
         <div id="tc-kip-wrap-${safeId}" style="display:flex; align-items:center; gap:8px; padding:6px 10px; opacity:0.4; pointer-events:none; transition:opacity 0.15s; flex-wrap:wrap;">
           <span style="font-size:12px; color:#64748b; white-space:nowrap;">Ngày áp dụng:</span>
-          <input type="date" class="tc-user-date" data-user="${u.name}"
+          <input type="date" class="tc-user-date" data-user="${escapeAttr(u.name)}"
             value="${selectedDate}"
             style="padding:4px 8px; border:1.5px solid #94a3b8; border-radius:6px; font-size:13px; flex-shrink:0;">
           <span style="color:#94a3b8; font-size:13px;">&#8594; Kíp mới:</span>
-          <select class="tc-user-newkip" data-user="${u.name}"
+          <select class="tc-user-newkip" data-user="${escapeAttr(u.name)}"
             style="padding:5px 8px; border:1.5px solid #f97316; border-radius:6px; font-size:13px; font-weight:700; color:#ea580c; background:#fff7ed; min-width:90px;">
             <option value="">-- Chọn kíp --</option>
             ${kipOptions}
@@ -5520,14 +5566,14 @@ function filterTCUsers() {
           </label>
           <div id="tc-vitri-wrap-${safeId}" style="display:none; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px; width:100%; padding:6px 8px; background:#f8fafc; border:1px dashed #cbd5e1; border-radius:6px;">
             <span style="font-size:12px; color:#64748b; white-space:nowrap;">Mẫu lịch:</span>
-            <select class="tc-user-pattern" data-user="${u.name}"
+            <select class="tc-user-pattern" data-user="${escapeAttr(u.name)}"
               style="padding:4px 8px; border:1.5px solid #94a3b8; border-radius:6px; font-size:13px; flex:1; min-width:120px;"
               onchange="document.getElementById('tc-vitri-wrap-${safeId}').querySelector('.tc-user-vitri').value=0;">
               <option value="">-- Giữ nguyên mẫu --</option>
-              ${Object.keys(MAU_LICH||{}).map(p=>`<option value="${p}">${p}</option>`).join('')}
+              ${Object.keys(MAU_LICH||{}).map(p=>`<option value="${escapeAttr(p)}">${escapeHTML(p)}</option>`).join('')}
             </select>
             <span style="font-size:12px; color:#64748b; white-space:nowrap;">Vị trí mốc:</span>
-            <input type="number" class="tc-user-vitri" data-user="${u.name}"
+            <input type="number" class="tc-user-vitri" data-user="${escapeAttr(u.name)}"
               value="0" min="0"
               style="width:60px; padding:4px 6px; border:1.5px solid #94a3b8; border-radius:6px; font-size:13px; text-align:center;">
           </div>
@@ -5607,6 +5653,12 @@ async function submitTransfer() {
     }
   }
 
+  // V12.6: Chặn batch quá lớn ngay trên giao diện — server vẫn kiểm tra lại lần nữa.
+  if (tasks.length > 50) {
+    showLocalAlert('transfer-msg', `⚠️ Mỗi lần chỉ được điều chuyển tối đa 50 người. Hiện đang chọn ${tasks.length} người — vui lòng chia thành nhiều đợt.`, 'ae');
+    return;
+  }
+
   // Tóm tắt xác nhận
   const summary = tasks.map(t => `• ${t.name}  →  ${t.newKip || '(giữ nguyên)'}  (từ ${fmtDate(t.date || date)})`).join('\n');
   if (!confirm(`Xác nhận điều chuyển ${tasks.length} người?\n\n${summary}`)) return;
@@ -5655,11 +5707,7 @@ async function loadTransfers() {
     return t;
   });
   // Tối ưu: Index theo tên để tìm kiếm nhanh hơn
-  transfersByName = {};
-  allTransfers.forEach(t => {
-    if (!transfersByName[t.name]) transfersByName[t.name] = [];
-    transfersByName[t.name].push(t);
-  });
+  rebuildTransfersByName();
 }
 
 
@@ -5673,7 +5721,7 @@ function renderTransferLog() {
       const bpList = [...new Set(NV_LIST.map(u => u.boPhan).filter(Boolean))];
       if (bpList.length > 0) {
         if (!bpSel.dataset.filled) {
-          bpSel.innerHTML = '<option value="">Tất cả bộ phận</option>' + bpList.map(bp => `<option>${bp}</option>`).join('');
+          bpSel.innerHTML = '<option value="">Tất cả bộ phận</option>' + bpList.map(bp => `<option>${escapeHTML(bp)}</option>`).join('');
           bpSel.dataset.filled = '1';
         }
         bpSel.style.display = '';
@@ -5702,11 +5750,11 @@ function renderTransferLog() {
   tbody.innerHTML = filtered.map(t => `
     <tr>
       <td>${fmtDate(t.date)}</td>
-      <td style="font-weight:600;">${t.name}</td>
-      <td><span class="dp">${t.newKip}</span></td>
+      <td style="font-weight:600;">${escapeHTML(t.name)}</td>
+      <td><span class="dp">${escapeHTML(t.newKip)}</span></td>
       <td style="font-size:12px; color:#475569;">${escapeHTML(t.approvedBy || '--')}</td>
       <td style="text-align:center;">
-        ${CU.admin ? `<button class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="deleteTransfer('${t.id}', this)">Xóa</button>` : '--'}
+        ${CU.admin ? `<button class="btn btn-danger" style="padding:4px 8px; font-size:11px;" onclick="deleteTransfer('${safeActionId(t.id)}', this)">Xóa</button>` : '--'}
       </td>
     </tr>
   `).join('');
@@ -5715,14 +5763,16 @@ async function deleteTransfer(id, btn) {
   if(!confirm("Xóa bản ghi này? Người này sẽ quay lại Kíp cũ nếu không còn lệnh điều chuyển nào khác.")) return;
   if(btn) { btn.disabled = true; btn.textContent = '⏳ Đang xóa...'; }
   try {
-    await api({ action: "deleteTransfer", id });
+    const res = await api({ action: "deleteTransfer", id });
+    if (res && res.error) { showAlert('app', res.error, 'ae'); return; }
     await loadTransfers();
     renderTransferLog();
     renderScheduleTable();
     showAlert('app','Đã xóa!','as');
   } catch(e) {
+    showAlert('app','Lỗi kết nối hoặc máy chủ!','ae');
+  } finally {
     if(btn) { btn.disabled = false; btn.textContent = 'Xóa'; }
-    showAlert('app','Lỗi!','ae');
   }
 }
 
@@ -5783,7 +5833,7 @@ function validateRealtimeDoi() {
             const caThucTe = getCaThucTe(name, kip, ngayDoi);
             if (caThucTe !== caDoi) {
                 let msg = `❌ Ngày ${fmtDate(ngayDoi)} bạn có lịch là ${caThucTe === 'OFF' ? "NGHỈ (OFF)" : 'Ca '+caThucTe}. Bạn không thể xin nghỉ Ca ${caDoi}!`;
-                errBox.innerHTML = msg;
+                errBox.textContent = msg;
                 errBox.style.display = 'block';
                 document.getElementById('f-ca-doi').value = ''; 
                 setTimeout(() => { if(!document.getElementById('f-ca-doi').value) errBox.style.display = 'none'; }, 5000);
@@ -5815,7 +5865,7 @@ function validateRealtimeTra() {
             
             // Luật 1: Kiểm tra xem ngày trả ca mình có ĐANG NGHỈ không
             if (caThucTe !== 'OFF' && !isDoiCungNgay) {
-                errBox.innerHTML = `❌ Ngày ${fmtDate(ngayTra)} bạn đang vướng lịch Ca ${caThucTe}. Bạn chỉ được chọn ngày NGHỈ để đi trả ca!`;
+                errBox.textContent = `❌ Ngày ${fmtDate(ngayTra)} bạn đang vướng lịch Ca ${caThucTe}. Bạn chỉ được chọn ngày NGHỈ để đi trả ca!`;
                 errBox.style.display = 'block';
                 document.getElementById('f-ngay-tra').value = '';
                 document.getElementById('f-ca-tra').value = '';
@@ -5830,7 +5880,7 @@ function validateRealtimeTra() {
                 if (caTra && partner && partnerKip) {
                     const caThucTeDoiTac = getCaThucTe(partner, partnerKip, ngayTra);
                     if (caThucTeDoiTac !== caTra) {
-                        errBox.innerHTML = `❌ Ngày ${fmtDate(ngayTra)} đồng chí ${partner} có lịch là ${caThucTeDoiTac==='OFF'?'NGHỈ':('Ca '+caThucTeDoiTac)}. Không thể trả bằng Ca ${caTra}!`;
+                        errBox.textContent = `❌ Ngày ${fmtDate(ngayTra)} đồng chí ${partner} có lịch là ${caThucTeDoiTac==='OFF'?'NGHỈ':('Ca '+caThucTeDoiTac)}. Không thể trả bằng Ca ${caTra}!`;
                         errBox.style.display = 'block';
                         document.getElementById('f-ca-tra').value = '';
                         coLoiPartner = true;
@@ -5842,7 +5892,7 @@ function validateRealtimeTra() {
                 if (caTra && !coLoiPartner) {
                     const loiAnToanCuaToi = checkViPhamAnToan(name, kip, ngayTra, caTra);
                     if (loiAnToanCuaToi) {
-                        errBox.innerHTML = `❌ Vi phạm An toàn: ${loiAnToanCuaToi}`;
+                        errBox.textContent = `❌ Vi phạm An toàn: ${loiAnToanCuaToi}`;
                         errBox.style.display = 'block';
                         document.getElementById('f-ca-tra').value = ''; // Ép chọn lại ca trả khác
                         setTimeout(() => { if(!document.getElementById('f-ca-tra').value) errBox.style.display = 'none'; }, 6000);
@@ -5890,19 +5940,19 @@ function exportExcelHistory() {
  const rows = items.map((r, idx) => `
     <tr>
       <td>${idx + 1}</td>
-      <td>${r.name || ''}</td>
-      <td>${NV_LIST.find(u=>u.name===r.name)?.chucDanh || ''}</td>
-      <td>${r.kip || ''}</td>
-      <td>${r.caDoi || ''}</td>
-      <td>${fmtDate(r.ngayDoi)}</td>
-      <td>${r.partner || ''}</td>
-      <td>${NV_LIST.find(u=>u.name===r.partner)?.chucDanh || ''}</td>
-      <td>${NV_LIST.find(u=>u.name===r.partner)?.kip || ''}</td>
-      <td>${r.caTra || ''}</td>
-      <td>${fmtDate(r.ngayTra)}</td>
+      <td>${escapeHTML(r.name || '')}</td>
+      <td>${escapeHTML(NV_LIST.find(u=>u.name===r.name)?.chucDanh || '')}</td>
+      <td>${escapeHTML(r.kip || '')}</td>
+      <td>${escapeHTML(r.caDoi || '')}</td>
+      <td>${escapeHTML(fmtDate(r.ngayDoi))}</td>
+      <td>${escapeHTML(r.partner || '')}</td>
+      <td>${escapeHTML(NV_LIST.find(u=>u.name===r.partner)?.chucDanh || '')}</td>
+      <td>${escapeHTML(NV_LIST.find(u=>u.name===r.partner)?.kip || '')}</td>
+      <td>${escapeHTML(r.caTra || '')}</td>
+      <td>${escapeHTML(fmtDate(r.ngayTra))}</td>
       <td>${r.status === 'approved' ? 'Đã duyệt' : r.status === 'pending_ld' ? 'Chờ LĐ duyệt' : r.status === 'pending_partner' ? 'Chờ xác nhận' : 'Từ chối'}</td>
-      <td>${r.approvedBy || ''}</td>
-      <td>${r.reason || ''}</td>
+      <td>${escapeHTML(r.approvedBy || '')}</td>
+      <td>${escapeHTML(r.reason || '')}</td>
     </tr>
   `).join('');
 
@@ -5969,7 +6019,7 @@ const dayNames = ['CN','T2','T3','T4','T5','T6','T7'];
 let html = dayNames.map(d => `<div style="text-align:center; font-size:11px; font-weight:700; color:#64748b; padding:4px;">${d}</div>`).join('');
 // Ô trống đầu tháng
 for (let i = 0; i < firstDay; i++) html += `<div></div>`;
-const today = new Date().toISOString().substring(0, 10);
+const today = localTodayYmd();
 const titleEl = document.getElementById('leave-cal-title');
 if (titleEl) titleEl.textContent = `Tháng ${mo}/${yr}`;
 for (let d = 1; d <= daysInMonth; d++) {
@@ -6004,20 +6054,62 @@ document.getElementById('lb-selected').textContent = count;
 const remaining = parseInt(document.getElementById('lb-remaining').textContent) || 0;
 const warn = document.getElementById('leave-warn');
 const btn = document.getElementById('btn-submit-leave');
+const leaveType = document.getElementById('f-leave-type')?.value || 'P';
+const currentYear = new Date().getFullYear();
+
 if (count === 0) {
-document.getElementById('leave-selected-dates').textContent = 'Chưa chọn ngày nào';
-warn.style.display = 'none';
-btn.disabled = false;
-} else if (count > remaining) {
-document.getElementById('leave-selected-dates').textContent = 'Đã chọn: ' + selectedLeaveDates.map(d => fmtDate(d)).join(', ');
-warn.style.display = 'block';
-warn.textContent = `⚠️ Bạn chọn ${count} ngày nhưng chỉ còn ${remaining} ngày phép!`;
-btn.disabled = true;
-} else {
-document.getElementById('leave-selected-dates').textContent = 'Đã chọn: ' + selectedLeaveDates.map(d => fmtDate(d)).join(', ');
-warn.style.display = 'none';
-btn.disabled = false;
+  document.getElementById('leave-selected-dates').textContent = 'Chưa chọn ngày nào';
+  warn.style.display = 'none';
+  btn.disabled = false;
+  return;
 }
+
+document.getElementById('leave-selected-dates').textContent = 'Đã chọn: ' + selectedLeaveDates.map(d => fmtDate(d)).join(', ');
+
+// Mọi loại nghỉ mới phải nằm trong cùng cửa sổ năm mà backend đang phục vụ.
+const minActiveYear = currentYear - 2, maxActiveYear = currentYear + 2;
+const outOfWindow = selectedLeaveDates.find(d => { const y=parseInt(d.substring(0,4),10); return y < minActiveYear || y > maxActiveYear; });
+if (outOfWindow) {
+  warn.style.display = 'block';
+  warn.textContent = `⚠️ Ngày nghỉ chỉ được đăng ký trong phạm vi năm ${minActiveYear} đến ${maxActiveYear}.`;
+  btn.disabled = true;
+  return;
+}
+
+// V13.6: số dư phép năm chỉ áp dụng cho loại P. VR/TS/Ô/O không được vô tình
+// khóa nút chỉ vì remaining_leave của phép P đang bằng 0.
+if (leaveType !== 'P') {
+  warn.style.display = 'none';
+  btn.disabled = false;
+  return;
+}
+
+const pastDates = selectedLeaveDates.filter(d => parseInt(d.substring(0,4),10) < currentYear);
+if (pastDates.length > 0) {
+  warn.style.display = 'block';
+  warn.textContent = `⚠️ Nghỉ phép năm (P) không cho đăng ký mới cho năm đã kết thúc.`;
+  btn.disabled = true;
+  return;
+}
+
+// Chỉ so số dư đang hiển thị với số ngày thuộc NĂM HIỆN TẠI.
+// Ngày năm sau được backend kiểm tra theo định mức đúng của chính năm đó.
+const currentYearCount = selectedLeaveDates.filter(d => parseInt(d.substring(0,4),10) === currentYear).length;
+if (currentYearCount > remaining) {
+  warn.style.display = 'block';
+  warn.textContent = `⚠️ Bạn chọn ${currentYearCount} ngày phép thuộc năm ${currentYear} nhưng chỉ còn ${remaining} ngày!`;
+  btn.disabled = true;
+  return;
+}
+
+const hasFuture = selectedLeaveDates.some(d => parseInt(d.substring(0,4),10) > currentYear);
+if (hasFuture) {
+  warn.style.display = 'block';
+  warn.textContent = `ℹ️ Ngày phép thuộc năm sau sẽ được máy chủ kiểm tra riêng theo số phép của đúng năm đó khi gửi đơn.`;
+} else {
+  warn.style.display = 'none';
+}
+btn.disabled = false;
 }
 // Bước 1: Validate + hiện modal xác nhận
 let _pendingLeaveData = null;
@@ -6034,7 +6126,7 @@ const myInfo = NV_LIST.find(u => u.name === CU.name);
 const myKipGoc = myInfo ? myInfo.kip : '';
 let myKipThucTe = myKipGoc;
 if (typeof allTransfers !== 'undefined' && allTransfers.length > 0) {
-  const today = new Date().toISOString().substring(0, 10);
+  const today = localTodayYmd();
   const sorted = allTransfers.filter(t => t.name === CU.name && t.date <= today && t.newKip).sort((a,b) => b.date.localeCompare(a.date));
   if (sorted.length > 0) myKipThucTe = sorted[0].newKip;
 }
@@ -6062,13 +6154,13 @@ const leaveTypeNames = {P:'🏖️ Nghỉ phép năm (Công P)', VR:'🏠 Việc
 const vrNames = {ket_hon:'Kết hôn', con_ket_hon:'Con đẻ/nuôi kết hôn', than_qua_doi:'Người thân qua đời'};
 const datesDisplay = selectedLeaveDates.sort().map(d => fmtDate(d)).join(', ');
 document.getElementById('leave-confirm-summary').innerHTML =
-  `👤 <b>Người nghỉ:</b> ${CU.name}<br>` +
-  `📋 <b>Loại nghỉ:</b> ${leaveTypeNames[leaveType] || leaveType}<br>` +
-  (vrSubtype ? `💍 <b>Lý do VR:</b> ${vrNames[vrSubtype] || vrSubtype}<br>` : '') +
+  `👤 <b>Người nghỉ:</b> ${escapeHTML(CU.name)}<br>` +
+  `📋 <b>Loại nghỉ:</b> ${escapeHTML(leaveTypeNames[leaveType] || leaveType)}<br>` +
+  (vrSubtype ? `💍 <b>Lý do VR:</b> ${escapeHTML(vrNames[vrSubtype] || vrSubtype)}<br>` : '') +
   `📅 <b>Ngày nghỉ:</b> ${datesDisplay}<br>` +
   `🔢 <b>Số ngày:</b> ${selectedLeaveDates.length} ngày<br>` +
-  `💬 <b>Lý do:</b> ${reason}<br>` +
-  `📍 <b>Nơi nghỉ:</b> ${location}`;
+  `💬 <b>Lý do:</b> ${escapeHTML(reason)}<br>` +
+  `📍 <b>Nơi nghỉ:</b> ${escapeHTML(location)}`;
 document.getElementById('leave-confirm-modal').style.display = 'flex';
 }
 
@@ -6132,7 +6224,7 @@ function renderLeaveApproveList() {
     // Kíp thực tế theo lệnh điều động tại thời điểm gửi đơn
     let kipHienThi = lv.kip || '—';
     if (typeof allTransfers !== 'undefined' && allTransfers.length > 0) {
-      const refDate = lv.createdAt ? lv.createdAt.toString().substring(0,10) : new Date().toISOString().substring(0,10);
+      const refDate = dateOnlyYmdFromAny(lv.createdAt);
       const sorted = allTransfers.filter(t => t.name === lv.name && t.date <= refDate && t.newKip).sort((a,b) => b.date.localeCompare(a.date));
       if (sorted.length > 0) kipHienThi = sorted[0].newKip;
     }
@@ -6144,17 +6236,17 @@ function renderLeaveApproveList() {
         <span class="badge bp">⏳ Chờ duyệt</span>
       </div>
       <div class="req-meta">
-        🏷️ <b>Loại:</b> ${leaveLabel}<br>
-        🏖️ <b>Ngày nghỉ:</b> ${dates}<br>
+        🏷️ <b>Loại:</b> ${escapeHTML(leaveLabel)}<br>
+        🏖️ <b>Ngày nghỉ:</b> ${escapeHTML(dates)}<br>
         🔢 <b>Số ngày:</b> ${lv.days_count} ngày<br>
-        👤 <b>Chức danh:</b> ${lv.role || '—'} — Kíp ${kipHienThi}<br>
+        👤 <b>Chức danh:</b> ${escapeHTML(lv.role || '—')} — Kíp ${escapeHTML(kipHienThi)}<br>
         💬 <b>Lý do:</b> ${escapeHTML(lv.reason) || 'Không có'}<br>
         ${lv.location ? `📍 <b>Nơi nghỉ:</b> ${escapeHTML(lv.location)}<br>` : ''}
         🕐 <b>Gửi lúc:</b> ${fmtDateTime(lv.createdAt) || '—'}
       </div>
       <div class="req-acts">
-        <button class="btn btn-success" onclick="approveLeaveWeb('${lv.id}', this)">✅ Phê duyệt</button>
-        <button class="btn btn-danger" onclick="rejectLeaveWeb('${lv.id}', this)">❌ Từ chối</button>
+        <button class="btn btn-success" onclick="approveLeaveWeb('${safeActionId(lv.id)}', this)">✅ Phê duyệt</button>
+        <button class="btn btn-danger" onclick="rejectLeaveWeb('${safeActionId(lv.id)}', this)">❌ Từ chối</button>
       </div>
     </div>`;
   }).join('');
@@ -6169,7 +6261,7 @@ function approveLeaveWeb(id, btn) {
   _pendingLeaveActionId = id;
   const dates = lv.dates ? lv.dates.split(',').map(d => fmtDate(d.trim())).join(', ') : '—';
   document.getElementById('leave-approve-modal-info').innerHTML =
-    `<b>${escapeHTML(lv.name)}</b> — ${dates} (${lv.days_count} ngày)`;
+    `<b>${escapeHTML(lv.name)}</b> — ${escapeHTML(dates)} (${lv.days_count} ngày)`;
   document.getElementById('leave-approve-pin-inp').value = '';
   document.getElementById('leave-approve-err').textContent = '';
   document.getElementById('leave-approve-modal').style.display = 'flex';
@@ -6203,7 +6295,7 @@ function rejectLeaveWeb(id, btn) {
   _pendingLeaveActionId = id;
   const dates = lv.dates ? lv.dates.split(',').map(d => fmtDate(d.trim())).join(', ') : '—';
   document.getElementById('leave-reject-modal-info').innerHTML =
-    `<b>${escapeHTML(lv.name)}</b> — ${dates} (${lv.days_count} ngày)`;
+    `<b>${escapeHTML(lv.name)}</b> — ${escapeHTML(dates)} (${lv.days_count} ngày)`;
   document.getElementById('leave-reject-reason-inp').value = '';
   document.getElementById('leave-reject-pin-inp').value = '';
   document.getElementById('leave-reject-err').textContent = '';
@@ -6325,10 +6417,10 @@ el.innerHTML = myLeaves.map(lv => {
           ${typeBadge}
           <span style="background:#fef3c7; color:#b45309; font-size:12px; font-weight:700; padding:2px 8px; border-radius:12px;">⏳ Chờ duyệt</span>
         </div>
-        <div style="font-weight:700; color:#374151;">📅 ${dates}</div>
+        <div style="font-weight:700; color:#374151;">📅 ${escapeHTML(dates)}</div>
         <div style="font-size:13px; color:#64748b; margin-top:4px;">Số ngày: <b>${lv.days_count}</b> | Lý do: ${escapeHTML(lv.reason) || 'Không có'}</div>
       </div>
-      <button class="btn btn-danger" style="padding:4px 10px; font-size:12px; white-space:nowrap;" onclick="cancelLeaveForm('${lv.id}')">Hủy đơn</button>
+      <button class="btn btn-danger" style="padding:4px 10px; font-size:12px; white-space:nowrap;" onclick="cancelLeaveForm('${safeActionId(lv.id)}')">Hủy đơn</button>
     </div>
   </div>`;
 }).join('');
@@ -6372,20 +6464,19 @@ function renderLeaveHistory() {
   if (leaves.length === 0) { el.innerHTML = '<div class="empty">Không có dữ liệu</div>'; return; }
 
   // Hàm lấy kíp thực tế tại thời điểm tạo đơn
-  function getKipTaiThoiDiem(name, createdAt) {
-    if (!allTransfers || !allTransfers.length) {
-      const u = NV_LIST.find(x => x.name === name);
-      return u ? u.kip : '';
-    }
-    const refDate = createdAt ? createdAt.toString().substring(0,10) : new Date().toISOString().substring(0,10);
+  function getKipTaiThoiDiem(name, createdAt, savedKip) {
+    // Ưu tiên kíp đã lưu trên chính bản ghi lịch sử; chỉ dùng users hiện tại làm fallback cuối.
+    // Như vậy người đã đổi kíp sau này không làm lịch sử cũ bị "trôi" sang kíp mới.
+    const fallbackKip = savedKip || (getUserInfo(name)?.kip || '');
+    if (!allTransfers || !allTransfers.length) return fallbackKip;
+    const refDate = dateOnlyYmdFromAny(createdAt);
     const sorted = allTransfers.filter(t => t.name === name && t.date <= refDate && t.newKip).sort((a,b) => b.date.localeCompare(a.date));
     if (sorted.length > 0) return sorted[0].newKip;
-    const u = NV_LIST.find(x => x.name === name);
-    return u ? u.kip : '';
+    return fallbackKip;
   }
 
   // Lọc theo Kíp thực tế
-  if (fkp) leaves = leaves.filter(lv => getKipTaiThoiDiem(lv.name, lv.createdAt) === fkp);
+  if (fkp) leaves = leaves.filter(lv => getKipTaiThoiDiem(lv.name, lv.createdAt, lv.kip) === fkp);
 
   const statusMap = {
     pending_ld: { label: '⏳ Chờ duyệt', style: 'background:#fef3c7; color:#b45309;' },
@@ -6410,13 +6501,13 @@ function renderLeaveHistory() {
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
             ${typeBadgeH}
           </div>
-          <div style="font-weight:700; color:#374151;">📅 ${dates}</div>
+          <div style="font-weight:700; color:#374151;">📅 ${escapeHTML(dates)}</div>
           <div style="font-size:13px; color:#64748b; margin-top:4px;">Số ngày: <b>${lv.days_count}</b> | Lý do: ${escapeHTML(lv.reason) || 'Không có'}</div>
           ${lv.location ? `<div style="font-size:13px; color:#64748b;">📍 Nơi nghỉ: ${escapeHTML(lv.location)}</div>` : ''}
           ${lv.rejectReason ? `<div style="font-size:13px; color:#dc2626;">💬 Lý do từ chối: ${escapeHTML(lv.rejectReason)}</div>` : ''}
           ${timeLogs ? `<div style="font-size:12px; color:#94a3b8; margin-top:6px; border-top:1px solid #f1f5f9; padding-top:6px;">${timeLogs}</div>` : ''}
         </div>
-        <span style="${st.style} font-size:12px; font-weight:700; padding:3px 10px; border-radius:12px; white-space:nowrap;">${st.label}</span>
+        <span style="${st.style} font-size:12px; font-weight:700; padding:3px 10px; border-radius:12px; white-space:nowrap;">${escapeHTML(st.label)}</span>
       </div>
     </div>`;
   }).join('');
@@ -6439,18 +6530,17 @@ function exportExcelLeaveHistory() {
   if (flt) leaves = leaves.filter(lv => (lv.leaveType || 'P') === flt);
   if (yr) leaves = leaves.filter(lv => leaveMatchesYM(lv, yr, mo));
 
-  function getKipTaiThoiDiem(name, createdAt) {
-    if (!allTransfers || !allTransfers.length) {
-      const u = NV_LIST.find(x => x.name === name);
-      return u ? u.kip : '';
-    }
-    const refDate = createdAt ? createdAt.toString().substring(0,10) : new Date().toISOString().substring(0,10);
+  function getKipTaiThoiDiem(name, createdAt, savedKip) {
+    // Ưu tiên kíp đã lưu trên chính bản ghi lịch sử; chỉ dùng users hiện tại làm fallback cuối.
+    // Như vậy người đã đổi kíp sau này không làm lịch sử cũ bị "trôi" sang kíp mới.
+    const fallbackKip = savedKip || (getUserInfo(name)?.kip || '');
+    if (!allTransfers || !allTransfers.length) return fallbackKip;
+    const refDate = dateOnlyYmdFromAny(createdAt);
     const sorted = allTransfers.filter(t => t.name === name && t.date <= refDate && t.newKip).sort((a,b) => b.date.localeCompare(a.date));
     if (sorted.length > 0) return sorted[0].newKip;
-    const u = NV_LIST.find(x => x.name === name);
-    return u ? u.kip : '';
+    return fallbackKip;
   }
-  if (fkp) leaves = leaves.filter(lv => getKipTaiThoiDiem(lv.name, lv.createdAt) === fkp);
+  if (fkp) leaves = leaves.filter(lv => getKipTaiThoiDiem(lv.name, lv.createdAt, lv.kip) === fkp);
 
   if (!leaves.length) { showAlert('app', 'Không có dữ liệu để tải!', 'ae'); return; }
 
@@ -6464,7 +6554,7 @@ function exportExcelLeaveHistory() {
       <td>${idx + 1}</td>
       <td>${escapeHTML(lv.name || '')}</td>
       <td>${escapeHTML(lv.role || '')}</td>
-      <td>${escapeHTML(getKipTaiThoiDiem(lv.name, lv.createdAt))}</td>
+      <td>${escapeHTML(getKipTaiThoiDiem(lv.name, lv.createdAt, lv.kip))}</td>
       <td>${escapeHTML(typeLabel[lv.leaveType || 'P'] || '')}</td>
       <td>${dates}</td>
       <td>${lv.days_count || ''}</td>
@@ -6595,7 +6685,7 @@ async function renderLeaveStats() {
   // Hàm lấy kíp thực tế theo lệnh điều động (giống renderWarn, renderStaffStats)
   function getKipThucTe(name, defaultKip) {
     if (!allTransfers || !allTransfers.length) return defaultKip;
-    const today = new Date().toISOString().substring(0, 10);
+    const today = localTodayYmd();
     const sorted = allTransfers
       .filter(t => t.name === name && t.date <= today && t.newKip)
       .sort((a, b) => b.date.localeCompare(a.date));
@@ -6665,9 +6755,9 @@ async function renderLeaveStats() {
     const remainColor = remaining <= 0 ? '#dc2626' : remaining <= 3 ? '#d97706' : '#16a34a';
 
     return `<tr>
-      <td style="font-weight:600;">${u.name}</td>
-      <td>${u.chucDanh || ''}</td>
-      <td>${getCurrentKip(u.name, u.kip)}</td>
+      <td style="font-weight:600;">${escapeHTML(u.name)}</td>
+      <td>${escapeHTML(u.chucDanh || '')}</td>
+      <td>${escapeHTML(getCurrentKip(u.name, u.kip))}</td>
       <td style="text-align:center; font-weight:700; color:#0284c7; font-size:16px;">${annual}</td>
       <td style="text-align:center; font-weight:700; color:#dc2626; font-size:16px;">${usedCount}</td>
       <td style="font-size:12px; color:#475569; max-width:200px; white-space:normal; line-height:1.6;">${datesStr}</td>
