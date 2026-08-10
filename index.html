@@ -156,7 +156,6 @@ textarea{resize:none;height:80px}
   <div class="pbox" id="login-box" style="display:none">
    <img src="./logocongty.png" style="max-width:220px;max-height:120px;width:auto;height:auto;display:block;margin:0 auto;object-fit:contain;" alt="Logo công ty">
     <div class="plogo" style="text-align: center">Hệ thống chấm công</div>
-    <div class="plogo" style="text-align: center">Công ty Nhiệt điện Nghi Sơn</div>
     <div style="font-size:18px; font-weight:600; color:#64748b; margin-bottom:4px;">🔑 Đăng nhập</div>
     <div class="psub">Nhập số điện thoại và mã PIN cá nhân</div>
     <div class="pfield">
@@ -2338,7 +2337,11 @@ function reqCard(r, a = '') {
   }
 
   const safeImgUrl = safeHttpUrl(r.minhChung);
-  const imgLink = safeImgUrl ? `<br>🖼️ <a href="${safeImgUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb; font-weight:600; text-decoration:none;">Xem ảnh minh chứng</a>` : '';
+  // Chỉ hiện link ảnh khi đơn đã được duyệt VÀ thực sự có URL ảnh minh chứng.
+  // Tránh các đơn đang chờ duyệt hiển thị nhầm link do dữ liệu cũ/lệch cột còn sót URL.
+  const imgLink = (r.status === 'approved' && safeImgUrl)
+    ? `<br>🖼️ <a href="${safeImgUrl}" target="_blank" rel="noopener noreferrer" style="color:#2563eb; font-weight:600; text-decoration:none;">Xem ảnh minh chứng</a>`
+    : '';
   const textDoi = r.ngayDoi ? `📅 Đổi ${caLabel(r.caDoi)} - ${fmtDate(r.ngayDoi)}` : `📅 Đổi: <i>Chưa xác định</i>`;
   let textTra = `🔄 Trả: <i>Chưa xác định</i>`;
 if (r.caTra === 'NONE') {
