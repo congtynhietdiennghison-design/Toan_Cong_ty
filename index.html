@@ -898,6 +898,29 @@ function isCompanyPermissionScope() {
 function canFilterAcrossDepartments() {
   return !!(CU && (CU.admin || isCompanyPermissionScope()));
 }
+
+// Một nguồn thứ tự duy nhất: settings.configKey = BO_PHAN_ORDER.
+// Giá trị dùng dấu |, xuống dòng hoặc ; để phân cách. Bộ phận chưa khai báo xếp ABC ở cuối.
+function getBoPhanOrder() {
+  const raw = (((APP_CONFIG || {}).configs || {}).BO_PHAN_ORDER || '').toString().trim();
+  if (!raw) return [];
+  const seen = new Set();
+  return raw.split(/\s*\|\s*|\r?\n|\s*;\s*/).map(x => x.trim()).filter(x => {
+    if (!x || seen.has(x)) return false;
+    seen.add(x);
+    return true;
+  });
+}
+function sortBoPhanNames(list) {
+  const order = getBoPhanOrder();
+  const pos = new Map(order.map((bp, i) => [bp, i]));
+  return [...new Set((list || []).map(x => (x || '').toString().trim()).filter(Boolean))].sort((a, b) => {
+    const ia = pos.has(a) ? pos.get(a) : 999999;
+    const ib = pos.has(b) ? pos.get(b) : 999999;
+    if (ia !== ib) return ia - ib;
+    return a.localeCompare(b, 'vi');
+  });
+}
 // ── HỖ TRỢ NHIỀU BỘ PHẬN TRONG 1 HỆ THỐNG ──────────────────────────────
 // sameBoPhan: 2 người được coi là "cùng bộ phận" nếu boPhan trùng nhau,
 // HOẶC nếu 1 trong 2 chưa có boPhan (cột chưa tồn tại / dữ liệu chưa nhập) → fail-open,
@@ -1961,10 +1984,10 @@ async function doLogin(){
       document.getElementById('f-leave-hist-cd-wrap').style.display = 'contents';
       document.getElementById('f-leave-hist-cd').innerHTML = '<option value="">Tất cả chức danh</option>' + cdList.map(cd => `<option>${escapeHTML(cd)}</option>`).join('');
     }
-    // Bộ lọc BỘ PHẬN — chỉ dành cho admin (thấy toàn Công ty), để tìm kiếm nhanh
+    // Bộ lọc BỘ PHẬN — dành cho Admin hoặc LĐ Công ty có phạm vi CONG_TY, để tìm kiếm nhanh
     // trong các tab Lịch sử đổi ca / Lịch sử nghỉ / Thống kê phép năm.
     if (canFilterAcrossDepartments()) {
-      const _bpAll = [...new Set(NV_LIST.map(u => u.boPhan).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'vi'));
+      const _bpAll = sortBoPhanNames(NV_LIST.map(u => u.boPhan));
       const _bpOptions = '<option value="">Tất cả bộ phận</option>' + _bpAll.map(bp => `<option>${escapeHTML(bp)}</option>`).join('');
       const _bpWraps = [
         ['f-hist-bp-wrap', 'f-hist-bp'],
@@ -4035,9 +4058,9 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
   const priorityOrder = APP_CONFIG.priorityOrder?.length > 0
   ? APP_CONFIG.priorityOrder
   : ["Quản đốc", "Phó quản đốc", "Kỹ thuật Phân xưởng", "Trưởng kíp nhiên liệu", "Trực chính nhiên liệu", "Vận hành Băng tải", "Vận hành Máy đánh phá đống", "Vận hành Cẩu trục và xe cơ giới", "Tiếp nhận nhiên liệu"];
-  const _BP_ORDER_SCHED = ['Ban lãnh đạo Công ty','Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
+  const _BP_ORDER_SCHED = getBoPhanOrder();
   const _schedBpFilter = document.getElementById('f-sched-bp')?.value || '';
-  // Admin xem "Tất cả bộ phận" (chưa chọn lọc riêng 1 bộ phận nào) → nhóm theo bộ phận trước tiên
+  // Admin/LĐ Công ty xem "Tất cả bộ phận" → nhóm theo thứ tự BO_PHAN_ORDER trong settings
   const _groupByBp = canFilterAcrossDepartments() && !_schedBpFilter;
   displayList.sort((a, b) => {
     if (_groupByBp) {
@@ -4071,11 +4094,7 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
     const bpCur  = bpSel ? bpSel.value : '';
     const kips = [...new Set(displayList.map(u => u.displayKip).filter(Boolean))].sort();
     const cds  = [...new Set(displayList.map(u => u.chucDanh).filter(Boolean))];
-    const BO_PHAN_ORDER = ['Ban lãnh đạo Công ty','Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
-    const bps  = [...new Set(NV_LIST.map(u => u.boPhan).filter(Boolean))].sort((a,b)=>{
-      const ia=BO_PHAN_ORDER.indexOf(a),ib=BO_PHAN_ORDER.indexOf(b),va=ia===-1?99:ia,vb=ib===-1?99:ib;
-      return va!==vb ? va-vb : (va===99 ? a.localeCompare(b,'vi') : 0);
-    });
+    const bps = sortBoPhanNames(NV_LIST.map(u => u.boPhan));
     kipSel.innerHTML = '<option value="">Tất cả kíp</option>' + kips.map(k => `<option${k===kipCur?' selected':''}>${escapeHTML(k)}</option>`).join('');
     cdSel.innerHTML  = '<option value="">Tất cả chức danh</option>' + cds.map(c => `<option${c===cdCur?' selected':''}>${escapeHTML(c)}</option>`).join('');
     if (bpSel) {
@@ -4250,7 +4269,7 @@ function exportExcelSched() {
   }
 
   // Admin, không lọc → xuất toàn Công ty phân theo bộ phận
-  const BO_PHAN_ORDER = ['Ban lãnh đạo Công ty','Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
+  const BO_PHAN_ORDER = sortBoPhanNames(NV_LIST.map(u => u.boPhan));
   const thead = tableEl.querySelector('thead')?.innerHTML || '';
   const daysInMonth = yr && mo ? new Date(yr, mo, 0).getDate() : 31;
   const totalCols = 3 + daysInMonth + 7;
@@ -4265,7 +4284,7 @@ function exportExcelSched() {
   });
 
   let fullHtml = '';
-  const bpList = BO_PHAN_ORDER.filter(bp => NV_LIST.some(u=>(u.boPhan||'')===bp));
+  const bpList = BO_PHAN_ORDER;
   bpList.forEach((bp, i) => {
     const bpNamesInOrder = orderedNames.filter(name => {
       const u = getUserInfo(name);
@@ -7112,7 +7131,7 @@ function exportExcelLeaveHistory() {
 
   // Admin không lọc chức danh → xuất phân theo bộ phận
   if (CU.admin && !fcd) {
-    const BO_PHAN_ORDER = ['Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
+    const BO_PHAN_ORDER = sortBoPhanNames(leaves.map(lv => (getUserInfo(lv.name)||{}).boPhan || ''));
     const getUserBP = name => (getUserInfo(name)||{}).boPhan || '';
     const hdrStyle = 'background:#1e3a8a;color:#fff;font-weight:700;font-size:14px;text-align:center;padding:8px;';
     const thead = `<tr><th>STT</th><th>Họ tên</th><th>Chức danh</th><th>Kíp</th><th>Chế độ nghỉ</th><th>Ngày nghỉ</th><th>Số ngày</th><th>Lý do</th><th>Nơi nghỉ</th><th>Trạng thái</th><th>Thời gian tạo đơn</th><th>Thời gian duyệt/từ chối</th><th>Người duyệt</th><th>Lý do từ chối</th></tr>`;
