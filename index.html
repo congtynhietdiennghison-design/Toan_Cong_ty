@@ -156,7 +156,6 @@ textarea{resize:none;height:80px}
   <div class="pbox" id="login-box" style="display:none">
    <img src="./logocongty.png" style="max-width:220px;max-height:120px;width:auto;height:auto;display:block;margin:0 auto;object-fit:contain;" alt="Logo công ty">
     <div class="plogo" style="text-align: center">Hệ thống chấm công</div>
-    <div class="plogo" style="text-align: center">Công ty Nhiệt điện Nghi Sơn</div>
     <div style="font-size:18px; font-weight:600; color:#64748b; margin-bottom:4px;">🔑 Đăng nhập</div>
     <div class="psub">Nhập số điện thoại và mã PIN cá nhân</div>
     <div class="pfield">
@@ -870,6 +869,12 @@ const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw7fHZBn_Bzfma2td2Po
 let APP_CONFIG = { tenPX: "Phân xưởng", lechMax: 10 };
 let NV_LIST=[]; let CA = {}; let CU=null;
 let userByName = {};
+let _mergedConfigCache = {};
+let _holidaySetCache = {};
+// TURBO 2: cache tính ca trong phiên trình duyệt. Các bảng/thống kê thường hỏi cùng
+// một người-ngày nhiều lần; cache này tránh lặp toàn bộ logic lịch + điều chuyển.
+let _caGocCache = new Map();
+let _caThucTeCache = new Map();
 
 function rebuildUserByName() {
   userByName = {};
@@ -910,8 +915,8 @@ function isMineName(name) {
   const u = getUserInfo(name);
   return sameBoPhan(u, CU);
 }
-let allReqs=[]; let reqsByName = {}; 
-let allLeaves=[]; let leavesByName = {}; 
+let allReqs=[]; let reqsByName = {}; let reqsByNameDate = {};
+let allLeaves=[]; let leavesByName = {}; let approvedLeaveByNameDate = {};
 let allTransfers = []; let transfersByName = {};
 
 function rebuildTransfersByName() {
@@ -930,9 +935,39 @@ function getLatestTransfer(name, onOrBeforeDate) {
   const arr = transfersByName[(name || '').toString().trim()] || [];
   const d = onOrBeforeDate || '9999-12-31';
   for (let i = 0; i < arr.length; i++) {
-    if ((arr[i].date || '') <= d && arr[i].newKip) return arr[i];
+    if ((arr[i]._date || arr[i].date || '') <= d && arr[i].newKip) return arr[i];
   }
   return null;
+}
+
+// Bản giữ đúng semantics của các đoạn code cũ: lấy lệnh gần nhất bất kể newKip có rỗng hay không.
+function getLatestTransferAny(name, onOrBeforeDate) {
+  const arr = transfersByName[(name || '').toString().trim()] || [];
+  const d = onOrBeforeDate || '9999-12-31';
+  for (let i = 0; i < arr.length; i++) {
+    if ((arr[i]._date || arr[i].date || '') <= d) return arr[i];
+  }
+  return null;
+}
+
+function rebuildLeavesIndexes() {
+  leavesByName = {};
+  approvedLeaveByNameDate = {};
+  (allLeaves || []).forEach(lv => {
+    if (!lv) return;
+    const name = (lv.name || '').toString().trim();
+    lv._dateList = Array.isArray(lv._dateList)
+      ? lv._dateList
+      : ((lv.dates || '').toString().split(',').map(x => x.trim()).filter(Boolean));
+    if (name) {
+      if (!leavesByName[name]) leavesByName[name] = [];
+      leavesByName[name].push(lv);
+      if (lv.status === 'approved') {
+        const byDate = approvedLeaveByNameDate[name] || (approvedLeaveByNameDate[name] = {});
+        lv._dateList.forEach(d => { if (d && !byDate[d]) byDate[d] = lv; });
+      }
+    }
+  });
 }
 
 let MAU_LICH={};
@@ -940,43 +975,252 @@ let autoRefreshTimer = null;
 let leavePollTimer = null;
 let reqPollTimer = null;
 let _schedRenderTimer = null;
+let _tabPrefetchTimer = null;
+let _tabPrefetchPromise = null;
 const _dataLoaded = { requests: false, leaves: false, transfers: false, balances: false };
+
+// TURBO UI: theo dõi phiên bản dữ liệu trong RAM. Khi quay lại một tab mà dữ liệu
+// chưa đổi, giữ nguyên DOM đã vẽ thay vì tính/render lại hàng nghìn ô không cần thiết.
+const _dataRevision = { requests: 0, leaves: 0, transfers: 0, balances: 0, users: 0, config: 0 };
+let _tabRenderStamp = {};
+let _myLeaveBalanceCache = null; // { annual, remaining, at }
+let _myLeaveBalanceSource = ''; // 'server' | 'local' — không cho dữ liệu lọc ở client ghi đè kết quả server
+
+function bumpDataRevision(key) {
+  if (!Object.prototype.hasOwnProperty.call(_dataRevision, key)) return;
+  _dataRevision[key]++;
+  // Ca gốc phụ thuộc users/config/transfers. Ca thực tế phụ thuộc thêm requests/leaves.
+  if (key === 'users' || key === 'config' || key === 'transfers') {
+    _caGocCache.clear();
+    _caThucTeCache.clear();
+  } else if (key === 'requests' || key === 'leaves') {
+    _caThucTeCache.clear();
+  }
+}
 
 const TAB_DATA_NEEDS = {
   'dang-ky': ['requests'],
   'dong-y': ['requests'],
   'phe-duyet': ['requests'],
   'lich-su': ['requests'],
-  'bang-di-ca': ['requests', 'leaves'],
+  'bang-di-ca': ['requests', 'leaves', 'transfers'],
   'nghi-phep': ['leaves'],
   'lich-su-np': ['leaves'],
   'duyet-np': ['leaves'],
   'thong-ke': ['requests', 'leaves', 'balances'],
-  'admin-hc': ['transfers'],
+  // Lịch sử lệnh điều động nằm trong allReqs, còn thay đổi kíp dài hạn nằm trong transfers.
+  'admin-hc': ['requests', 'transfers'],
   'admin': []
 };
+
+function tabDataStamp(tab) {
+  const keys = TAB_DATA_NEEDS[tab] || [];
+  return [tab, _dataRevision.users, _dataRevision.config]
+    .concat(keys.map(k => _dataRevision[k] || 0)).join('|');
+}
+
+function canReuseRenderedTab(tab) {
+  // Form đăng ký/nghỉ/lệnh điều động có trạng thái nhập liệu sống nên không cache render.
+  return ['dong-y','phe-duyet','lich-su','lich-su-np','duyet-np','bang-di-ca','thong-ke'].includes(tab);
+}
+
+function shouldRenderTab(tab) {
+  if (!canReuseRenderedTab(tab)) return true;
+  const stamp = tabDataStamp(tab);
+  if (_tabRenderStamp[tab] === stamp) return false;
+  _tabRenderStamp[tab] = stamp;
+  return true;
+}
 
 function resetDataLoadedFlags() {
   _dataLoaded.requests = false;
   _dataLoaded.leaves = false;
   _dataLoaded.transfers = false;
   _dataLoaded.balances = false;
+  _tabRenderStamp = {};
 }
 
 async function ensureDataForTab(tab) {
   const keys = TAB_DATA_NEEDS[tab];
   if (!keys || keys.length === 0) return;
+
+  // FAST TABS: nếu gói tải nền toàn bộ tab đang chạy thì chờ đúng gói đó, không tạo
+  // thêm request GAS trùng dữ liệu. Sau khi gói nền xong sẽ kiểm tra lại; nếu phần nào
+  // thật sự chưa có mới gọi tải chọn lọc như cơ chế cũ.
+  if (_tabPrefetchPromise) {
+    try { await _tabPrefetchPromise; } catch (_) {}
+  }
+
   const opts = {};
   if (keys.includes('requests') && !_dataLoaded.requests) opts.requests = true;
   if (keys.includes('leaves') && !_dataLoaded.leaves) opts.leaves = true;
   if (keys.includes('transfers') && !_dataLoaded.transfers) opts.transfers = true;
   if (keys.includes('balances') && !_dataLoaded.balances) opts.balances = true;
   if (!opts.requests && !opts.leaves && !opts.transfers && !opts.balances) return;
+
+  // TURBO: nếu các phần còn thiếu đều thuộc gói nghiệp vụ (requests/leaves/balances),
+  // gom vào 1 getTabBundle thay vì Promise.all tạo 2-3 execution Apps Script riêng.
+  // transfers là trường hợp riêng; nếu nó còn thiếu thì fallback cơ chế cũ phía dưới.
+  if (!opts.transfers && (opts.requests || opts.leaves || opts.balances)) {
+    try {
+      const bundle = await api({
+        action: 'getTabBundle',
+        requests: !!opts.requests,
+        leaves: !!opts.leaves,
+        balances: !!opts.balances,
+        myBalance: tab === 'nghi-phep' && !_myLeaveBalanceCache
+      });
+      if (bundle && !bundle.error) {
+        applyPrefetchedTabBundle(bundle);
+        return;
+      }
+    } catch (_) {
+      // Backend cũ/nâng cấp lệch phiên bản: tự fallback bên dưới, không làm hỏng tab.
+    }
+  }
+
   await refreshData(opts);
   if (opts.requests) _dataLoaded.requests = true;
   if (opts.leaves) _dataLoaded.leaves = true;
   if (opts.transfers) _dataLoaded.transfers = true;
   if (opts.balances) _dataLoaded.balances = true;
+}
+
+// TURBO: cache số phép của chính người đang đăng nhập để tab Nghỉ phép mở ngay.
+function applyMyLeaveBalance(balance, source = 'server') {
+  if (!balance || typeof balance !== 'object') return;
+  const annual = Number(balance.annual);
+  const remaining = Number(balance.remaining);
+  if (!Number.isFinite(annual) || !Number.isFinite(remaining)) return;
+  _myLeaveBalanceCache = { annual, remaining, at: Date.now() };
+  _myLeaveBalanceSource = source === 'local' ? 'local' : 'server';
+  const a = document.getElementById('lb-annual');
+  const r = document.getElementById('lb-remaining');
+  if (a) a.textContent = annual;
+  if (r) r.textContent = remaining;
+}
+
+// Khi danh sách leaves vừa đổi (poll/duyệt/hủy), nếu đã biết tổng phép năm thì tính lại
+// remaining ngay trong RAM, không cần gọi thêm getLeaveBalance chỉ để cập nhật 1 con số.
+function refreshMyLeaveBalanceFromLocalLeaves() {
+  if (!_myLeaveBalanceCache || !CU || !CU.name) return;
+  // Số phép do server tính là nguồn chuẩn. allLeaves phía client có thể đã bị lọc theo
+  // bộ phận/phạm vi hiển thị, nên tuyệt đối không dùng nó ghi đè kết quả server.
+  if (_myLeaveBalanceSource === 'server') return;
+  const currentYear = new Date().getFullYear();
+  let used = 0;
+  const mine = leavesByName[CU.name] || [];
+  mine.forEach(lv => {
+    if ((lv.status || '') !== 'approved') return;
+    const lt = (lv.leaveType || 'P').toString();
+    if (lt && lt !== 'P') return;
+    const dates = Array.isArray(lv._dateList) ? lv._dateList : ((lv.dates || '').toString().split(',').map(x => x.trim()).filter(Boolean));
+    if (dates.length > 0) {
+      // Dữ liệu mới dùng yyyy-MM-dd; một số dòng Excel/Sheet cũ có thể còn dd/MM/yyyy.
+      // Đọc được cả hai định dạng để số phép hiển thị trên trình duyệt khớp với server.
+      used += dates.filter(d => {
+        const raw = (d || '').toString().trim();
+        const iso = raw.match(/^(\d{4})-\d{1,2}-\d{1,2}/);
+        if (iso) return Number(iso[1]) === currentYear;
+        const dmy = raw.match(/^\d{1,2}\/\d{1,2}\/(\d{4})/);
+        return !!(dmy && Number(dmy[1]) === currentYear);
+      }).length;
+    } else {
+      // Dữ liệu nghỉ cũ có thể chỉ lưu days_count mà chưa có danh sách dates.
+      // Không được bỏ sót số ngày này vì sẽ làm số phép còn lại cao hơn thực tế.
+      used += Number(lv.days_count || 0);
+    }
+  });
+  applyMyLeaveBalance({ annual: _myLeaveBalanceCache.annual, remaining: _myLeaveBalanceCache.annual - used }, 'local');
+}
+
+// FAST TABS/TURBO: áp dụng CHỈ các nhóm thực sự có trong bundle.
+// Không dựng lại giao diện ở đây để tác vụ nền không gây giật màn hình người dùng.
+function applyPrefetchedTabBundle(bundle) {
+  if (!bundle || bundle.error) return false;
+
+  if (Array.isArray(bundle.requests)) {
+    applyRequestsFromApi({ requests: bundle.requests });
+    _dataLoaded.requests = true;
+  }
+
+  if (Array.isArray(bundle.leaves)) {
+    allLeaves = bundle.leaves;
+    rebuildLeavesIndexes();
+    bumpDataRevision('leaves');
+    _dataLoaded.leaves = true;
+  }
+
+  if (Array.isArray(bundle.transfers)) {
+    allTransfers = bundle.transfers.map(t => {
+      t._date = (t.date || '').toString().substring(0, 10);
+      return t;
+    });
+    rebuildTransfersByName();
+    bumpDataRevision('transfers');
+    _dataLoaded.transfers = true;
+  }
+
+  if (bundle.balanceYear && bundle.balances && CU && (CU.role === 'ld' || CU.admin)) {
+    allLeaveBalances[bundle.balanceYear] = bundle.balances;
+    _leaveBalancesLoadedYears[bundle.balanceYear] = true;
+    bumpDataRevision('balances');
+    _dataLoaded.balances = true;
+  } else if (!(CU && (CU.role === 'ld' || CU.admin))) {
+    _dataLoaded.balances = true;
+  }
+
+  if (bundle.myBalance) applyMyLeaveBalance(bundle.myBalance, 'server');
+  else if (Array.isArray(bundle.leaves)) refreshMyLeaveBalanceFromLocalLeaves();
+  return true;
+}
+
+async function prefetchAllTabData() {
+  if (!CU || !CU.name || !CU.token) return false;
+  if (_tabPrefetchPromise) return _tabPrefetchPromise;
+
+  // Sau login: requests đã tải cho tab Đăng ký, transfers đã có từ bootstrap.
+  // Chỉ xin những nhóm CÒN THIẾU thay vì gọi getRefreshBundle và tải lại tất cả.
+  const needRequests = !_dataLoaded.requests;
+  const needLeaves = !_dataLoaded.leaves;
+  const needBalances = !!(CU && (CU.role === 'ld' || CU.admin) && !_dataLoaded.balances);
+  const needMyBalance = !_myLeaveBalanceCache;
+  if (!needRequests && !needLeaves && !needBalances && !needMyBalance) return true;
+
+  const sessionName = CU.name;
+  const sessionToken = CU.token;
+  _tabPrefetchPromise = (async () => {
+    try {
+      const bundle = await api({
+        action: 'getTabBundle',
+        requests: needRequests,
+        leaves: needLeaves,
+        balances: needBalances,
+        myBalance: needMyBalance
+      });
+      // Nếu người dùng đã đăng xuất/đổi phiên trong lúc request chạy thì bỏ kết quả cũ.
+      if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
+      if (!bundle || bundle.error) {
+        console.warn('[TURBO TABS] Prefetch không thành công:', bundle && bundle.error);
+        return false;
+      }
+      return applyPrefetchedTabBundle(bundle);
+    } catch (err) {
+      console.warn('[TURBO TABS] Prefetch lỗi, sẽ tải theo tab khi cần:', err);
+      return false;
+    } finally {
+      _tabPrefetchPromise = null;
+    }
+  })();
+  return _tabPrefetchPromise;
+}
+
+function scheduleTabPrefetch() {
+  if (_tabPrefetchTimer) clearTimeout(_tabPrefetchTimer);
+  _tabPrefetchTimer = setTimeout(() => {
+    _tabPrefetchTimer = null;
+    prefetchAllTabData().catch(() => {});
+  }, 300);
 }
 
 function renderScheduleTableDebounced() {
@@ -1128,8 +1372,20 @@ function matchRequestYM(r, yr, mo) {
 }
 
 function leaveMatchesYM(lv, yr, mo) {
-  if (!yr || !lv.dates) return !yr;
-  return lv.dates.toString().split(',').some(d => {
+  if (!yr) return true;
+  const rawDates = (lv.dates || '').toString().trim();
+  if (!rawDates) {
+    // Legacy không có dates: vẫn cho xuất hiện khi lọc CẢ NĂM nếu có thể suy năm
+    // từ approvedAt/createdAt. Không gán vào tháng cụ thể vì không đủ dữ liệu để biết
+    // ngày nghỉ thật sự thuộc tháng nào.
+    if (mo) return false;
+    const stamp = (lv.approvedAt || lv.createdAt || '').toString();
+    let m = stamp.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (m) return Number(m[3]) === yr;
+    m = stamp.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    return !!(m && Number(m[1]) === yr);
+  }
+  return rawDates.split(',').some(d => {
     const s = d.trim();
     let y = 0, m = 0;
     if (s.includes('-')) {
@@ -1202,6 +1458,9 @@ function setupDynamicFields(settings) {
     APP_CONFIG.lechWarn = parseInt(settings.configs.SO_CA_LECH_CANH_BAO) || (APP_CONFIG.lechMax - 2); 
     APP_CONFIG.configs = settings.configs;
     APP_CONFIG.configsByBoPhan = settings.configsByBoPhan || {}; // FIX: thiếu dòng này khiến mọi bộ phận đều dùng chung MAU_LICH_MAC_DINH/MOC_KIP thay vì cấu hình riêng
+    // TURBO: config theo bộ phận được dùng ở hàng nghìn ô lịch; xóa cache khi settings đổi.
+    _mergedConfigCache = {};
+    _holidaySetCache = {};
     APP_CONFIG.kipList = settings.kips;
     APP_CONFIG.priorityOrder = settings.chucDanhs;
     buildLechLimitsByBoPhan();
@@ -1244,11 +1503,30 @@ async function applyRequestsFromApi(d) {
       reqsByName[partnerTrim].push(r);
     }
   });
+  // TURBO: sắp theo id đúng 1 lần lúc dựng index. Đồng thời dựng index người+ngày
+  // để bảng đi ca lấy thẳng các đơn tác động đúng ô ngày, không quét cả lịch sử của người đó.
+  reqsByNameDate = {};
+  Object.keys(reqsByName).forEach(name => {
+    const arr = reqsByName[name];
+    arr.sort((a, b) => Number(a.id) - Number(b.id));
+    const byDate = {};
+    arr.forEach(r => {
+      const d1 = r._dDoi || '';
+      const d2 = r._dTra || '';
+      if (d1) (byDate[d1] || (byDate[d1] = [])).push(r);
+      if (d2 && d2 !== d1) (byDate[d2] || (byDate[d2] = [])).push(r);
+    });
+    reqsByNameDate[name] = byDate;
+  });
+  bumpDataRevision('requests');
+  _dataLoaded.requests = true;
 }
 
 async function loadRequests() {
   const d = await api({ action: 'getAll' });
+  if (!d || d.error || !Array.isArray(d.requests)) throw new Error((d && d.error) || 'Không tải được dữ liệu đổi ca.');
   applyRequestsFromApi(d);
+  return true;
 }
 
 /** Tải lại có chọn lọc — giảm tải server khi nhiều người dùng cùng lúc. */
@@ -1275,20 +1553,15 @@ function showApiError(targetId, res, fallback) {
 }
 
 async function loadLeaves() {
-try {
-const res = await api({ action: 'getLeaves' });
-allLeaves = (res.leaves || []).map(lv => {
-  // Tối ưu: Lưu sẵn chuỗi ngày để so sánh cho nhanh
-  lv._dateList = lv.dates ? lv.dates.toString().split(',').map(s => s.trim()) : [];
-  return lv;
-});
-// Tối ưu: Index theo tên
-leavesByName = {};
-allLeaves.forEach(lv => {
-  if (!leavesByName[lv.name]) leavesByName[lv.name] = [];
-  leavesByName[lv.name].push(lv);
-});
-} catch(e) { allLeaves = []; }
+  const res = await api({ action: 'getLeaves' });
+  if (!res || res.error || !Array.isArray(res.leaves)) throw new Error((res && res.error) || 'Không tải được dữ liệu nghỉ cá nhân.');
+  // Chỉ thay dữ liệu RAM SAU KHI server trả gói hợp lệ; lỗi mạng/hết phiên không làm bảng đang xem bị trắng.
+  allLeaves = res.leaves;
+  rebuildLeavesIndexes();
+  bumpDataRevision('leaves');
+  _dataLoaded.leaves = true;
+  refreshMyLeaveBalanceFromLocalLeaves();
+  return true;
 }
 
 
@@ -1299,7 +1572,7 @@ const SS_SOURCES = {
   'ss-reset': () => getNVMine().map(u => u.name),
   'ss-partner': () => {
     if (!CU) return [];
-    const myInfo = NV_LIST.find(u => u.name === CU.name);
+    const myInfo = getUserInfo(CU.name);
     if (!myInfo) return [];
     
     const getRoles = (u) => {
@@ -1383,7 +1656,7 @@ document.addEventListener('click',e=>{
     document.getElementById(SS_HIDDEN[ss.id]).value = val; document.getElementById(ss.id+'-lbl').textContent = val; 
     ss.querySelector('.ss-btn').classList.remove('ph'); o.closest('.ss-drop').classList.remove('open'); 
     if(ss.id === 'ss-partner') {
-      const pInfo = NV_LIST.find(u => u.name === val);
+      const pInfo = getUserInfo(val);
       if(pInfo) {
         // Lấy kíp thực tế của người đi thay theo lệnh điều động
         let partnerKipThucTe = pInfo.kip;
@@ -1452,7 +1725,9 @@ async function doLogin(){
     } 
     
     // ĐĂNG NHẬP THÀNH CÔNG
-    CU=r.user; 
+    CU=r.user;
+    _myLeaveBalanceCache = null;
+    _myLeaveBalanceSource = '';
 
     // PIN tạm dùng cờ server riêng, không phụ thuộc currentToken.
     // Kiểm tra NGAY trước khi tải dữ liệu khác để session bắt buộc đổi PIN không làm việc gì ngoài đổi PIN.
@@ -1466,13 +1741,20 @@ async function doLogin(){
 
     // V13.7.4: chỉ sau khi có session thật mới tải danh sách nhân sự, cấu hình được
     // whitelist, mẫu lịch, phân quyền và điều chuyển. Nếu bootstrap lỗi thì thu hồi phiên.
+    let _bootIncludedRequests = false;
     try {
-      const boot = await api({ action: 'getBootstrap' });
+      // V13.7.5 FAST LOGIN: backend mới trả kèm bootstrap ngay trong response login,
+      // loại bỏ thêm 1 round-trip tới Apps Script. Nếu backend cũ/chậm chưa trả kèm
+      // thì vẫn fallback getBootstrap để hai file có thể nâng cấp lệch nhau mà không lỗi.
+      let boot = r.bootstrap || null;
+      if (!boot || boot.error || !boot.users || boot.users.length === 0) {
+        boot = await api({ action: 'getBootstrap' });
+      }
       if (!boot || boot.error || !boot.users || boot.users.length === 0) {
         try { await api({ action: 'logout' }); } catch(_) {}
         CU = null;
         e.style.color = '#dc2626';
-        e.textContent = (boot && boot.error) || 'Không tải được dữ liệu sau đăng nhập.';
+        e.textContent = (boot && boot.error) || r.bootstrapError || 'Không tải được dữ liệu sau đăng nhập.';
         return;
       }
 
@@ -1481,10 +1763,21 @@ async function doLogin(){
         NV_LIST.forEach(u => { const q = boot.quyenMap[u.name]; if (q) Object.assign(u, q); });
       }
       rebuildUserByName();
+      bumpDataRevision('users');
       MAU_LICH = boot.mauLich || {};
       allTransfers = (boot.transfers || []).map(t => { t._date = (t.date || "").toString().substring(0, 10); return t; });
       rebuildTransfersByName();
-      if (boot.settings) setupDynamicFields(boot.settings);
+      bumpDataRevision('transfers');
+      if (boot.settings) {
+        setupDynamicFields(boot.settings);
+        bumpDataRevision('config');
+      }
+      // TURBO 2: backend mới preload requests trong chính response login. Nếu có thì
+      // dựng index ngay; backend cũ không có trường này vẫn tự tải bù ở ensureDataForTab().
+      if (Array.isArray(boot.requests)) {
+        applyRequestsFromApi({ requests: boot.requests });
+        _bootIncludedRequests = true;
+      }
       initSS();
     } catch(bootErr) {
       console.error('Lỗi tải dữ liệu sau đăng nhập:', bootErr);
@@ -1508,7 +1801,7 @@ async function doLogin(){
     
     document.getElementById('overlay').style.display='none'; document.getElementById('app').style.display='block'; 
     document.getElementById('ub-name').textContent=CU.name; 
-    const myInfo = NV_LIST.find(u => u.name === CU.name); 
+    const myInfo = getUserInfo(CU.name); 
     // Tiêu đề "Quản lý chấm công" — dùng tên chung TEN_PHAN_XUONG (cấu hình ở Settings).
     const _tbTitleEl = document.getElementById('tb-title');
     if (_tbTitleEl) {
@@ -1569,7 +1862,7 @@ async function doLogin(){
         if (selEl) { selEl.innerHTML = _bpOptions; selEl.style.display = ''; }
       });
     }
-   document.getElementById('btn-admin').style.display = CU.admin?'':'none'; const myInfoDisp = NV_LIST.find(u => u.name === CU.name);
+   document.getElementById('btn-admin').style.display = CU.admin?'':'none'; const myInfoDisp = getUserInfo(CU.name);
     const hasDispatchPerm = CU.admin || (myInfoDisp && myInfoDisp.quyenDieuDong && myInfoDisp.quyenDieuDong.trim());
     document.getElementById('tab-btn-admin-hc').style.display = hasDispatchPerm ? '' : 'none';      document.getElementById('f-name').value = CU.name; 
     if(myInfo) {
@@ -1586,7 +1879,7 @@ async function doLogin(){
 }
     // Kiểm tra quyền điều động/điều chuyển và ẩn form nếu không có
     {
-      const myInfoPerm = NV_LIST.find(u => u.name === CU.name);
+      const myInfoPerm = getUserInfo(CU.name);
       const qdd = myInfoPerm ? (myInfoPerm.quyenDieuDong || '').trim() : '';
       const canDispatch = CU.admin || !!qdd;
       // Form điều chuyển
@@ -1613,16 +1906,16 @@ async function doLogin(){
     const now = new Date(); const curYear = now.getFullYear(); const curMonthStr = curYear + '-' + String(now.getMonth()+1).padStart(2,'0'); 
     initYearMonthFilters();
     resetDataLoadedFlags();
+    // transfers + (ở backend TURBO 2) requests đã có ngay trong bootstrap.
+    _dataLoaded.requests = _bootIncludedRequests;
+    _dataLoaded.transfers = true;
+    _dataLoaded.balances = !(CU.role === 'ld' || CU.admin);
     await ensureDataForTab('dang-ky');
     switchTab('dang-ky');
 
-    // Tải NGẦM (không chặn màn hình, không await) dữ liệu các nhóm còn lại ngay sau khi
-    // vào được app — để lần đầu bấm sang tab khác (Nghỉ phép/Điều động/Thống kê) không bị
-    // khựng lại chờ tải như hiện tại, giữ cảm giác mượt gần như bản cũ (tải hết 1 lần) mà
-    // vẫn không làm chậm bước đăng nhập ban đầu.
-    setTimeout(() => {
-      ['dong-y', 'nghi-phep', 'admin-hc', 'thong-ke'].forEach(t => ensureDataForTab(t).catch(() => {}));
-    }, 800);
+    // TURBO: sau tab đầu tiên, chỉ preload các nhóm CÒN THIẾU (thường chỉ leaves +
+    // balances) bằng getTabBundle nhẹ; không tải lại users/settings/MauLich/transfers.
+    scheduleTabPrefetch();
   } catch(ex){e.style.color='#dc2626'; e.textContent='Lỗi kết nối mạng';}
   
   // TỰ ĐỘNG CẬP NHẬT — giãn ra 120s, và CHỈ chạy khi tab đang mở (giảm số lệnh gọi GAS)
@@ -1630,11 +1923,15 @@ async function doLogin(){
   
   autoRefreshTimer = setInterval(async () => {
     if (CU && document.visibilityState === 'visible') {
-      const activeBtn = document.querySelector('.tab.active');
-      const t = activeBtn?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1] || '';
-      if (['nghi-phep', 'duyet-np', 'lich-su-np'].includes(t)) await loadLeaves();
-      else await loadRequests();
-      if (activeBtn && ['dong-y', 'phe-duyet', 'lich-su', 'duyet-np'].includes(t)) switchTab(t);
+      try {
+        const activeBtn = document.querySelector('.tab.active');
+        const t = activeBtn?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1] || '';
+        if (['nghi-phep', 'duyet-np', 'lich-su-np'].includes(t)) await loadLeaves();
+        else await loadRequests();
+        if (activeBtn && ['dong-y', 'phe-duyet', 'lich-su', 'duyet-np'].includes(t)) switchTab(t);
+      } catch (err) {
+        console.warn('[AUTO REFRESH] giữ dữ liệu cũ vì làm mới thất bại:', err);
+      }
     }
   }, 120000);
 }
@@ -1644,8 +1941,15 @@ function doLogout() {
   if (CU && CU.name) {
     api({action: "logout", name: CU.name}); 
   }
+  if (_tabPrefetchTimer) { clearTimeout(_tabPrefetchTimer); _tabPrefetchTimer = null; }
+  // Promise đang chạy không hủy được, nhưng prefetch có kiểm tra session trước khi áp dụng kết quả.
   
-  CU = null; allReqs = [];
+  CU = null; allReqs = []; reqsByName = {}; reqsByNameDate = {};
+  allLeaves = []; leavesByName = {}; approvedLeaveByNameDate = {};
+  allTransfers = []; transfersByName = {};
+  _caGocCache.clear(); _caThucTeCache.clear();
+  _myLeaveBalanceCache = null;
+  _myLeaveBalanceSource = '';
   resetDataLoadedFlags();
   document.getElementById('overlay').style.display = 'flex'; document.getElementById('app').style.display = 'none'; document.getElementById('login-box').style.display = 'block'; document.getElementById('login-loading').style.display = 'none';
   document.getElementById('f-login-name').value = ''; document.getElementById('pin-inp').value = ''; document.getElementById('pin-err').textContent = ''; document.getElementById('f-name').value = '';
@@ -1671,9 +1975,13 @@ async function doRefresh(btn) {
     if (Array.isArray(bundle.users) && bundle.users.length > 0) {
       NV_LIST = bundle.users;
       rebuildUserByName();
+      bumpDataRevision('users');
     }
     MAU_LICH = bundle.mauLich || {};
-    if (bundle.settings) setupDynamicFields(bundle.settings);
+    if (bundle.settings) {
+      setupDynamicFields(bundle.settings);
+      bumpDataRevision('config');
+    }
 
     // 2) Dữ liệu phân quyền — chỉ có sau khi đã xác thực token trên server
     const quyenMap = bundle.quyenMap || {};
@@ -1688,32 +1996,30 @@ async function doRefresh(btn) {
       return t;
     });
     rebuildTransfersByName();
+    bumpDataRevision('transfers');
 
     // 4) Đơn đổi ca — dùng chung hàm dựng index hiện có
     applyRequestsFromApi({ requests: bundle.requests || [] });
 
     // 5) Đơn nghỉ cá nhân — dựng lại index theo tên giống loadLeaves()
-    allLeaves = (bundle.leaves || []).map(lv => {
-      lv._dateList = lv.dates ? lv.dates.toString().split(',').map(x => x.trim()) : [];
-      return lv;
-    });
-    leavesByName = {};
-    allLeaves.forEach(lv => {
-      if (!leavesByName[lv.name]) leavesByName[lv.name] = [];
-      leavesByName[lv.name].push(lv);
-    });
+    allLeaves = bundle.leaves || [];
+    rebuildLeavesIndexes();
+    bumpDataRevision('leaves');
 
     // 6) Số phép năm hiện tại cho lãnh đạo/admin (nếu server có trả)
     if (bundle.balanceYear && bundle.balances && CU && (CU.role === 'ld' || CU.admin)) {
       allLeaveBalances[bundle.balanceYear] = bundle.balances;
       _leaveBalancesLoadedYears[bundle.balanceYear] = true;
+      bumpDataRevision('balances');
     }
+    if (bundle.myBalance) applyMyLeaveBalance(bundle.myBalance, 'server');
+    else refreshMyLeaveBalanceFromLocalLeaves();
 
     // Đánh dấu các nhóm đã có dữ liệu để ensureDataForTab() không gọi GAS lại ngay sau refresh.
     _dataLoaded.requests = true;
     _dataLoaded.leaves = true;
     _dataLoaded.transfers = true;
-    _dataLoaded.balances = !!(bundle.balanceYear && bundle.balances);
+    _dataLoaded.balances = !(CU && (CU.role === 'ld' || CU.admin)) || !!(bundle.balanceYear && bundle.balances);
 
     // Dựng lại dropdown người dùng vì NV_LIST/quyền có thể vừa thay đổi.
     buildSS('ss-partner', '');
@@ -1876,25 +2182,41 @@ function switchTab(t){
 }
 
 function switchTabRender(t){
-['dang-ky','dong-y','phe-duyet','admin','admin-hc','nghi-phep','lich-su-np','duyet-np','lich-su','thong-ke','bang-di-ca'].forEach(s=>{
-const btn=document.querySelector(`.tab[onclick="switchTab('${s}')"]`); if(btn) btn.classList.toggle('active',s===t);
+  ['dang-ky','dong-y','phe-duyet','admin','admin-hc','nghi-phep','lich-su-np','duyet-np','lich-su','thong-ke','bang-di-ca'].forEach(s=>{
+    const btn=document.querySelector(`.tab[onclick="switchTab('${s}')"]`); if(btn) btn.classList.toggle('active',s===t);
     const sec=document.getElementById('tab-'+s); if(sec) sec.classList.toggle('active',s===t);
   });
-  if(t==='dong-y') renderDongY(); 
-  if(t==='phe-duyet') renderPheDuyet(); 
-  if(t==='lich-su') renderHistory(); 
-  if(t==='bang-di-ca') renderScheduleTable();
+
+  // TURBO: tab đã vẽ và dữ liệu chưa đổi -> giữ nguyên DOM, không tính lại.
+  const needRender = shouldRenderTab(t);
+  if (needRender) {
+    if(t==='dong-y') renderDongY();
+    if(t==='phe-duyet') renderPheDuyet();
+    if(t==='lich-su') renderHistory();
+    if(t==='lich-su-np') { renderLeaveHistory(); renderLeavePending(); }
+    if(t==='duyet-np') renderLeaveApproveList();
+
+    // Hai tab nặng nhất: cho trình duyệt vẽ trạng thái tab active trước 1 frame rồi mới
+    // dựng bảng lớn. Cảm giác chuyển tab tức thì, sau đó nội dung hoàn thiện ngay sau đó.
+    if(t==='bang-di-ca') requestAnimationFrame(() => renderScheduleTable());
+    if(t==='thong-ke') requestAnimationFrame(() => {
+      renderSummary(); renderDayTable(); renderWarn(); renderStaffStats(); renderNoCa(); renderNoCaLD(); renderLeaveStats();
+    });
+  }
+
+  // Form sống: vẫn khởi tạo mỗi lần mở để giữ nguyên hành vi cũ; riêng số phép đã cache
+  // nên initLeaveTab không còn chặn vì API.
   if(t==='nghi-phep') initLeaveTab();
-  if(t==='lich-su-np') { renderLeaveHistory(); renderLeavePending(); }
-  if(t==='duyet-np') renderLeaveApproveList();
+  if(t==='admin-hc') {
+    renderAdminHCHist();
+    initTransferForm();
+    filterTCUsers();
+    renderTransferLog();
+  }
+
+  // Poll phải đồng bộ theo tab đang mở kể cả khi bỏ qua render.
   syncLeavePollTimer(t);
   syncReqPollTimer(t);
-  if(t==='thong-ke'){ renderSummary(); renderDayTable(); renderWarn(); renderStaffStats(); renderNoCa(); renderNoCaLD(); renderLeaveStats(); }
-  if(t==='admin-hc') { 
-    renderAdminHCHist(); 
-    initTransferForm(); // Khởi tạo form + render danh sách lần đầu
-    loadTransfers().then(() => { filterTCUsers(); renderTransferLog(); }); // Re-render sau khi load xong
-  }
 }
 
 function localTodayYmd(){ try{ const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()); const m=Object.fromEntries(parts.map(p=>[p.type,p.value])); return `${m.year}-${m.month}-${m.day}`; }catch(e){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; } }
@@ -1966,8 +2288,8 @@ function reqCard(r, a = '') {
   const safeName = escapeHTML(r.name);
   const safePartner = escapeHTML(r.partner);
   
-  const uInfo = NV_LIST.find(u => u.name === r.name);
-  const pInfo = NV_LIST.find(u => u.name === r.partner);
+  const uInfo = getUserInfo(r.name);
+  const pInfo = getUserInfo(r.partner);
 
   // --- LOGIC HIỂN THỊ CHỨC DANH CHUNG & DỰ PHÒNG ---
   let uRoleDisplay = '';
@@ -2103,7 +2425,7 @@ function renderPheDuyet(){
   
   // 1. LẤY QUYỀN DUYỆT CỦA LÃNH ĐẠO ĐANG ĐĂNG NHẬP
   // Quy tắc: * = duyệt tất cả | "Trưởng kíp,Trực chính" = chỉ các chức danh đó | để trống = không duyệt được gì
-  const myInfo = NV_LIST.find(u => u.name === CU.name);
+  const myInfo = getUserInfo(CU.name);
   const myPermsRaw = (myInfo && myInfo.quyenDuyet) ? myInfo.quyenDuyet.trim() : '';
   const myPermsAll = myPermsRaw === '*';
   const myPerms = myPermsAll ? [] : myPermsRaw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
@@ -2111,7 +2433,7 @@ function renderPheDuyet(){
   // 2. LỌC DANH SÁCH ĐƠN DỰA TRÊN THẨM QUYỀN
   const its = allReqs.filter(r => {
     if (r.status !== 'pending_ld') return false;
-    const reqUser = NV_LIST.find(u => u.name === r.name);
+    const reqUser = getUserInfo(r.name);
     // Ranh giới bộ phận: lãnh đạo (không phải admin) chỉ được duyệt đơn của
     // người CÙNG BỘ PHẬN mình — tránh trường hợp 2 bộ phận trùng tên chức danh
     // (vd cả 2 đều có "Trưởng kíp") khiến quyenDuyet="*" vô tình lan sang bộ
@@ -2294,29 +2616,14 @@ async function ldNo(id, btn){
   } 
 }
 function getCurrentKip(userName, baseKip) {
-
-  let currentKip = baseKip;
-
-  if (typeof allTransfers !== 'undefined' &&
-      allTransfers &&
-      allTransfers.length > 0) {
-
-    const today = localTodayYmd();
-
-    const transfers = allTransfers
-      .filter(t => t.name === userName && t.date <= today)
-      .sort((a,b) => b.date.localeCompare(a.date));
-
-    if (transfers.length > 0 && transfers[0].newKip) {
-      currentKip = transfers[0].newKip;
-    }
-  }
-
-  return currentKip;
+  // TURBO: transfersByName đã được sắp giảm dần một lần khi tải dữ liệu.
+  // Không filter + sort TOÀN BỘ allTransfers cho mỗi lần tra kíp nữa.
+  const latest = getLatestTransferAny(userName, localTodayYmd());
+  return (latest && latest.newKip) ? latest.newKip : baseKip;
 }
 function getPersonKip(name, selectedKip) {
   if (selectedKip && selectedKip !== 'AUTO_LEAVE') return selectedKip;
-  const u = NV_LIST.find(u => u.name === name);
+  const u = getUserInfo(name);
   return u ? getCurrentKip(name, u.kip) : (selectedKip || '');
 }
 // =====================================================================
@@ -2350,17 +2657,37 @@ function normalizeDate(str) {
 
 // ── Helper: merge config chung + riêng theo bộ phận (mirror của GAS) ──
 function mergeConfigsForBoPhan(boPhan) {
+  const key = (boPhan || '').toString();
+  if (_mergedConfigCache[key]) return _mergedConfigCache[key];
   const common   = (APP_CONFIG.configs) || {};
   const byBP     = (APP_CONFIG.configsByBoPhan) || {};
   const specific = (boPhan && byBP[boPhan]) ? byBP[boPhan] : {};
-  return Object.assign({}, common, specific);
+  const merged = Object.assign({}, common, specific);
+  _mergedConfigCache[key] = merged;
+  return merged;
+}
+
+function getHolidaySetForBoPhan(boPhan, cfg) {
+  const key = (boPhan || '').toString();
+  if (_holidaySetCache[key]) return _holidaySetCache[key];
+  const conf = cfg || mergeConfigsForBoPhan(boPhan);
+  const set = new Set((conf.NGAY_LE || '').toString().split(',').map(x => x.trim()).filter(Boolean));
+  _holidaySetCache[key] = set;
+  return set;
+}
+
+function _rememberCaGoc(key, value) {
+  _caGocCache.set(key, value);
+  return value;
 }
 
 function getCaTrucGoc(userName, defaultKip, dateStr) {
   if (!dateStr) return 'OFF';
+  const _cacheKey = `${(userName || '').toString().trim()}|${defaultKip || ''}|${dateStr}`;
+  if (_caGocCache.has(_cacheKey)) return _caGocCache.get(_cacheKey);
 
-  // Lấy boPhan của user để dùng đúng config (MOC_KIP, MAU_LICH_MAC_DINH) theo bộ phận
-  const _userInfo = NV_LIST.find(u => u.name === userName);
+  // TURBO: tra user qua index O(1), không NV_LIST.find() lặp lại ở từng ô lịch.
+  const _userInfo = getUserInfo(userName);
   const _userBoPhan = _userInfo ? (_userInfo.boPhan || '') : '';
   const _cfg = mergeConfigsForBoPhan(_userBoPhan);
 
@@ -2370,21 +2697,15 @@ function getCaTrucGoc(userName, defaultKip, dateStr) {
   let currentRef = 0;
   let isNgoaiLe = false;
 
-  // MẮT THẦN: Quét lịch sử điều chuyển để ghi đè nếu ngày xét >= ngày áp dụng lệnh
-  const myTransfers = transfersByName[userName] || [];
-  if (myTransfers.length > 0) {
-    const sorted = myTransfers
-      .filter(t => dateStr >= t._date)
-      .sort((a, b) => b._date.localeCompare(a._date));
-    
-    if (sorted.length > 0) {
-      const latest = sorted[0];
-      if (latest.newKip) currentKip = latest.newKip;
-      if (latest.newPattern) {
-        currentPattern = latest.newPattern;
-        currentRef = parseInt(latest.newViTriMoc) || 0;
-        isNgoaiLe = (latest.newPattern !== (_cfg.MAU_LICH_MAC_DINH || '3 ca 5 kíp'));
-      }
+  // TURBO: transfersByName đã sắp giảm dần; lấy lệnh mới nhất <= dateStr bằng 1 lượt
+  // duyệt ngắn, không filter + sort lại mảng ở MỖI Ô trong bảng đi ca/thống kê.
+  const latest = getLatestTransferAny(userName, dateStr);
+  if (latest) {
+    if (latest.newKip) currentKip = latest.newKip;
+    if (latest.newPattern) {
+      currentPattern = latest.newPattern;
+      currentRef = parseInt(latest.newViTriMoc) || 0;
+      isNgoaiLe = (latest.newPattern !== (_cfg.MAU_LICH_MAC_DINH || '3 ca 5 kíp'));
     }
   }
 
@@ -2396,8 +2717,8 @@ function getCaTrucGoc(userName, defaultKip, dateStr) {
     const ngayNghiCuoiTuan = [0, 6]; // 0 là Chủ nhật. Nếu nghỉ cả T7 thì đổi thành [0, 6]
     const isCuoiTuan = ngayNghiCuoiTuan.includes(d);
 
-    const mangLe = (_cfg.NGAY_LE || '').split(',').map(s => s.trim());
-    const isNgayLe = mangLe.includes(dateStr);
+    const mangLe = getHolidaySetForBoPhan(_userBoPhan, _cfg);
+    const isNgayLe = mangLe.has(dateStr);
 
     let isNghiBu = false;
     if (!isCuoiTuan && !isNgayLe) {
@@ -2408,7 +2729,7 @@ function getCaTrucGoc(userName, defaultKip, dateStr) {
         let pastStr = past.getFullYear() + '-' + String(past.getMonth() + 1).padStart(2, '0') + '-' + String(past.getDate()).padStart(2, '0');
         let pastDay = past.getDay();
         
-        let pastIsHol = mangLe.includes(pastStr);
+        let pastIsHol = mangLe.has(pastStr);
         let pastIsCuoiTuan = ngayNghiCuoiTuan.includes(pastDay);
 
         if (pastIsHol && pastIsCuoiTuan) compDaysEarned++; 
@@ -2417,13 +2738,13 @@ function getCaTrucGoc(userName, defaultKip, dateStr) {
       if (compDaysEarned > 0) isNghiBu = true;
     }
 
-    if (isCuoiTuan || isNgayLe || isNghiBu) return 'OFF';
-    return 'HC'; 
+    if (isCuoiTuan || isNgayLe || isNghiBu) return _rememberCaGoc(_cacheKey, 'OFF');
+    return _rememberCaGoc(_cacheKey, 'HC'); 
   }
 
   // --- 3. XỬ LÝ KHỐI CA KÍP (ĐỌC VÒNG LẶP MẪU LỊCH) ---
   const mau = MAU_LICH[currentPattern];
-  if (!mau) return 'OFF';
+  if (!mau) return _rememberCaGoc(_cacheKey, 'OFF');
   
   let chuKy = mau.chuKy;
   let ngayMocStr = mau.ngayMoc;
@@ -2443,7 +2764,7 @@ function getCaTrucGoc(userName, defaultKip, dateStr) {
   let viTriHienTai = (viTriMoc + (diffDays % len)) % len;
   if (viTriHienTai < 0) viTriHienTai += len;
 
-  return chuKy[viTriHienTai];
+  return _rememberCaGoc(_cacheKey, chuKy[viTriHienTai]);
 }
 
 // Hàm cộng/trừ ngày để kiểm tra lịch ngày hôm trước/hôm sau
@@ -2466,32 +2787,36 @@ function getDieuDongWorkCa(req, dateStr) {
 // =====================================================================
 // HÀM TÍNH LỊCH THỰC TẾ (ĐÃ FIX: ƯU TIÊN TUYỆT ĐỐI CHO LỆNH ĐIỀU ĐỘNG)
 function getCaThucTe(userName, kipName, dateStr, ignoreReqId = null, returnFullObj = false) {
-   let ca = getCaTrucGoc(userName, kipName, dateStr); 
-   if (!allReqs) return returnFullObj ? { ca: ca, status: 'goc' } : ca;
-
    const targetDate = (dateStr || "").toString().substring(0, 10);
    const uName = (userName || "").toString().trim();
+   const cacheable = ignoreReqId === null || ignoreReqId === undefined;
+   const actualCacheKey = cacheable ? `${uName}|${kipName || ''}|${targetDate}` : '';
+   if (cacheable && _caThucTeCache.has(actualCacheKey)) {
+      const cached = _caThucTeCache.get(actualCacheKey);
+      return returnFullObj ? cached : cached.ca;
+   }
+
+   let ca = getCaTrucGoc(userName, kipName, targetDate);
+   if (!allReqs) {
+      const baseOnly = { ca: ca, status: 'goc', gocCa: ca };
+      if (cacheable) _caThucTeCache.set(actualCacheKey, baseOnly);
+      return returnFullObj ? baseOnly : ca;
+   }
    
-   // Lọc các đơn liên quan đến người này trong ngày này
-   const reqs = allReqs.filter(r => {
+   // TURBO 2: tra thẳng index người + ngày. Đây là O(1) để lấy đúng nhóm đơn có thể
+   // tác động vào ô lịch, thay vì quét toàn bộ đơn của người ở từng ngày.
+   const reqs = (((reqsByNameDate[uName] || {})[targetDate]) || []).filter(r => {
       if (r.id === ignoreReqId) return false;
-      if (r.status !== 'approved' && r.status !== 'pending_ld') return false;
-      
-      const dDoi = (r.ngayDoi || "").toString().substring(0, 10);
-      const dTra = (r.ngayTra || "").toString().substring(0, 10);
-      const name = (r.name || "").toString().trim();
-      const partner = (r.partner || "").toString().trim();
-      
-      return (name === uName || partner === uName) && (dDoi === targetDate || dTra === targetDate);
-   }).sort((a, b) => Number(a.id) - Number(b.id));
+      return r.status === 'approved' || r.status === 'pending_ld';
+   });
 
    // ── last-write-wins: đơn nào id lớn hơn (tạo sau) thì đè đơn trước ──
    let finalCa = null;
    let finalStatus = 'goc';
 
    for (let r of reqs) {
-      const dDoi = (r.ngayDoi || "").toString().substring(0, 10);
-      const dTra = (r.ngayTra || "").toString().substring(0, 10);
+      const dDoi = r._dDoi || (r.ngayDoi || "").toString().substring(0, 10);
+      const dTra = r._dTra || (r.ngayTra || "").toString().substring(0, 10);
       const name = (r.name || "").toString().trim();
       const partner = (r.partner || "").toString().trim();
       const reason = (r.reason || "").toString();
@@ -2577,9 +2902,8 @@ function getCaThucTe(userName, kipName, dateStr, ignoreReqId = null, returnFullO
    if (finalCa === null) finalCa = ca;
 
    // ── Kiểm tra nghỉ phép từ sheet leaves (chỉ áp dụng nếu chưa có đơn nào đè) ──
-   if (finalCa === ca && typeof leavesByName !== 'undefined') {
-      const uLeaves = leavesByName[uName] || [];
-      const lv = uLeaves.find(l => l.status === 'approved' && l.dates && l.dates.includes(targetDate));
+   if (finalCa === ca) {
+      const lv = (approvedLeaveByNameDate[uName] || {})[targetDate];
       if (lv) {
           const lvMap = { 'P': 'P', 'VR': 'VR', 'O_m': 'Ô', 'TS': 'TS', 'O': 'O' };
           finalCa = lvMap[lv.leaveType] || 'P';
@@ -2587,7 +2911,9 @@ function getCaThucTe(userName, kipName, dateStr, ignoreReqId = null, returnFullO
       }
    }
 
-   return returnFullObj ? { ca: finalCa, status: finalStatus } : finalCa;
+   const resultObj = { ca: finalCa, status: finalStatus, gocCa: ca };
+   if (cacheable) _caThucTeCache.set(actualCacheKey, resultObj);
+   return returnFullObj ? resultObj : finalCa;
 }
 
 // 2. LÍNH GÁC AN TOÀN (TỰ ĐỘNG QUÉT LUẬT TỪ EXCEL)
@@ -2602,7 +2928,7 @@ function checkViPhamAnToan(userName, kipName, dateStr, caMuonDi, ignoreReqId = n
   const caNgaySau = getCaThucTe(userName, kipName, ngaySau, ignoreReqId);
 
   // --- A. LẤY LUẬT TỪ EXCEL (theo đúng bộ phận của người dùng) ---
-  const _uInfo = NV_LIST.find(u => u.name === userName);
+  const _uInfo = getUserInfo(userName);
   const _uBoPhan = _uInfo ? (_uInfo.boPhan || '') : '';
   const c = mergeConfigsForBoPhan(_uBoPhan);
   const chuoiCaCam = c.CA_CAM_LIEN_TIEP || "C-K"; // Mặc định nếu Excel trống là C-K
@@ -2851,8 +3177,8 @@ if (r.reason && r.reason.match(/^\[/)) return false;
     if (!CU.admin) {
       if (CU.role === 'ld') {
         // Lãnh đạo: chỉ thấy đơn của người CÙNG BỘ PHẬN mình (không phải toàn Công ty)
-        const nameUser = NV_LIST.find(u => u.name === r.name);
-        const namePartner = NV_LIST.find(u => u.name === r.partner);
+        const nameUser = getUserInfo(r.name);
+        const namePartner = getUserInfo(r.partner);
         const inMyBp = (nameUser && nameUser.boPhan === CU.boPhan) || (namePartner && namePartner.boPhan === CU.boPhan);
         if (!inMyBp) return false;
       } else {
@@ -2861,8 +3187,8 @@ if (r.reason && r.reason.match(/^\[/)) return false;
       }
     } else if (fbp) {
       // Admin có chọn bộ lọc bộ phận cụ thể
-      const nameUser = NV_LIST.find(u => u.name === r.name);
-      const namePartner = NV_LIST.find(u => u.name === r.partner);
+      const nameUser = getUserInfo(r.name);
+      const namePartner = getUserInfo(r.partner);
       const inFilterBp = (nameUser && nameUser.boPhan === fbp) || (namePartner && namePartner.boPhan === fbp);
       if (!inFilterBp) return false;
     }
@@ -2875,8 +3201,8 @@ if (r.reason && r.reason.match(/^\[/)) return false;
     // Lọc theo chức danh (lãnh đạo hoặc admin)
     const fcd = (CU.role === 'ld' || CU.admin) ? (document.getElementById('f-fcd')?.value || '') : '';
     if (fcd) {
-      const nameUser = NV_LIST.find(u => u.name === r.name);
-      const namePartner = NV_LIST.find(u => u.name === r.partner);
+      const nameUser = getUserInfo(r.name);
+      const namePartner = getUserInfo(r.partner);
       if ((nameUser?.chucDanh !== fcd) && (namePartner?.chucDanh !== fcd)) return false;
     }
    // Lọc theo Trạng thái
@@ -2930,8 +3256,8 @@ function renderSummary() {
   } else if (CU.role === 'ld') {
     // Lãnh đạo: chỉ trong phạm vi bộ phận mình
     reqs = allReqs.filter(r => {
-      const nameUser = NV_LIST.find(u => u.name === r.name);
-      const namePartner = NV_LIST.find(u => u.name === r.partner);
+      const nameUser = getUserInfo(r.name);
+      const namePartner = getUserInfo(r.partner);
       return (nameUser && nameUser.boPhan === CU.boPhan) || (namePartner && namePartner.boPhan === CU.boPhan);
     });
   } else {
@@ -2953,15 +3279,15 @@ function renderDayTable(){
     const _dayBp = document.getElementById('f-day-bp')?.value || '';
     if (_dayBp) {
       approved = approved.filter(r => {
-        const nameUser = NV_LIST.find(u => u.name === r.name);
-        const namePartner = NV_LIST.find(u => u.name === r.partner);
+        const nameUser = getUserInfo(r.name);
+        const namePartner = getUserInfo(r.partner);
         return (nameUser && nameUser.boPhan === _dayBp) || (namePartner && namePartner.boPhan === _dayBp);
       });
     }
   } else if (CU.role === 'ld') {
     approved = approved.filter(r => {
-      const nameUser = NV_LIST.find(u => u.name === r.name);
-      const namePartner = NV_LIST.find(u => u.name === r.partner);
+      const nameUser = getUserInfo(r.name);
+      const namePartner = getUserInfo(r.partner);
       return (nameUser && nameUser.boPhan === CU.boPhan) || (namePartner && namePartner.boPhan === CU.boPhan);
     });
   } else {
@@ -3072,7 +3398,7 @@ function renderWarn() {
   allReqs.forEach(r=>{ 
     if (CU.admin) {
       if (_warnBp) {
-        const nu = NV_LIST.find(u => u.name === r.name), pu = NV_LIST.find(u => u.name === r.partner);
+        const nu = getUserInfo(r.name), pu = getUserInfo(r.partner);
         if ((nu?.boPhan || '') !== _warnBp && (pu?.boPhan || '') !== _warnBp) return;
       }
     } else if (CU.role === 'ld') {
@@ -3132,21 +3458,21 @@ function renderWarn() {
   if(critList.length){ 
     const _hdrCrit = lMax !== null ? `(≥ ${lMax} ca)` : `(theo định mức riêng của từng bộ phận)`;
     wHtml+=`<p style="font-size:12px;font-weight:700;color:#991b1b;margin-bottom:8px">❌ Đã chạm/vượt định mức ${_hdrCrit}</p>`; 
-    wHtml+=critList.map(([n,v])=>{ const _lim = lMax===null ? ` · giới hạn ${getLechMaxByName(n)} ca` : ''; return `<div class="wcard crit"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${escapeHTML(n)} <small>(${escapeHTML(NV_LIST.find(u=>u.name===n)?.chucDanh||'')} - ${escapeHTML(v.kip)}${escapeHTML(_lim)})</small></span><span style="font-weight:700;color:#dc2626">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.map(escapeHTML).join('<br>')}</div></div>`; }).join(''); 
+    wHtml+=critList.map(([n,v])=>{ const _lim = lMax===null ? ` · giới hạn ${getLechMaxByName(n)} ca` : ''; return `<div class="wcard crit"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${escapeHTML(n)} <small>(${escapeHTML(getUserInfo(n)?.chucDanh||'')} - ${escapeHTML(v.kip)}${escapeHTML(_lim)})</small></span><span style="font-weight:700;color:#dc2626">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.map(escapeHTML).join('<br>')}</div></div>`; }).join(''); 
   }
   
   // 2. NHÓM CAM
   if(warnList.length){ 
     const _hdrWarn = (lMax !== null && lWarn !== null) ? `(Từ ${lWarn} đến ${lMax - 1} ca)` : `(theo định mức riêng của từng bộ phận)`;
     wHtml+=`<p style="font-size:12px;font-weight:700;color:#c2410c;margin:12px 0 8px">⚠️ Mức Cảnh báo ${_hdrWarn}</p>`; 
-    wHtml+=warnList.map(([n,v])=>{ const _lim = lMax===null ? ` · giới hạn ${getLechMaxByName(n)} ca` : ''; return `<div class="wcard" style="background:#fff7ed; border-color:#fb923c;"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${escapeHTML(n)} <small>(${escapeHTML(NV_LIST.find(u=>u.name===n)?.chucDanh||'')} - ${escapeHTML(v.kip)}${escapeHTML(_lim)})</small></span><span style="font-weight:700;color:#ea580c">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.map(escapeHTML).join('<br>')}</div></div>`; }).join(''); 
+    wHtml+=warnList.map(([n,v])=>{ const _lim = lMax===null ? ` · giới hạn ${getLechMaxByName(n)} ca` : ''; return `<div class="wcard" style="background:#fff7ed; border-color:#fb923c;"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${escapeHTML(n)} <small>(${escapeHTML(getUserInfo(n)?.chucDanh||'')} - ${escapeHTML(v.kip)}${escapeHTML(_lim)})</small></span><span style="font-weight:700;color:#ea580c">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.map(escapeHTML).join('<br>')}</div></div>`; }).join(''); 
   }
 
   // 3. NHÓM VÀNG
   if(monList.length){ 
     const _hdrMon = lWarn !== null ? `(< ${lWarn} ca)` : `(theo định mức riêng của từng bộ phận)`;
     wHtml+=`<p style="font-size:12px;font-weight:600;color:#64748b;margin:12px 0 8px">📋 Mức an toàn ${_hdrMon}</p>`; 
-    wHtml+=monList.map(([n,v])=>`<div class="wcard"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${escapeHTML(n)} <small>(${escapeHTML(NV_LIST.find(u=>u.name===n)?.chucDanh||'')} - ${escapeHTML(v.kip)})</small></span><span style="font-weight:600;color:#d97706">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.map(escapeHTML).join('<br>')}</div></div>`).join(''); 
+    wHtml+=monList.map(([n,v])=>`<div class="wcard"><div style="display:flex;justify-content:space-between"><span style=\"font-weight:600\">${escapeHTML(n)} <small>(${escapeHTML(getUserInfo(n)?.chucDanh||'')} - ${escapeHTML(v.kip)})</small></span><span style="font-weight:600;color:#d97706">+${v.lech} lần</span></div><div style="font-size:12px;color:#666;margin-top:4px">${v.hist.map(escapeHTML).join('<br>')}</div></div>`).join(''); 
   } 
 
   // =======================================================
@@ -3186,7 +3512,7 @@ function renderStaffStats() {
   allReqs.forEach(r=>{ 
     if (CU.admin) {
       if (_statBp) {
-        const nu = NV_LIST.find(u => u.name === r.name), pu = NV_LIST.find(u => u.name === r.partner);
+        const nu = getUserInfo(r.name), pu = getUserInfo(r.partner);
         if ((nu?.boPhan || '') !== _statBp && (pu?.boPhan || '') !== _statBp) return;
       }
     } else if (CU.role === 'ld') {
@@ -3225,7 +3551,7 @@ function renderStaffStats() {
     // Định mức riêng của bộ phận nhân sự này (không dùng chung 1 số cho toàn Công ty)
     const lMax = getLechMaxByName(n);
     let clr = v.lech > lMax ? '#dc2626' : (v.lech > 0 ? '#d97706' : '#4b5563'); 
-    const chucDanh = NV_LIST.find(u => u.name === n)?.chucDanh || '';
+    const chucDanh = getUserInfo(n)?.chucDanh || '';
     return `<tr><td>${escapeHTML(n)}</td><td>${escapeHTML(chucDanh)}</td><td>${escapeHTML(v.kip)}</td><td>${v.tao}</td><td>${v.dongY}</td><td style=\"font-weight:600; color:${clr}\">+${v.lech}</td></tr>`;
   }).join('');
   
@@ -3302,7 +3628,7 @@ function renderNoCa() {
 
     if (soRong === 0) return; // hòa thì không hiện
 
-    const info = NV_LIST.find(u2 => u2.name === other) || {};
+    const info = getUserInfo(other) || {};
     rows.push({ other, info, soRong });
   });
 
@@ -3398,8 +3724,8 @@ function renderNoCaLD() {
       const nguoiDuocNo = soRong > 0 ? v.name : u.name;
       const soHienThi = Math.abs(soRong);
 
-      const infoNo = NV_LIST.find(x => x.name === nguoiNo) || {};
-      const infoDuocNo = NV_LIST.find(x => x.name === nguoiDuocNo) || {};
+      const infoNo = getUserInfo(nguoiNo) || {};
+      const infoDuocNo = getUserInfo(nguoiDuocNo) || {};
 
       infoNo.displayKip =
     getCurrentKip(infoNo.name, infoNo.kip);
@@ -3477,7 +3803,7 @@ function exportExcelWarn() {
   if(sortedWarn.length === 0) { showAlert('app', 'Không có dữ liệu cảnh báo để tải!', 'ae'); return; }
   let tableHTML = `<thead><tr><th>Họ tên</th><th>Chức danh</th><th>Kíp</th><th>Số ca lệch</th><th>Chi tiết lịch sử</th></tr></thead><tbody>`;
 sortedWarn.forEach(([n, v]) => { 
-  const chucDanh = NV_LIST.find(u => u.name === n)?.chucDanh || '';
+  const chucDanh = getUserInfo(n)?.chucDanh || '';
   let histText = v.hist.join(' | '); 
   tableHTML += `<tr><td>${n}</td><td>${chucDanh}</td><td>${v.kip}</td><td>+${v.lech}</td><td>${histText}</td></tr>`; 
 }); 
@@ -3509,7 +3835,7 @@ function renderScheduleTable() {
   // --- 1. LẤY CẤU HÌNH TỪ EXCEL ---
   const conf = APP_CONFIG.configs || {};
   const chuoiLe = conf.NGAY_LE || "";
-  const mangLe = chuoiLe.split(',').map(s => s.trim());
+  const mangLe = new Set(chuoiLe.split(',').map(s => s.trim()).filter(Boolean));
   
   const hK = parseFloat(conf.GIO_CONG_CA_K) || 8.75;
   const hN = parseFloat(conf.GIO_CONG_CA_N) || 8.5;
@@ -3525,7 +3851,7 @@ function renderScheduleTable() {
 
   for(let d=1; d<=daysInMonth; d++) { 
     const dateStr = `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    const isLe = mangLe.includes(dateStr);
+    const isLe = mangLe.has(dateStr);
     const dateObj = new Date(yr, mo - 1, d);
     const tenThu = dayNames[dateObj.getDay()];
     const thStyle = isLe ? "text-align:center; width:35px; background:#fecaca; color:#dc2626; font-weight:700;" : "text-align:center; width:35px;";
@@ -3547,7 +3873,7 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
     rawList = _schedBp ? NV_LIST.filter(u => u.boPhan === _schedBp) : getNVMine();
   } else if (CU.role === 'ld') { rawList = getNVMine(); } 
   else {
-    const myInfo = NV_LIST.find(u => u.name === CU.name);
+    const myInfo = getUserInfo(CU.name);
     const myChucDanh = myInfo ? myInfo.chucDanh : "";
     rawList = NV_LIST.filter(u => u.chucDanh === myChucDanh);
   }
@@ -3557,11 +3883,8 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
   // Tính trước Kíp thực tế của tháng đang xem để lấy dữ liệu sắp xếp
   const firstDayOfMonth = `${yr}-${String(mo).padStart(2,'0')}-01`;
   let displayList = rawList.map(u => {
-    let currentKip = u.kip;
-    if (typeof allTransfers !== 'undefined' && allTransfers && allTransfers.length > 0) {
-      const sortedTransfers = allTransfers.filter(t => t.name === u.name && firstDayOfMonth >= t.date).sort((a, b) => b.date.localeCompare(a.date));
-      if (sortedTransfers.length > 0) currentKip = sortedTransfers[0].newKip;
-    }
+    const latest = getLatestTransferAny(u.name, firstDayOfMonth);
+    const currentKip = (latest && latest.newKip) ? latest.newKip : u.kip;
     return { ...u, displayKip: currentKip };
   });
 
@@ -3636,12 +3959,8 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
     }
     let row = rowPrefix + `<tr><td style="position:sticky; left:0; background:#fff; font-weight:600; border-right:2px solid #e2e8f0;">${escapeHTML(u.name)} ${u.name === CU.name ? '(Tôi)' : ''}</td>`;
     
-    const firstDayOfMonth = `${yr}-${String(mo).padStart(2,'0')}-01`;
-    let displayKip = u.kip;
-    if (typeof allTransfers !== 'undefined' && allTransfers && allTransfers.length > 0) {
-      const sortedTransfers = allTransfers.filter(t => t.name === u.name && firstDayOfMonth >= t.date).sort((a, b) => b.date.localeCompare(a.date));
-      if (sortedTransfers.length > 0) displayKip = sortedTransfers[0].newKip;
-    }
+    // displayKip đã được tính một lần ở bước dựng displayList.
+    const displayKip = u.displayKip || u.kip;
 
     if (CU.role === 'ld') { row += `<td>${escapeHTML(u.chucDanh || '')}</td><td style="font-weight:700; color:#ea580c;">${escapeHTML(displayKip || '')}</td>`; } 
     else { row += `<td style="font-weight:700; color:#ea580c;">${escapeHTML(displayKip || '')}</td>`; }
@@ -3650,9 +3969,10 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
     for(let d=1; d<=daysInMonth; d++) {
       const dateStr = `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
       const caInfo = getCaThucTe(u.name, u.kip, dateStr, null, true);
-      const ca = caInfo.ca; 
+      const ca = caInfo.ca;
       const status = caInfo.status;
-      const isLech = ca !== getCaTrucGoc(u.name, u.kip, dateStr);
+      // TURBO 2: getCaThucTe đã tính ca gốc; dùng lại thay vì gọi lịch ca lần thứ hai.
+      const isLech = ca !== caInfo.gocCa;
       
       if(ca === 'K') { totalHours += hK; countK++; }
       else if(ca === 'N') totalHours += hN; 
@@ -3667,7 +3987,7 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
       else if(ca === 'V') countV++;   // Vắng không phép không tính
       else if(ca === 'O') {}          // Không hưởng lương, không tính
       
-      let isLe = mangLe.includes(dateStr);
+      let isLe = mangLe.has(dateStr);
       let style = "";
       
       // ====================================================
@@ -3765,7 +4085,7 @@ function exportExcelSched() {
   // Lãnh đạo bộ phận hoặc admin đang lọc 1 bộ phận cụ thể → xuất bảng hiện tại
   const fBp = document.getElementById('f-sched-bp')?.value || '';
   if (!CU.admin || fBp) {
-    const tenBP = fBp || (NV_LIST.find(u=>u.name===CU.name)||{}).boPhan || '';
+    const tenBP = fBp || (getUserInfo(CU.name)||{}).boPhan || '';
     const tenFile = tenBP ? `Bang_Di_Ca_${tenBP.replace(/[^a-zA-Z0-9]/g,'_')}_${mv}.xls` : `Bang_Di_Ca_${mv}.xls`;
     downloadExcel(tableEl.innerHTML, tenFile, 'BangDiCa');
     return;
@@ -3885,7 +4205,7 @@ function getRowNV(row) {
 function addRowHC() {
   hcIdCounter++;
   const id = hcIdCounter;
-  const myInfoHC = NV_LIST.find(u => u.name === CU.name);
+  const myInfoHC = getUserInfo(CU.name);
   const qddRaw = CU.admin ? '*' : (myInfoHC && myInfoHC.quyenDieuDong ? myInfoHC.quyenDieuDong.trim() : '');
   const allRolesHC = [...new Set(getNVMine().map(u => u.chucDanh))].filter(Boolean);
   const _pOrderHC = (APP_CONFIG.priorityOrder && APP_CONFIG.priorityOrder.length > 0) ? APP_CONFIG.priorityOrder : [];
@@ -3957,7 +4277,7 @@ function onHCBoPhanChange(id) {
   const row = document.getElementById(`hc-r-${id}`);
   if (!row) return;
   const pool = getRowNV(row);
-  const myInfoHC = NV_LIST.find(u => u.name === CU.name);
+  const myInfoHC = getUserInfo(CU.name);
   const qddRaw = CU.admin ? '*' : (myInfoHC && myInfoHC.quyenDieuDong ? myInfoHC.quyenDieuDong.trim() : '');
   const allRolesHC = [...new Set(pool.map(u => u.chucDanh))].filter(Boolean);
   const _pOrderHC = (APP_CONFIG.priorityOrder && APP_CONFIG.priorityOrder.length > 0) ? APP_CONFIG.priorityOrder : [];
@@ -4112,7 +4432,7 @@ function syncHCFilters(id) {
     // ƯU TIÊN 1: Lấy người vừa được chọn ở chế độ bình thường (ví dụ: ông Hiền)
     let leavePerson = null;
     if (row.dataset.intendedReplace) {
-        leavePerson = NV_LIST.find(u => u.name === row.dataset.intendedReplace);
+        leavePerson = getUserInfo(row.dataset.intendedReplace);
     }
     
     // ƯU TIÊN 2: Nếu không có người dự định, mới tìm người đã có đơn nghỉ/vắng (ví dụ: ông Dũng)
@@ -4391,7 +4711,7 @@ function _doSyncPartnerList(id) {
   let searchRole = r; // Mặc định: tìm theo chức danh ông nghỉ
   let backupPersonName = null;
   if (useBackup && selectedNames.length > 0) {
-    const backupPerson = NV_LIST.find(u => u.name === selectedNames[0]);
+    const backupPerson = getUserInfo(selectedNames[0]);
     if (backupPerson) {
       searchRole = backupPerson.chucDanh; // Dùng chức danh CHÍNH của ông dự phòng
       backupPersonName = backupPerson.name;
@@ -4851,7 +5171,7 @@ function validateHCDates(id) {
     const selectedPartners = Array.from(row.querySelectorAll('.hc-partner-val:checked')).map(cb => cb.value);
     const repB_name = selectedPartners.length > 0 ? selectedPartners[0] : null;
     // Tìm thông tin người thay dù bác chọn Kíp cụ thể hay chọn Tự động
-    const repB = repB_name ? NV_LIST.find(u => u.name === repB_name) : (pkip !== 'AUTO' ? NV_LIST.find(u => u.kip === pkip) : null);
+    const repB = repB_name ? getUserInfo(repB_name) : (pkip !== 'AUTO' ? NV_LIST.find(u => u.kip === pkip) : null);
     const realPkip = repB ? repB.kip : pkip;
 
     if(repB) {
@@ -4902,19 +5222,13 @@ function getCaThucTeBeforeDispatch(userName, defaultKip, dateStr) {
   const targetDate = (dateStr || '').toString().substring(0, 10);
   const uName = (userName || '').toString().trim();
 
-  // Chỉ xét đổi ca TỰ DO (!isSpecial) liên quan đến người này trong ngày này
-  const reqs = allReqs.filter(r => {
+  // TURBO 2: index người+ngày đã cho đúng các đơn tác động ngày này.
+  const reqs = ((((reqsByNameDate[uName] || {})[targetDate]) || [])).filter(r => {
     if (r.status !== 'approved' && r.status !== 'pending_ld') return false;
     const reason = (r.reason || '').toString();
     // Bỏ qua hoàn toàn lệnh điều động đặc biệt (HC/CT/P/VR...)
-    const isSpecial = /\[(LỆNH ĐIỀU ĐỘNG|ĐIỀU ĐỘNG 0.5 NGÀY|NGHỈ PHÉP|VIỆC RIÊNG|NGHỈ ỐM|NGHỈ THAI SẢN|NGHỈ KHÔNG LƯƠNG|VẮNG KHÔNG PHÉP|CÔNG TÁC|HỌC TẬP|ĐIỀU DƯỠNG)\]/i.test(reason);
-    if (isSpecial) return false;
-    const dDoi = (r.ngayDoi || '').toString().substring(0, 10);
-    const dTra = (r.ngayTra || '').toString().substring(0, 10);
-    const name = (r.name || '').toString().trim();
-    const partner = (r.partner || '').toString().trim();
-    return (name === uName || partner === uName) && (dDoi === targetDate || dTra === targetDate);
-  }).sort((a, b) => Number(a.id) - Number(b.id));
+    return !/\[(LỆNH ĐIỀU ĐỘNG|ĐIỀU ĐỘNG 0.5 NGÀY|NGHỈ PHÉP|VIỆC RIÊNG|NGHỈ ỐM|NGHỈ THAI SẢN|NGHỈ KHÔNG LƯƠNG|VẮNG KHÔNG PHÉP|CÔNG TÁC|HỌC TẬP|ĐIỀU DƯỠNG)\]/i.test(reason);
+  });
 
   let workCa = null, leaveCa = null;
   for (const r of reqs) {
@@ -4953,7 +5267,7 @@ function renderAdminHCHist() {
     if (!isDispatch) return false;
     if (CU.admin) {
       if (_hcBp) {
-        const nu = NV_LIST.find(u => u.name === r.name);
+        const nu = getUserInfo(r.name);
         if ((nu?.boPhan || '') !== _hcBp) return false;
       }
     } else if (CU.role === 'ld' && !isMineName(r.name)) return false;
@@ -5004,8 +5318,8 @@ function renderAdminHCHist() {
 
     // Ca thực tế sau đổi ca tự do, trước lệnh điều động đặc biệt
     const caThucTeNgayDoi = getCaThucTeBeforeDispatch(r.name, displayKip, r.ngayDoi);
-    const nguoiInfo = NV_LIST.find(s => s.name === r.name);
-    const partnerInfo = hasPartner ? NV_LIST.find(s => s.name === r.partner) : null;
+    const nguoiInfo = getUserInfo(r.name);
+    const partnerInfo = hasPartner ? getUserInfo(r.partner) : null;
     const chucDanh = nguoiInfo?.chucDanh || r.role || '--';
     const partnerChucDanh = partnerInfo?.chucDanh || r.partnerRole || '--';
 
@@ -5129,7 +5443,7 @@ async function submitBatchHC() {
       
       selectedNames.forEach((n, idx) => {
         // n = ông dự phòng (vd: Nhất)
-        const backupInfo = NV_LIST.find(u => u.name === n);
+        const backupInfo = getUserInfo(n);
         // FIX: dùng getPersonKip(n, null) thay vì backupInfo.kip thô — nhất quán với fix ở
         // syncPartnerList(), tránh ghi sai kíp vào lệnh nếu ông dự phòng từng bị điều chuyển kíp.
         const backupKip = getPersonKip(n, null);
@@ -5139,7 +5453,7 @@ async function submitBatchHC() {
         const actualReplaceName = row.dataset.actualReplace;
         let leavePerson = null;
         if (actualReplaceName) {
-            leavePerson = NV_LIST.find(u => u.name === actualReplaceName);
+            leavePerson = getUserInfo(actualReplaceName);
         }
         
         if (!leavePerson) {
@@ -5195,7 +5509,7 @@ async function submitBatchHC() {
         const replacerName = selectedPartners.length > 0 ? (selectedPartners[idx] || selectedPartners[0]) : null;
         let replacerKip = null;
         if (replacerName) {
-            const replacerInfo = NV_LIST.find(u => u.name === replacerName);
+            const replacerInfo = getUserInfo(replacerName);
             replacerKip = replacerInfo ? replacerInfo.kip : pkip;
 
             const caReplacer = getCaThucTe(replacerName, replacerKip, dHC);
@@ -5303,7 +5617,7 @@ async function submitBatchHC() {
             finalRetDate = dHC; autoCaTra = 'OFF';
             if (manualPartner) {
               finalPartner = manualPartner;
-              const pInfo = NV_LIST.find(u => u.name === finalPartner);
+              const pInfo = getUserInfo(finalPartner);
               finalPartnerKip = pInfo ? pInfo.kip : pkip;
               // Bỏ qua check an toàn nếu caHienTai là OFF (người dùng cố tình điều động vào ngày nghỉ)
               if (caHienTai !== 'OFF') {
@@ -5315,7 +5629,7 @@ async function submitBatchHC() {
             finalPartner = manualPartner;
             if (!finalPartner) { hasError = true; showLocalAlert('batchhc-msg', `Vui lòng chọn người thay cho ${n}!`, 'ae'); return; }
             
-            const pInfo = NV_LIST.find(u => u.name === finalPartner);
+            const pInfo = getUserInfo(finalPartner);
             finalPartnerKip = pInfo ? pInfo.kip : pkip;
             
             const caGocB_Tra = getCaThucTe(finalPartner, finalPartnerKip, retDate);
@@ -5417,7 +5731,7 @@ function getTCScopeList() {
 }
 
 function refreshTCRoleOptions() {
-  const myInfoTC = NV_LIST.find(u => u.name === CU.name);
+  const myInfoTC = getUserInfo(CU.name);
   const qddRawTC = CU.admin ? '*' : (myInfoTC && myInfoTC.quyenDieuDong ? myInfoTC.quyenDieuDong.trim() : '');
   const _tcScopeListInit = getTCScopeList();
   const allRolesTC = [...new Set(_tcScopeListInit.map(u => u.chucDanh))].filter(Boolean);
@@ -5496,7 +5810,7 @@ function filterTCUsers() {
   const kips = _getTCKips();
 
   // Lọc danh sách theo quyenDieuDong
-  const myInfoTC2 = NV_LIST.find(u => u.name === CU.name);
+  const myInfoTC2 = getUserInfo(CU.name);
   const qddTC = CU.admin ? '*' : (myInfoTC2 && myInfoTC2.quyenDieuDong ? myInfoTC2.quyenDieuDong.trim() : '');
   const allowedCds = (!qddTC || qddTC === '*') ? null
     : qddTC.split(',').map(s => s.trim().toLowerCase()).filter(s => s);
@@ -5703,12 +6017,16 @@ async function submitTransfer() {
 
 async function loadTransfers() {
   const res = await api({ action: "getTransfers" });
-  allTransfers = (res || []).map(t => {
+  if (!Array.isArray(res)) throw new Error((res && res.error) || 'Không tải được dữ liệu điều chuyển.');
+  allTransfers = res.map(t => {
     t._date = (t.date || "").toString().substring(0, 10);
     return t;
   });
   // Tối ưu: Index theo tên để tìm kiếm nhanh hơn
   rebuildTransfersByName();
+  bumpDataRevision('transfers');
+  _dataLoaded.transfers = true;
+  return true;
 }
 
 
@@ -5736,9 +6054,9 @@ function renderTransferLog() {
   let filtered = allTransfers.filter(t => transferMatchesYM(t, yr, mo)).sort((a,b) => b.date.localeCompare(a.date));
   if (!CU.admin) {
     // LĐ (không phải admin): luôn khoanh vùng đúng bộ phận mình, không được xem toàn Công ty.
-    filtered = filtered.filter(t => sameBoPhan(NV_LIST.find(u => u.name === t.name) || {}, CU));
+    filtered = filtered.filter(t => sameBoPhan(getUserInfo(t.name) || {}, CU));
   } else if (bpFilter) {
-    filtered = filtered.filter(t => (NV_LIST.find(u => u.name === t.name) || {}).boPhan === bpFilter);
+    filtered = filtered.filter(t => (getUserInfo(t.name) || {}).boPhan === bpFilter);
   }
 
   const tbody = document.getElementById('transfer-log-body');
@@ -5924,8 +6242,8 @@ function exportExcelHistory() {
     if (fs && r.status !== fs) return false;
     if (fkp && r.kip !== fkp && r.partnerKip !== fkp) return false;
     if (fcd) {
-      const nameInfo = NV_LIST.find(u => u.name === r.name);
-      const partnerInfo = NV_LIST.find(u => u.name === r.partner);
+      const nameInfo = getUserInfo(r.name);
+      const partnerInfo = getUserInfo(r.partner);
       if (nameInfo?.chucDanh !== fcd && partnerInfo?.chucDanh !== fcd) return false;
     }
     if (yr && !matchRequestYM(r, yr, mo)) return false;
@@ -5942,13 +6260,13 @@ function exportExcelHistory() {
     <tr>
       <td>${idx + 1}</td>
       <td>${escapeHTML(r.name || '')}</td>
-      <td>${escapeHTML(NV_LIST.find(u=>u.name===r.name)?.chucDanh || '')}</td>
+      <td>${escapeHTML(getUserInfo(r.name)?.chucDanh || '')}</td>
       <td>${escapeHTML(r.kip || '')}</td>
       <td>${escapeHTML(r.caDoi || '')}</td>
       <td>${escapeHTML(fmtDate(r.ngayDoi))}</td>
       <td>${escapeHTML(r.partner || '')}</td>
-      <td>${escapeHTML(NV_LIST.find(u=>u.name===r.partner)?.chucDanh || '')}</td>
-      <td>${escapeHTML(NV_LIST.find(u=>u.name===r.partner)?.kip || '')}</td>
+      <td>${escapeHTML(getUserInfo(r.partner)?.chucDanh || '')}</td>
+      <td>${escapeHTML(getUserInfo(r.partner)?.kip || '')}</td>
       <td>${escapeHTML(r.caTra || '')}</td>
       <td>${escapeHTML(fmtDate(r.ngayTra))}</td>
       <td>${r.status === 'approved' ? 'Đã duyệt' : r.status === 'pending_ld' ? 'Chờ LĐ duyệt' : r.status === 'pending_partner' ? 'Chờ xác nhận' : 'Từ chối'}</td>
@@ -5992,17 +6310,36 @@ let selectedLeaveDates = [];
 let leaveCalYear = new Date().getFullYear();
 let leaveCalMonth = new Date().getMonth() + 1;
 
-async function initLeaveTab() {
-  // Load số ngày phép
+async function loadMyLeaveBalance(force = false) {
+  if (!CU || !CU.name) return null;
+  const fresh = _myLeaveBalanceCache && (Date.now() - (_myLeaveBalanceCache.at || 0) < 60000);
+  if (!force && fresh) {
+    applyMyLeaveBalance(_myLeaveBalanceCache);
+    return _myLeaveBalanceCache;
+  }
   try {
     const res = await api({ action: 'getLeaveBalance', name: CU.name });
-    document.getElementById('lb-annual').textContent = res.annual ?? '—';
-    document.getElementById('lb-remaining').textContent = res.remaining ?? '—';
+    if (res && !res.error) {
+      applyMyLeaveBalance(res);
+      return _myLeaveBalanceCache;
+    }
   } catch(e) {}
+  return _myLeaveBalanceCache;
+}
+
+async function initLeaveTab() {
+  // TURBO: dựng lịch NGAY bằng dữ liệu leaves đã prefetch; không chặn tab chỉ để chờ
+  // 1 API lấy số phép. Nếu cache số phép đã có thì hiện tức thì, nếu chưa có mới tải nền.
   selectedLeaveDates = [];
   leaveCalYear = new Date().getFullYear();
   leaveCalMonth = new Date().getMonth() + 1;
+  if (_myLeaveBalanceCache) applyMyLeaveBalance(_myLeaveBalanceCache);
   renderLeaveCalendar();
+
+  const fresh = _myLeaveBalanceCache && (Date.now() - (_myLeaveBalanceCache.at || 0) < 60000);
+  if (!fresh) {
+    loadMyLeaveBalance(false).then(() => updateLeaveSelectedInfo()).catch(() => {});
+  }
 }
 
 function changeLeaveMonth(dir) {
@@ -6023,15 +6360,22 @@ for (let i = 0; i < firstDay; i++) html += `<div></div>`;
 const today = localTodayYmd();
 const titleEl = document.getElementById('leave-cal-title');
 if (titleEl) titleEl.textContent = `Tháng ${mo}/${yr}`;
+// TURBO: dựng Set ngày đã nghỉ đúng 1 lần. Trước đây mỗi ô ngày lại .some() toàn bộ
+// allLeaves + split chuỗi dates, nên lịch nghỉ chậm dần theo số năm dữ liệu.
+const blockedDates = new Set();
+((CU && leavesByName[CU.name]) || []).forEach(lv => {
+  if (lv.status !== 'approved' && lv.status !== 'pending_ld') return;
+  const ds = Array.isArray(lv._dateList) ? lv._dateList : ((lv.dates || '').toString().split(',').map(x => x.trim()).filter(Boolean));
+  ds.forEach(d => blockedDates.add(d));
+});
+const selectedSet = new Set(selectedLeaveDates);
 for (let d = 1; d <= daysInMonth; d++) {
 const dateStr = `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
 const isPast = dateStr < today; // chỉ dùng để tô nhạt cho dễ nhìn, KHÔNG dùng để khóa chọn nữa —
                                  // cho phép đăng ký cả ngày trong quá khứ (VD quên đăng ký do ốm),
                                  // việc có duyệt hay không do Lãnh đạo quyết định.
-const isSelected = selectedLeaveDates.includes(dateStr);
-const isLeaved = typeof allLeaves !== 'undefined' && allLeaves.some(lv =>
-lv.name === CU.name && (lv.status === 'approved' || lv.status === 'pending_ld') && lv.dates && lv.dates.split(',').map(s=>s.trim()).includes(dateStr)
-);
+const isSelected = selectedSet.has(dateStr);
+const isLeaved = blockedDates.has(dateStr);
 let bg = '#f8fafc', color = '#374151', border = '1px solid #e2e8f0', cursor = 'pointer';
 if (isLeaved) { bg = '#dcfce7'; color = '#16a34a'; border = '1px solid #86efac'; cursor = 'default'; }
 else if (isSelected) { bg = '#0284c7'; color = '#fff'; border = '1px solid #0284c7'; }
@@ -6123,7 +6467,7 @@ if (leaveType === 'VR') {
   const maxDays = vrSubtype === 'con_ket_hon' ? 1 : 3;
   if (selectedLeaveDates.length > maxDays) { showLocalAlert('leave-msg', `⚠️ Chế độ này chỉ được đăng ký tối đa ${maxDays} ngày!`, 'ae'); return; }
 }
-const myInfo = NV_LIST.find(u => u.name === CU.name);
+const myInfo = getUserInfo(CU.name);
 const myKipGoc = myInfo ? myInfo.kip : '';
 let myKipThucTe = myKipGoc;
 if (typeof allTransfers !== 'undefined' && allTransfers.length > 0) {
@@ -6198,13 +6542,13 @@ function renderLeaveApproveList() {
   if (!el) return;
   // Lọc theo quyenDuyetNghi:
   // * = thấy và duyệt tất cả | "Trưởng kíp,Trực chính" = chỉ thấy/duyệt chức danh đó | để trống = không thấy đơn nào
-  const myInfo = NV_LIST.find(u => u.name === CU.name);
+  const myInfo = getUserInfo(CU.name);
   const myQuyenNghiRaw = (myInfo && myInfo.quyenDuyetNghi) ? myInfo.quyenDuyetNghi.trim() : '';
   const myQuyenNghiAll = myQuyenNghiRaw === '*';
   const myQuyenNghi = myQuyenNghiAll ? [] : myQuyenNghiRaw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
   const pending = allLeaves.filter(lv => {
     if (lv.status !== 'pending_ld') return false;
-    const lvUser = NV_LIST.find(u => u.name === lv.name);
+    const lvUser = getUserInfo(lv.name);
     // Ranh giới bộ phận: lãnh đạo (không phải admin) chỉ thấy/duyệt đơn nghỉ
     // của người CÙNG BỘ PHẬN mình — cùng lý do như renderPheDuyet ở trên.
     if (!CU.admin) {
@@ -6352,7 +6696,7 @@ function syncReqPollTimer(activeTab) {
   reqPollTimer = setInterval(async () => {
     const pendingIds = allReqs.filter(trackReq).map(r => r.id);
     if (pendingIds.length === 0) { syncReqPollTimer(activeTab); return; }
-    await loadRequests();
+    try { await loadRequests(); } catch (err) { console.warn('[REQ POLL] giữ dữ liệu cũ:', err); return; }
     const resolved = pendingIds.filter(id => {
       const r = allReqs.find(x => x.id === id);
       return r && !trackReq(r);
@@ -6383,13 +6727,21 @@ function syncLeavePollTimer(activeTab) {
       .filter(lv => lv.status === 'pending_ld' && (lv.name === CU.name || CU.role === 'ld' || CU.admin))
       .map(lv => lv.id);
     if (pendingIds.length === 0) { syncLeavePollTimer(activeTab); return; }
-    await loadLeaves();
+    try { await loadLeaves(); } catch (err) { console.warn('[LEAVE POLL] giữ dữ liệu cũ:', err); return; }
     const resolved = pendingIds.filter(id => {
       const lv = allLeaves.find(l => l.id === id);
       return lv && lv.status !== 'pending_ld';
     });
     if (resolved.length > 0) {
       const approved = resolved.some(id => allLeaves.find(l => l.id === id)?.status === 'approved');
+      // Nếu chính người đang đăng nhập vừa được duyệt phép năm P, lấy lại số phép chuẩn
+      // từ server ngay. Không tự suy ra từ allLeaves vì dữ liệu client có thể đã được lọc.
+      const approvedMineAnnual = resolved.some(id => {
+        const lv = allLeaves.find(l => l.id === id);
+        const lt = lv ? (lv.leaveType || 'P').toString() : '';
+        return !!(lv && lv.name === CU.name && lv.status === 'approved' && (!lt || lt === 'P'));
+      });
+      if (approvedMineAnnual) await loadMyLeaveBalance(true);
       if (approved) showAlert('app', '✅ Đơn nghỉ phép đã được phê duyệt!', 'as');
       else showAlert('app', 'ℹ️ Đơn nghỉ phép đã được cập nhật trạng thái.', 'ai');
     }
@@ -6431,7 +6783,13 @@ if (!confirm('Bạn có chắc muốn hủy đơn nghỉ phép này không?')) r
 try {
 const res = await api({ action: 'cancelLeave', id, reqName: CU.name });
 if (res.error) { showAlert('app', res.error, 'ae'); }
-else { showAlert('app', 'Đã hủy đơn!', 'as'); await loadLeaves(); renderLeavePending(); renderLeaveCalendar(); }
+else {
+  showAlert('app', 'Đã hủy đơn!', 'as');
+  await loadLeaves();
+  // Phòng trường hợp backend cho phép hủy một đơn P đã ảnh hưởng số phép: đồng bộ lại từ server.
+  if (_myLeaveBalanceSource === 'server') await loadMyLeaveBalance(true);
+  renderLeavePending(); renderLeaveCalendar();
+}
 } catch(e) { showAlert('app', 'Lỗi kết nối!', 'ae'); }
 }
 function renderLeaveHistory() {
@@ -6448,10 +6806,10 @@ function renderLeaveHistory() {
   let leaves;
   if (CU.admin) {
     // Admin: thấy toàn Công ty, lọc theo bộ phận nếu có chọn
-    leaves = fbp ? allLeaves.filter(lv => { const u = NV_LIST.find(x => x.name === lv.name); return u && u.boPhan === fbp; }) : [...allLeaves];
+    leaves = fbp ? allLeaves.filter(lv => { const u = getUserInfo(lv.name); return u && u.boPhan === fbp; }) : [...allLeaves];
   } else if (CU.role === 'ld') {
     // Lãnh đạo: chỉ thấy đơn nghỉ của người CÙNG BỘ PHẬN mình
-    leaves = allLeaves.filter(lv => { const u = NV_LIST.find(x => x.name === lv.name); return u && u.boPhan === CU.boPhan; });
+    leaves = allLeaves.filter(lv => { const u = getUserInfo(lv.name); return u && u.boPhan === CU.boPhan; });
   } else {
     // Nhân viên thường: chỉ thấy đơn của chính mình
     leaves = allLeaves.filter(lv => lv.name === CU.name);
@@ -6599,7 +6957,7 @@ function exportExcelLeaveHistory() {
   // Admin không lọc chức danh → xuất phân theo bộ phận
   if (CU.admin && !fcd) {
     const BO_PHAN_ORDER = ['Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
-    const getUserBP = name => (NV_LIST.find(u=>u.name===name)||{}).boPhan || '';
+    const getUserBP = name => (getUserInfo(name)||{}).boPhan || '';
     const hdrStyle = 'background:#1e3a8a;color:#fff;font-weight:700;font-size:14px;text-align:center;padding:8px;';
     const thead = `<tr><th>STT</th><th>Họ tên</th><th>Chức danh</th><th>Kíp</th><th>Chế độ nghỉ</th><th>Ngày nghỉ</th><th>Số ngày</th><th>Lý do</th><th>Nơi nghỉ</th><th>Trạng thái</th><th>Thời gian tạo đơn</th><th>Thời gian duyệt/từ chối</th><th>Người duyệt</th><th>Lý do từ chối</th></tr>`;
 
@@ -6650,12 +7008,16 @@ let _leaveBalancesLoadedYears = {}; // {2025: true, 2026: true, ...}
 
 async function loadLeaveBalances(year) {
   if (CU && (CU.role === 'ld' || CU.admin)) {
-    try {
-      const res = await api({ action: 'getAllLeaveBalances', year });
-      allLeaveBalances[year] = res || {};
-      _leaveBalancesLoadedYears[year] = true;
-    } catch(e) { allLeaveBalances[year] = {}; }
+    const res = await api({ action: 'getAllLeaveBalances', year });
+    if (!res || res.error || Array.isArray(res)) throw new Error((res && res.error) || 'Không tải được số phép năm.');
+    allLeaveBalances[year] = res;
+    _leaveBalancesLoadedYears[year] = true;
+    bumpDataRevision('balances');
+    _dataLoaded.balances = true;
+    return true;
   }
+  _dataLoaded.balances = true;
+  return true;
 }
 
 async function renderLeaveStats() {
@@ -6669,7 +7031,14 @@ async function renderLeaveStats() {
   // Với lãnh đạo: load balances của ĐÚNG NĂM đang xem nếu chưa có trong cache
   if (isLD && !_leaveBalancesLoadedYears[yr]) {
     body.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#64748b; padding:20px;"><div class="spin" style="margin:0 auto;"></div></td></tr>';
-    await loadLeaveBalances(yr);
+    try {
+      await loadLeaveBalances(yr);
+    } catch (err) {
+      body.innerHTML = '<tr><td colspan="7" class="empty">Không tải được số phép. Vui lòng bấm Làm mới.</td></tr>';
+      return;
+    }
+    // Nếu người dùng đổi bộ lọc năm trong lúc request đang chạy, bỏ render cũ.
+    if (getYM('f-leave-stat-year', 'f-leave-stat-month').yr !== yr) return;
   }
 
   // Danh sách người cần hiển thị
@@ -6693,34 +7062,51 @@ async function renderLeaveStats() {
     return sorted.length > 0 ? sorted[0].newKip : defaultKip;
   }
 
-  // Tính ngày đã nghỉ từ allLeaves (chỉ đơn approved trong năm yr)
-  const usedDatesMap = {}; // name -> mảng ngày đã nghỉ (approved) — dùng để HIỂN THỊ cột "Đã nghỉ" (lọc theo tháng nếu có)
-  const usedCountFullYearMap = {}; // name -> SỐ ngày đã nghỉ CẢ NĂM (không lọc tháng) — dùng để TÍNH "Còn lại", luôn đúng dù đang xem tháng nào
+  // Tính ngày đã nghỉ từ allLeaves để HIỂN THỊ chi tiết ngày.
+  // Số "Còn lại" KHÔNG được tự tính lại chỉ từ allLeaves vì dữ liệu legacy/archive
+  // có thể không có dates hoặc không nằm trong cửa sổ client. Giá trị balance từ server
+  // mới là nguồn chuẩn. days_count chỉ dùng làm fallback phụ khi server balance thiếu.
+  const usedDatesMap = {}; // name -> mảng ngày có dates thuộc kỳ đang xem
+  const usedCountFullYearMap = {}; // name -> số ngày có dates thuộc cả năm đang xem
+  const legacyCountFullYearMap = {}; // name -> days_count của dòng legacy dates trống, suy năm từ approvedAt/createdAt nếu có
+
+  const parseLeaveYM = (d) => {
+    const raw = (d || '').toString().trim();
+    let m = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (m) return { y: Number(m[1]), m: Number(m[2]) };
+    m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (m) return { y: Number(m[3]), m: Number(m[2]) };
+    // createdAt/approvedAt có thể là "dd/MM/yyyy HH:mm" hoặc ISO.
+    m = raw.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (m) return { y: Number(m[3]), m: Number(m[2]) };
+    m = raw.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (m) return { y: Number(m[1]), m: Number(m[2]) };
+    return { y: 0, m: 0 };
+  };
+
   allLeaves.forEach(lv => {
     if (lv.status !== 'approved') return;
-    if (!lv.dates) return;
     if ((lv.leaveType || 'P') !== 'P') return; // Chỉ tính nghỉ phép năm
-    const parseYM = (d) => {
-      let y = 0, m = 0;
-      if (d.includes('-')) {
-        const parts = d.split('-').map(Number);
-        y = parts[0]; m = parts[1];
-      } else if (d.includes('/')) {
-        const parts = d.split('/').map(Number);
-        y = parts[2]; m = parts[1];
+
+    const allDatesThisLeave = (lv.dates || '').toString().split(',').map(d => d.trim()).filter(Boolean);
+    if (allDatesThisLeave.length === 0) {
+      // Legacy: không bỏ hẳn đơn chỉ vì dates trống. Nếu xác định được năm từ thời điểm
+      // duyệt/tạo thì cộng days_count vào đúng năm; nếu không xác định được thì để server
+      // balance quyết định "Còn lại" thay vì đoán sai năm ở trình duyệt.
+      const legacyDays = Math.max(0, Number(lv.days_count || 0));
+      const ym = parseLeaveYM(lv.approvedAt || lv.createdAt || '');
+      if (legacyDays > 0 && ym.y === yr) {
+        legacyCountFullYearMap[lv.name] = (legacyCountFullYearMap[lv.name] || 0) + legacyDays;
       }
-      return { y, m };
-    };
-    const allDatesThisLeave = (lv.dates || '').split(',').map(d => d.trim());
+      return;
+    }
+
     const daysInPeriod = allDatesThisLeave.filter(d => {
-      const { y, m } = parseYM(d);
+      const { y, m } = parseLeaveYM(d);
       if (!y) return false;
       return mo ? (y === yr && m === mo) : y === yr;
     });
-    const daysInFullYear = allDatesThisLeave.filter(d => {
-      const { y } = parseYM(d);
-      return y === yr;
-    });
+    const daysInFullYear = allDatesThisLeave.filter(d => parseLeaveYM(d).y === yr);
     if (!usedDatesMap[lv.name]) usedDatesMap[lv.name] = [];
     usedDatesMap[lv.name].push(...daysInPeriod);
     usedCountFullYearMap[lv.name] = (usedCountFullYearMap[lv.name] || 0) + daysInFullYear.length;
@@ -6733,25 +7119,31 @@ async function renderLeaveStats() {
                      : { annual: parseInt(document.getElementById('lb-annual').textContent) || 0,
                          remaining: parseInt(document.getElementById('lb-remaining').textContent) || 0 };
     const usedDates = usedDatesMap[u.name] || [];
-    const usedCount = usedDates.length;
-    const annual = bal.annual;
-    // FIX: trước đây có 2 nhánh song song — xem theo tháng thì lấy bal.remaining (số đã lưu
-    // sẵn từ lần "Đối soát lại phép" gần nhất, dễ lệch nếu có đơn duyệt SAU lần đối soát đó);
-    // xem cả năm thì tự tính annual - usedCount. 2 nhánh cho cùng kết quả khi bal.remaining
-    // còn mới, nhưng là 2 đường tính riêng biệt — rủi ro lệch nhau nếu sau này chỉ sửa 1 nhánh.
-    // Giờ hợp nhất thành 1 công thức DUY NHẤT, luôn tính SỐNG theo đúng số đã nghỉ CẢ NĂM
-    // (usedCountFullYearMap không phụ thuộc bộ lọc tháng đang xem), không dùng số lưu sẵn nữa.
-    const usedCountFullYear = usedCountFullYearMap[u.name] || 0;
-    const remaining = annual - usedCountFullYear;
+    const annual = Number(bal.annual || 0);
+
+    // FIX LEGACY QUAN TRỌNG: balance từ server là nguồn chuẩn cho "Còn lại".
+    // Không lấy annual trừ số dates client nhìn thấy nữa, vì đơn cũ có thể dates trống
+    // (chỉ có days_count) hoặc nằm trong archive/cửa sổ dữ liệu khác.
+    const serverRemaining = Number(bal.remaining);
+    const localUsedFullYear = (usedCountFullYearMap[u.name] || 0) + (legacyCountFullYearMap[u.name] || 0);
+    const remaining = Number.isFinite(serverRemaining) ? serverRemaining : (annual - localUsedFullYear);
+
+    // Khi xem CẢ NĂM, "Đã nghỉ" cũng suy từ balance server để không bỏ sót legacy/archive.
+    // Khi lọc 1 tháng, chỉ các dòng có dates mới có thể gán chính xác vào tháng đó.
+    const usedCount = mo ? usedDates.length : Math.max(0, annual - remaining);
 
     totalAnnual += annual;
     totalUsed += usedCount;
     totalRemain += remaining;
 
     // Định dạng danh sách ngày
-    const datesStr = usedDates.length > 0
+    const hiddenLegacyDays = !mo ? Math.max(0, usedCount - usedDates.length) : 0;
+    let datesStr = usedDates.length > 0
       ? usedDates.sort().map(d => fmtDate(d)).join(', ')
       : '<span style="color:#cbd5e1;">—</span>';
+    if (hiddenLegacyDays > 0) {
+      datesStr += `${usedDates.length ? '<br>' : ''}<span style="color:#b45309; font-style:italic;">+ ${hiddenLegacyDays} ngày dữ liệu cũ không có ngày chi tiết</span>`;
+    }
 
     const remainColor = remaining <= 0 ? '#dc2626' : remaining <= 3 ? '#d97706' : '#16a34a';
 
