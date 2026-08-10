@@ -934,6 +934,111 @@ let allReqs=[]; let reqsByName = {}; let reqsByNameDate = {};
 let allLeaves=[]; let leavesByName = {}; let approvedLeaveByNameDate = {};
 let allTransfers = []; let transfersByName = {};
 
+// Dữ liệu RIÊNG cho Bảng đi ca toàn Công ty của tài khoản CONG_TY.
+// Không ghi đè dữ liệu nghiệp vụ thường trực, nên quyền phê duyệt/lịch sử vẫn giữ nguyên.
+let _companySchedule = { key:'', loading:null, users:[], userByName:{}, requests:[], reqsByName:{}, reqsByNameDate:{}, leaves:[], approvedLeaveByNameDate:{}, transfers:[], transfersByName:{}, configsByBoPhan:{} };
+let _companyScheduleRevision = 0;
+
+function invalidateCompanyScheduleData() {
+  _companySchedule = { key:'', loading:null, users:[], userByName:{}, requests:[], reqsByName:{}, reqsByNameDate:{}, leaves:[], approvedLeaveByNameDate:{}, transfers:[], transfersByName:{}, configsByBoPhan:{} };
+  _companyScheduleRevision++;
+}
+
+function _companyScheduleKeyFromUI() {
+  const ym = getYM('f-sched-year', 'f-sched-month');
+  if (!ym.yr || !ym.mo) return '';
+  return `${ym.yr}-${String(ym.mo).padStart(2,'0')}`;
+}
+
+function applyCompanyScheduleData(d) {
+  if (!d || d.error || !Array.isArray(d.users)) return false;
+  const cs = { key:d.key || '', loading:null, users:d.users || [], userByName:{}, requests:[], reqsByName:{}, reqsByNameDate:{}, leaves:d.leaves || [], approvedLeaveByNameDate:{}, transfers:[], transfersByName:{}, configsByBoPhan:d.configsByBoPhan || {} };
+  cs.users.forEach(u => { const n=(u.name||'').toString().trim(); if(n) cs.userByName[n]=u; });
+
+  cs.requests = (d.requests || []).map(r0 => {
+    const r = {...r0, id:(r0.id == null ? '' : r0.id.toString())};
+    r._dDoi = normalizeDate(r.ngayDoi); r._dTra = normalizeDate(r.ngayTra);
+    return r;
+  });
+  cs.requests.forEach(r => {
+    const n=(r.name||'').toString().trim(), p=(r.partner||'').toString().trim();
+    if(n) (cs.reqsByName[n]||(cs.reqsByName[n]=[])).push(r);
+    if(p && p!==n) (cs.reqsByName[p]||(cs.reqsByName[p]=[])).push(r);
+  });
+  Object.keys(cs.reqsByName).forEach(n => {
+    const arr=cs.reqsByName[n]; arr.sort((a,b)=>Number(a.id)-Number(b.id));
+    const byDate={};
+    arr.forEach(r=>{ const d1=r._dDoi||'', d2=r._dTra||''; if(d1)(byDate[d1]||(byDate[d1]=[])).push(r); if(d2&&d2!==d1)(byDate[d2]||(byDate[d2]=[])).push(r); });
+    cs.reqsByNameDate[n]=byDate;
+  });
+
+  cs.leaves.forEach(lv => {
+    if(!lv || lv.status!=='approved') return;
+    const n=(lv.name||'').toString().trim(); if(!n) return;
+    const list=(lv.dates||'').toString().split(',').map(x=>normalizeDate(x.trim())).filter(Boolean);
+    const byDate=cs.approvedLeaveByNameDate[n]||(cs.approvedLeaveByNameDate[n]={});
+    list.forEach(dt=>{ if(!byDate[dt]) byDate[dt]=lv; });
+  });
+
+  cs.transfers = (d.transfers || []).map(t0=>({...t0,_date:normalizeDate(t0.date)}));
+  cs.transfers.forEach(t=>{ const n=(t.name||'').toString().trim(); if(n)(cs.transfersByName[n]||(cs.transfersByName[n]=[])).push(t); });
+  Object.keys(cs.transfersByName).forEach(n=>cs.transfersByName[n].sort((a,b)=>(b._date||'').localeCompare(a._date||'')));
+
+  _companySchedule=cs;
+  _companyScheduleRevision++;
+  return true;
+}
+
+async function ensureCompanyScheduleData(force=false) {
+  if (!CU || !isCompanyPermissionScope()) return true;
+  const key=_companyScheduleKeyFromUI();
+  if(!key) return true;
+  if(!force && _companySchedule.key===key && _companySchedule.users.length) return true;
+  if(_companySchedule.loading) return _companySchedule.loading;
+  const [yr,mo]=key.split('-').map(Number);
+  _companySchedule.loading=(async()=>{
+    try {
+      const d=await api({action:'getCompanyScheduleData',year:yr,month:mo});
+      if(!d || d.error) throw new Error((d&&d.error)||'Không tải được bảng đi ca toàn Công ty.');
+      return applyCompanyScheduleData(d);
+    } finally { _companySchedule.loading=null; }
+  })();
+  return _companySchedule.loading;
+}
+
+async function renderCompanyScheduleTable() {
+  const body=document.getElementById('sched-body');
+  try {
+    if(body && (!_companySchedule.users.length || _companySchedule.key!==_companyScheduleKeyFromUI())) {
+      body.innerHTML='<tr><td colspan="45" class="empty">⏳ Đang tải bảng đi ca toàn Công ty...</td></tr>';
+    }
+    await ensureCompanyScheduleData(false);
+  } catch(e) {
+    console.error('[BẢNG ĐI CA CÔNG TY]',e);
+    if(body) body.innerHTML=`<tr><td colspan="45" class="empty">Không tải được bảng đi ca toàn Công ty: ${escapeHTML(e.message||'Lỗi kết nối')}</td></tr>`;
+    return;
+  }
+
+  // Hoán đổi dữ liệu chỉ trong lúc dựng DOM bảng đi ca; sau đó khôi phục ngay.
+  const saved={NV_LIST,userByName,allReqs,reqsByName,reqsByNameDate,allLeaves,approvedLeaveByNameDate,allTransfers,transfersByName,configsByBoPhan:APP_CONFIG.configsByBoPhan,merged:_mergedConfigCache,holiday:_holidaySetCache,caGoc:_caGocCache,caThuc:_caThucTeCache};
+  try {
+    NV_LIST=_companySchedule.users; userByName=_companySchedule.userByName;
+    allReqs=_companySchedule.requests; reqsByName=_companySchedule.reqsByName; reqsByNameDate=_companySchedule.reqsByNameDate;
+    allLeaves=_companySchedule.leaves; approvedLeaveByNameDate=_companySchedule.approvedLeaveByNameDate;
+    allTransfers=_companySchedule.transfers; transfersByName=_companySchedule.transfersByName;
+    APP_CONFIG.configsByBoPhan=_companySchedule.configsByBoPhan || {};
+    _mergedConfigCache={}; _holidaySetCache={}; _caGocCache=new Map(); _caThucTeCache=new Map();
+    renderScheduleTableCore();
+  } finally {
+    NV_LIST=saved.NV_LIST; userByName=saved.userByName;
+    allReqs=saved.allReqs; reqsByName=saved.reqsByName; reqsByNameDate=saved.reqsByNameDate;
+    allLeaves=saved.allLeaves; approvedLeaveByNameDate=saved.approvedLeaveByNameDate;
+    allTransfers=saved.allTransfers; transfersByName=saved.transfersByName;
+    APP_CONFIG.configsByBoPhan=saved.configsByBoPhan;
+    _mergedConfigCache=saved.merged; _holidaySetCache=saved.holiday; _caGocCache=saved.caGoc; _caThucTeCache=saved.caThuc;
+  }
+}
+
 function rebuildTransfersByName() {
   transfersByName = {};
   (allTransfers || []).forEach(t => {
@@ -1030,8 +1135,9 @@ const TAB_DATA_NEEDS = {
 
 function tabDataStamp(tab) {
   const keys = TAB_DATA_NEEDS[tab] || [];
-  return [tab, _dataRevision.users, _dataRevision.config]
-    .concat(keys.map(k => _dataRevision[k] || 0)).join('|');
+  const parts=[tab,_dataRevision.users,_dataRevision.config].concat(keys.map(k=>_dataRevision[k]||0));
+  if(tab==='bang-di-ca' && isCompanyPermissionScope()) parts.push(_companyScheduleRevision);
+  return parts.join('|');
 }
 
 function canReuseRenderedTab(tab) {
@@ -1058,6 +1164,10 @@ function resetDataLoadedFlags() {
 async function ensureDataForTab(tab) {
   const keys = TAB_DATA_NEEDS[tab];
   if (!keys || keys.length === 0) return;
+  if (tab === 'bang-di-ca' && isCompanyPermissionScope()) {
+    await ensureCompanyScheduleData(false);
+    return;
+  }
 
   // FAST TABS: nếu gói tải nền toàn bộ tab đang chạy thì chờ đúng gói đó, không tạo
   // thêm request GAS trùng dữ liệu. Sau khi gói nền xong sẽ kiểm tra lại; nếu phần nào
@@ -1941,7 +2051,10 @@ async function doLogin(){
       try {
         const activeBtn = document.querySelector('.tab.active');
         const t = activeBtn?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1] || '';
-        if (['nghi-phep', 'duyet-np', 'lich-su-np'].includes(t)) await loadLeaves();
+        if (t === 'bang-di-ca' && isCompanyPermissionScope()) {
+          await ensureCompanyScheduleData(true);
+          renderScheduleTable();
+        } else if (['nghi-phep', 'duyet-np', 'lich-su-np'].includes(t)) await loadLeaves();
         else await loadRequests();
         if (activeBtn && ['dong-y', 'phe-duyet', 'lich-su', 'duyet-np'].includes(t)) switchTab(t);
       } catch (err) {
@@ -1962,6 +2075,7 @@ function doLogout() {
   CU = null; allReqs = []; reqsByName = {}; reqsByNameDate = {};
   allLeaves = []; leavesByName = {}; approvedLeaveByNameDate = {};
   allTransfers = []; transfersByName = {};
+  invalidateCompanyScheduleData();
   _caGocCache.clear(); _caThucTeCache.clear();
   _myLeaveBalanceCache = null;
   _myLeaveBalanceSource = '';
@@ -1976,6 +2090,7 @@ async function doRefresh(btn) {
   btn.disabled = true;
 
   // Xóa cache số phép phía trình duyệt trước khi nhận bundle mới.
+  invalidateCompanyScheduleData();
   if (typeof _leaveBalancesLoadedYears !== 'undefined') _leaveBalancesLoadedYears = {};
   if (typeof allLeaveBalances !== 'undefined') allLeaveBalances = {};
 
@@ -3845,6 +3960,11 @@ function clearSchedFilter() {
 }
 
 function renderScheduleTable() {
+  if (isCompanyPermissionScope()) return renderCompanyScheduleTable();
+  return renderScheduleTableCore();
+}
+
+function renderScheduleTableCore() {
   const { yr, mo } = getYM('f-sched-year', 'f-sched-month');
   if (!yr || !mo) {
     document.getElementById('sched-head').innerHTML = '';
@@ -3915,7 +4035,7 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
   const priorityOrder = APP_CONFIG.priorityOrder?.length > 0
   ? APP_CONFIG.priorityOrder
   : ["Quản đốc", "Phó quản đốc", "Kỹ thuật Phân xưởng", "Trưởng kíp nhiên liệu", "Trực chính nhiên liệu", "Vận hành Băng tải", "Vận hành Máy đánh phá đống", "Vận hành Cẩu trục và xe cơ giới", "Tiếp nhận nhiên liệu"];
-  const _BP_ORDER_SCHED = ['Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
+  const _BP_ORDER_SCHED = ['Ban lãnh đạo Công ty','Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
   const _schedBpFilter = document.getElementById('f-sched-bp')?.value || '';
   // Admin xem "Tất cả bộ phận" (chưa chọn lọc riêng 1 bộ phận nào) → nhóm theo bộ phận trước tiên
   const _groupByBp = canFilterAcrossDepartments() && !_schedBpFilter;
@@ -3924,6 +4044,10 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
       const bpA = _BP_ORDER_SCHED.indexOf(a.boPhan || ''); const bpB = _BP_ORDER_SCHED.indexOf(b.boPhan || '');
       const vBpA = bpA === -1 ? 999 : bpA; const vBpB = bpB === -1 ? 999 : bpB;
       if (vBpA !== vBpB) return vBpA - vBpB;
+      if (vBpA === 999) {
+        const bpCmp=(a.boPhan||'Chưa phân loại').localeCompare(b.boPhan||'Chưa phân loại','vi');
+        if(bpCmp!==0) return bpCmp;
+      }
     }
     let idxA = priorityOrder.indexOf(a.chucDanh); let idxB = priorityOrder.indexOf(b.chucDanh);
     let valA = idxA === -1 ? 999 : idxA; let valB = idxB === -1 ? 999 : idxB;
@@ -3947,8 +4071,11 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
     const bpCur  = bpSel ? bpSel.value : '';
     const kips = [...new Set(displayList.map(u => u.displayKip).filter(Boolean))].sort();
     const cds  = [...new Set(displayList.map(u => u.chucDanh).filter(Boolean))];
-    const BO_PHAN_ORDER = ['Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
-    const bps  = [...new Set(NV_LIST.map(u => u.boPhan).filter(Boolean))].sort((a,b)=>{const ia=BO_PHAN_ORDER.indexOf(a),ib=BO_PHAN_ORDER.indexOf(b);return(ia===-1?99:ia)-(ib===-1?99:ib);});
+    const BO_PHAN_ORDER = ['Ban lãnh đạo Công ty','Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
+    const bps  = [...new Set(NV_LIST.map(u => u.boPhan).filter(Boolean))].sort((a,b)=>{
+      const ia=BO_PHAN_ORDER.indexOf(a),ib=BO_PHAN_ORDER.indexOf(b),va=ia===-1?99:ia,vb=ib===-1?99:ib;
+      return va!==vb ? va-vb : (va===99 ? a.localeCompare(b,'vi') : 0);
+    });
     kipSel.innerHTML = '<option value="">Tất cả kíp</option>' + kips.map(k => `<option${k===kipCur?' selected':''}>${escapeHTML(k)}</option>`).join('');
     cdSel.innerHTML  = '<option value="">Tất cả chức danh</option>' + cds.map(c => `<option${c===cdCur?' selected':''}>${escapeHTML(c)}</option>`).join('');
     if (bpSel) {
@@ -4106,8 +4233,15 @@ function exportExcelSched() {
   const tableEl = document.getElementById('table-schedule');
   if (!tableEl || tableEl.querySelector('.empty')) { showAlert('app', 'Không có dữ liệu để tải!', 'ae'); return; }
 
-  // Lãnh đạo bộ phận hoặc admin đang lọc 1 bộ phận cụ thể → xuất bảng hiện tại
+  // LĐ Công ty xem toàn Công ty: DOM hiện tại đã có đủ block bộ phận + tổng công,
+  // nên xuất trực tiếp đúng bảng đang thấy. Quyền phê duyệt vẫn không thay đổi.
   const fBp = document.getElementById('f-sched-bp')?.value || '';
+  if (isCompanyPermissionScope() && !fBp) {
+    downloadExcel(tableEl.innerHTML, `Bang_Di_Ca_Toan_Cong_Ty_${mv}.xls`, `BangDiCa_${mv}`);
+    return;
+  }
+
+  // Lãnh đạo bộ phận hoặc đang lọc 1 bộ phận cụ thể → xuất bảng hiện tại
   if (!CU.admin || fBp) {
     const tenBP = fBp || (getUserInfo(CU.name)||{}).boPhan || '';
     const tenFile = tenBP ? `Bang_Di_Ca_${tenBP.replace(/[^a-zA-Z0-9]/g,'_')}_${mv}.xls` : `Bang_Di_Ca_${mv}.xls`;
@@ -4116,7 +4250,7 @@ function exportExcelSched() {
   }
 
   // Admin, không lọc → xuất toàn Công ty phân theo bộ phận
-  const BO_PHAN_ORDER = ['Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
+  const BO_PHAN_ORDER = ['Ban lãnh đạo Công ty','Phòng Hành chính - Lao động','Phòng Kế hoạch - Vật tư','Phòng Tài chính - Kế toán','Phòng Kỹ thuật - An toàn','Phân xưởng Vận hành','Phân xưởng Sửa chữa','Phân xưởng Nhiên liệu','Phân xưởng Hóa'];
   const thead = tableEl.querySelector('thead')?.innerHTML || '';
   const daysInMonth = yr && mo ? new Date(yr, mo, 0).getDate() : 31;
   const totalCols = 3 + daysInMonth + 7;
