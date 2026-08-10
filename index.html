@@ -2252,8 +2252,13 @@ function safeActionId(value) {
   return /^[A-Za-z0-9_.:-]{1,160}$/.test(id) ? id : '';
 }
 function safeHttpUrl(value) {
+  // Chỉ chấp nhận URL tuyệt đối thực sự. Trước đây new URL('', window.location.href)
+  // biến giá trị rỗng thành chính URL trang hiện tại, làm mọi đơn đã duyệt đều hiện
+  // nhầm "Xem ảnh minh chứng" dù cột minhChung đang trống.
+  const raw = (value == null ? '' : String(value)).trim();
+  if (!/^https?:\/\//i.test(raw)) return '';
   try {
-    const url = new URL(String(value || ''), window.location.href);
+    const url = new URL(raw);
     return (url.protocol === 'https:' || url.protocol === 'http:') ? escapeAttr(url.href) : '';
   } catch (e) { return ''; }
 }
