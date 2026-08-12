@@ -1122,6 +1122,16 @@ let _tabPrefetchTimer = null;
 let _tabPrefetchPromise = null;          // ưu tiên 1: requests + transfers
 let _secondaryPrefetchPromise = null;    // ưu tiên 2: leaves + balances
 const _dataLoaded = { requests: false, leaves: false, transfers: false, balances: false };
+// AUTH-ONLY LOGIN: trạng thái gói lõi users/settings/MauLich/quyền được tải SAU khi
+// giao diện đã hiện. Mọi tab nghiệp vụ vẫn chờ gói lõi này trước khi tự tải dữ liệu của tab.
+let _coreBootstrapReady = false;
+let _coreBootstrapPromise = null;
+let _coreBootstrapError = '';
+// TURBO 9.7: ngay sau khi auth có token, khởi động song song các request dữ liệu nền.
+// Chỉ GIỮ bundle thô; đợi core users/settings xong mới apply để không tính lịch bằng NV_LIST rỗng.
+let _earlyPrimaryBundlePromise = null;
+let _earlySecondaryBundlePromise = null;
+let _earlyFetchSessionKey = '';
 
 // TURBO UI: theo dõi phiên bản dữ liệu trong RAM. Khi quay lại một tab mà dữ liệu
 // chưa đổi, giữ nguyên DOM đã vẽ thay vì tính/render lại hàng nghìn ô không cần thiết.
@@ -1363,6 +1373,44 @@ function refreshTransferDerivedFieldsAfterSync() {
   }
 }
 
+function resetEarlyBackgroundFetches() {
+  _earlyPrimaryBundlePromise = null;
+  _earlySecondaryBundlePromise = null;
+  _earlyFetchSessionKey = '';
+}
+
+function startEarlyBackgroundFetches() {
+  if (!CU || !CU.name || !CU.token) return;
+  const sessionKey = `${CU.name}|${CU.token}`;
+  if (_earlyFetchSessionKey === sessionKey && (_earlyPrimaryBundlePromise || _earlySecondaryBundlePromise)) return;
+
+  _earlyFetchSessionKey = sessionKey;
+  // Ưu tiên requests + transfers chạy ngay song song với core bootstrap.
+  _earlyPrimaryBundlePromise = api({
+    action: 'getTabBundle',
+    requests: true,
+    transfers: true
+  }).catch(err => {
+    console.warn('[TURBO 9.7 EARLY PRIMARY] lỗi:', err);
+    return null;
+  });
+
+  // Nhóm nghỉ phép/balance bắt đầu sau một nhịp ngắn để không dồn 3 execution cùng một mili-giây,
+  // nhưng vẫn chạy SONG SONG trong lúc core bootstrap đang tải.
+  _earlySecondaryBundlePromise = new Promise(resolve => setTimeout(resolve, 120)).then(() => {
+    if (!CU || `${CU.name}|${CU.token}` !== sessionKey) return null;
+    return api({
+      action: 'getTabBundle',
+      leaves: true,
+      balances: !!(CU.role === 'ld' || CU.admin),
+      myBalance: true
+    });
+  }).catch(err => {
+    console.warn('[TURBO 9.7 EARLY SECONDARY] lỗi:', err);
+    return null;
+  });
+}
+
 async function prefetchPrimaryTabData() {
   if (!CU || !CU.name || !CU.token) return false;
   if (_dataLoaded.requests && _dataLoaded.transfers) {
@@ -1375,18 +1423,27 @@ async function prefetchPrimaryTabData() {
   const needTransfers = !_dataLoaded.transfers;
   const sessionName = CU.name;
   const sessionToken = CU.token;
+  const sessionKey = `${sessionName}|${sessionToken}`;
 
   setPrimarySyncState(false);
   _tabPrefetchPromise = (async () => {
     try {
-      const bundle = await api({
-        action: 'getTabBundle',
-        requests: needRequests,
-        transfers: needTransfers
-      });
+      let bundle = null;
+      // Nếu bundle đã được tải sớm trong lúc core bootstrap chạy thì dùng luôn, không gọi GAS lần nữa.
+      if (_earlyFetchSessionKey === sessionKey && _earlyPrimaryBundlePromise) {
+        bundle = await _earlyPrimaryBundlePromise;
+        _earlyPrimaryBundlePromise = null;
+      }
+      if (!bundle) {
+        bundle = await api({
+          action: 'getTabBundle',
+          requests: needRequests,
+          transfers: needTransfers
+        });
+      }
       if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
       if (!bundle || bundle.error) {
-        console.warn('[HYBRID PRIMARY] Prefetch không thành công:', bundle && bundle.error);
+        console.warn('[TURBO 9.7 PRIMARY] Prefetch không thành công:', bundle && bundle.error);
         setPrimarySyncState(false, true);
         return false;
       }
@@ -1395,7 +1452,7 @@ async function prefetchPrimaryTabData() {
       if (_dataLoaded.requests && _dataLoaded.transfers) setPrimarySyncState(true);
       return ok;
     } catch (err) {
-      console.warn('[HYBRID PRIMARY] Prefetch lỗi:', err);
+      console.warn('[TURBO 9.7 PRIMARY] Prefetch lỗi:', err);
       if (CU && CU.name === sessionName && CU.token === sessionToken) setPrimarySyncState(false, true);
       return false;
     } finally {
@@ -1416,22 +1473,30 @@ async function prefetchSecondaryTabData() {
 
   const sessionName = CU.name;
   const sessionToken = CU.token;
+  const sessionKey = `${sessionName}|${sessionToken}`;
   _secondaryPrefetchPromise = (async () => {
     try {
-      const bundle = await api({
-        action: 'getTabBundle',
-        leaves: needLeaves,
-        balances: needBalances,
-        myBalance: needMyBalance
-      });
+      let bundle = null;
+      if (_earlyFetchSessionKey === sessionKey && _earlySecondaryBundlePromise) {
+        bundle = await _earlySecondaryBundlePromise;
+        _earlySecondaryBundlePromise = null;
+      }
+      if (!bundle) {
+        bundle = await api({
+          action: 'getTabBundle',
+          leaves: needLeaves,
+          balances: needBalances,
+          myBalance: needMyBalance
+        });
+      }
       if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
       if (!bundle || bundle.error) {
-        console.warn('[HYBRID SECONDARY] Prefetch không thành công:', bundle && bundle.error);
+        console.warn('[TURBO 9.7 SECONDARY] Prefetch không thành công:', bundle && bundle.error);
         return false;
       }
       return applyPrefetchedTabBundle(bundle);
     } catch (err) {
-      console.warn('[HYBRID SECONDARY] Prefetch lỗi:', err);
+      console.warn('[TURBO 9.7 SECONDARY] Prefetch lỗi:', err);
       return false;
     } finally {
       _secondaryPrefetchPromise = null;
@@ -1441,22 +1506,22 @@ async function prefetchSecondaryTabData() {
 }
 
 async function prefetchAllTabData() {
-  const primaryOk = await prefetchPrimaryTabData();
-  // Dù primary lỗi, secondary vẫn có thể tải độc lập để tab nghỉ phép không bị ảnh hưởng.
-  return prefetchSecondaryTabData();
+  const results = await Promise.allSettled([
+    prefetchPrimaryTabData(),
+    prefetchSecondaryTabData()
+  ]);
+  return results.some(r => r.status === 'fulfilled' && r.value === true);
 }
 
 function scheduleTabPrefetch() {
   if (_tabPrefetchTimer) clearTimeout(_tabPrefetchTimer);
   _tabPrefetchTimer = setTimeout(() => {
     _tabPrefetchTimer = null;
-    // Ưu tiên requests + transfers trước; khi xong mới tải leaves + balances.
-    prefetchPrimaryTabData()
-      .catch(() => false)
-      .finally(() => {
-        setTimeout(() => { prefetchSecondaryTabData().catch(() => {}); }, 80);
-      });
-  }, 80);
+    // TURBO 9.7: hai nhóm đã được fetch song song từ ngay sau auth; tại đây chủ yếu
+    // consume/apply bundle đã sẵn, hoặc fallback gọi server nếu fetch sớm lỗi.
+    prefetchPrimaryTabData().catch(() => false);
+    prefetchSecondaryTabData().catch(() => false);
+  }, 20);
 }
 
 function renderScheduleTableDebounced() {
@@ -1942,92 +2007,135 @@ async function doForgotPin() {
 
 // --- XÓA HẾT BIẾN ĐẾM BÊN TRÌNH DUYỆT VÌ MÁY CHỦ ĐÃ LO VIỆC ĐÓ ---
 
-async function doLogin(){
-  const n=document.getElementById('f-login-name').value;
-  const p=document.getElementById('pin-inp').value;
-  const e=document.getElementById('pin-err');
 
-  if(!n||!p){e.style.color='#dc2626'; e.textContent='Nhập số điện thoại và mã PIN';return;} 
-  e.style.color='#1a56a0'; e.textContent='Đang vào...';
+function setCoreBootstrapUiState(state, message) {
+  if (!CU) return;
+  const app = document.getElementById('app');
+  if (!app) return;
+  let bar = document.getElementById('core-sync-banner');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'core-sync-banner';
+    bar.style.cssText = 'position:fixed;top:10px;right:10px;z-index:9998;padding:8px 12px;border-radius:9px;background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;font-weight:700;font-size:12px;box-shadow:0 2px 10px rgba(15,23,42,.12);max-width:min(360px,calc(100vw - 20px));';
+    app.appendChild(bar);
+  }
+  const ready = state === 'ready';
+  const failed = state === 'failed';
+  if (ready) {
+    bar.style.display = 'none';
+  } else {
+    bar.style.display = '';
+    bar.style.background = failed ? '#fff7ed' : '#eff6ff';
+    bar.style.borderColor = failed ? '#fed7aa' : '#bfdbfe';
+    bar.style.color = failed ? '#9a3412' : '#1e40af';
+    bar.textContent = failed
+      ? ('⚠️ ' + (message || 'Chưa đồng bộ được dữ liệu. Chạm để thử lại.'))
+      : (message || '⏳ Đang đồng bộ dữ liệu nền...');
+    bar.style.cursor = failed ? 'pointer' : 'default';
+    bar.onclick = failed ? (() => retryCoreBootstrap()) : null;
+  }
 
-  try{ 
-    const r=await api({action:"login",name:n,pin:p}); 
-    
-    // NẾU CÓ LỖI TỪ MÁY CHỦ (Bao gồm khóa 10 phút và sai mật khẩu)
-    if(r.error){
-        e.style.color='#dc2626'; 
-        e.textContent = r.error;
-        return;
-    } 
-    
-    // ĐĂNG NHẬP THÀNH CÔNG
-    CU=r.user;
-    _myLeaveBalanceCache = null;
-    _myLeaveBalanceSource = '';
+  // Trước khi có users/settings/quyền, không cho chuyển tab để tránh chạy logic bằng dữ liệu rỗng.
+  document.querySelectorAll('.tab').forEach(el => {
+    el.style.pointerEvents = ready ? '' : 'none';
+    el.style.opacity = ready ? '' : '0.58';
+  });
+}
 
-    // PIN tạm dùng cờ server riêng, không phụ thuộc currentToken.
-    // Kiểm tra NGAY trước khi tải dữ liệu khác để session bắt buộc đổi PIN không làm việc gì ngoài đổi PIN.
-    if (r.forcePinChange) {
-      document.getElementById('overlay').style.display='none';
-      document.getElementById('app').style.display='block';
-      document.getElementById('forced-pin-modal').style.display='flex';
-      document.getElementById('fcp-new').focus();
-      return;
-    }
+function showAuthenticatedShellImmediately() {
+  if (!CU) return;
+  // Xóa dữ liệu RAM của phiên trước TRƯỚC khi hiện app. Đây là bắt buộc vì AUTH-ONLY
+  // cho giao diện xuất hiện sớm hơn bootstrap; không được để dropdown/tên cũ ló ra.
+  NV_LIST = [];
+  userByName = {};
+  MAU_LICH = {};
+  allReqs = []; reqsByName = {}; reqsByNameDate = {};
+  allLeaves = []; leavesByName = {}; approvedLeaveByNameDate = {};
+  allTransfers = []; transfersByName = {};
+  try { initSS(); } catch (_) {}
+  // Xóa các lựa chọn động của form đăng ký cho tới khi settings/users mới về.
+  ['f-kip','f-partner-kip','f-partner-role','f-ca-doi','f-ca-tra'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = '<option value="">⏳ Đang đồng bộ...</option>';
+  });
+  const partnerHidden = document.getElementById('f-partner');
+  if (partnerHidden) partnerHidden.value = '';
+  const partnerLbl = document.getElementById('ss-partner-lbl');
+  if (partnerLbl) partnerLbl.textContent = '-- Chọn người đi thay --';
+  document.getElementById('overlay').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  const nameEl = document.getElementById('ub-name');
+  if (nameEl) nameEl.textContent = CU.name || '';
+  const roleEl = document.getElementById('ub-role');
+  if (roleEl) roleEl.textContent = CU.chucDanh || (CU.admin ? 'Quản trị viên' : (CU.role === 'ld' ? 'Lãnh đạo' : 'Vận hành'));
+  const titleEl = document.getElementById('tb-title');
+  if (titleEl) titleEl.textContent = 'Quản lý chấm công';
+  const subEl = document.getElementById('tb-ten-px');
+  if (subEl) {
+    const bp = (CU.boPhan || '').trim();
+    if (bp) { subEl.textContent = bp; subEl.style.display = ''; } else subEl.style.display = 'none';
+  }
+  const fName = document.getElementById('f-name');
+  if (fName) fName.value = CU.name || '';
 
-    // V13.7.4: chỉ sau khi có session thật mới tải danh sách nhân sự, cấu hình được
-    // whitelist, mẫu lịch, phân quyền và điều chuyển. Nếu bootstrap lỗi thì thu hồi phiên.
-    let _bootIncludedRequests = false;
-    let _bootIncludedTransfers = false;
-    try {
-      // HYBRID LOGIN: response đăng nhập chỉ kèm bootstrap LÕI, không đọc requests/transfers.
-      // Nếu hai file nâng cấp lệch nhau, thử getCoreBootstrap rồi mới fallback getBootstrap cũ.
-      let boot = r.bootstrap || null;
-      if (!boot || boot.error || !boot.users || boot.users.length === 0) {
-        try { boot = await api({ action: 'getCoreBootstrap' }); } catch (_) { boot = null; }
-      }
-      if (!boot || boot.error || !boot.users || boot.users.length === 0) {
-        boot = await api({ action: 'getBootstrap' });
-      }
-      if (!boot || boot.error || !boot.users || boot.users.length === 0) {
-        try { await api({ action: 'logout' }); } catch(_) {}
-        CU = null;
-        e.style.color = '#dc2626';
-        e.textContent = (boot && boot.error) || r.bootstrapError || 'Không tải được dữ liệu sau đăng nhập.';
-        return;
-      }
+  // Chỉ hiện quyền có thể xác định ngay từ row đăng nhập; sau bootstrap sẽ cấu hình đầy đủ lại.
+  const adminBtn = document.getElementById('btn-admin');
+  if (adminBtn) adminBtn.style.display = CU.admin ? '' : 'none';
+  const ldTab = document.getElementById('tab-ld');
+  if (ldTab) ldTab.style.display = CU.role === 'ld' ? '' : 'none';
+  const leaveApproveTab = document.getElementById('tab-btn-duyet-np');
+  if (leaveApproveTab) leaveApproveTab.style.display = CU.role === 'ld' ? '' : 'none';
+  const dispatchTab = document.getElementById('tab-btn-admin-hc');
+  if (dispatchTab) dispatchTab.style.display = (CU.admin || (CU.quyenDieuDong || '').trim()) ? '' : 'none';
 
-      NV_LIST = boot.users;
-      if (boot.quyenMap) {
-        NV_LIST.forEach(u => { const q = boot.quyenMap[u.name]; if (q) Object.assign(u, q); });
-      }
-      rebuildUserByName();
-      bumpDataRevision('users');
-      MAU_LICH = boot.mauLich || {};
-      allTransfers = (boot.transfers || []).map(t => { t._date = (t.date || "").toString().substring(0, 10); return t; });
-      rebuildTransfersByName();
-      bumpDataRevision('transfers');
-      _bootIncludedTransfers = boot.transfersLoaded === true;
-      if (boot.settings) {
-        setupDynamicFields(boot.settings);
-        bumpDataRevision('config');
-      }
-      // Tương thích ngược: nếu backend cũ vẫn kèm requests thì dùng luôn.
-      // Backend HYBRID mới không gửi requests ở bước login.
-      if (Array.isArray(boot.requests)) {
-        applyRequestsFromApi({ requests: boot.requests });
-        _bootIncludedRequests = true;
-      }
-      initSS();
-    } catch(bootErr) {
-      console.error('Lỗi tải dữ liệu sau đăng nhập:', bootErr);
-      try { await api({ action: 'logout' }); } catch(_) {}
-      CU = null;
-      e.style.color = '#dc2626';
-      e.textContent = 'Không tải được dữ liệu sau đăng nhập. Vui lòng thử lại.';
-      return;
-    }
+  resetDataLoadedFlags();
+  invalidateCompanyScheduleData();
+  setPrimarySyncState(false);
+  switchTabRender('dang-ky');
+  setCoreBootstrapUiState('loading', '⏳ Đã đăng nhập — đang đồng bộ dữ liệu nền...');
+}
 
+async function fetchCoreBootstrapForCurrentSession() {
+  // Backend AUTH-ONLY không còn trả bootstrap trong response login.
+  // getCoreBootstrap vẫn là gói lõi an toàn, có checkToken server-side.
+  let boot = null;
+  try { boot = await api({ action: 'getCoreBootstrap' }); } catch (_) { boot = null; }
+  // Tương thích khi deploy lệch phiên bản: fallback bootstrap đầy đủ cũ.
+  if (!boot || boot.error || !Array.isArray(boot.users) || boot.users.length === 0) {
+    try { boot = await api({ action: 'getBootstrap' }); } catch (_) { boot = null; }
+  }
+  return boot;
+}
+
+function applyCoreBootstrapState(boot) {
+  let _bootIncludedRequests = false;
+  let _bootIncludedTransfers = false;
+  NV_LIST = boot.users || [];
+  if (boot.quyenMap) {
+    NV_LIST.forEach(u => { const q = boot.quyenMap[u.name]; if (q) Object.assign(u, q); });
+  }
+  rebuildUserByName();
+  bumpDataRevision('users');
+  MAU_LICH = boot.mauLich || {};
+  allTransfers = (boot.transfers || []).map(t => { t._date = (t.date || '').toString().substring(0, 10); return t; });
+  rebuildTransfersByName();
+  bumpDataRevision('transfers');
+  _bootIncludedTransfers = boot.transfersLoaded === true;
+  if (boot.settings) {
+    setupDynamicFields(boot.settings);
+    bumpDataRevision('config');
+  }
+  if (Array.isArray(boot.requests)) {
+    applyRequestsFromApi({ requests: boot.requests });
+    _bootIncludedRequests = true;
+  }
+  initSS();
+  return { _bootIncludedRequests, _bootIncludedTransfers };
+}
+
+async function finalizeAuthenticatedUiAfterCore(r, flags) {
+  const _bootIncludedRequests = !!(flags && flags._bootIncludedRequests);
+  const _bootIncludedTransfers = !!(flags && flags._bootIncludedTransfers);
     buildSS('ss-partner', '');
 
 
@@ -2159,8 +2267,7 @@ async function doLogin(){
     // 1) requests + transfers; 2) leaves + balances.
     // Bảng đi ca toàn Công ty vẫn lazy-load riêng khi người dùng mở tab đó.
     scheduleTabPrefetch();
-  } catch(ex){e.style.color='#dc2626'; e.textContent='Lỗi kết nối mạng';}
-  
+
   // TỰ ĐỘNG CẬP NHẬT — giãn ra 120s, và CHỈ chạy khi tab đang mở (giảm số lệnh gọi GAS)
   if (autoRefreshTimer) clearInterval(autoRefreshTimer); 
   
@@ -2180,6 +2287,93 @@ async function doLogin(){
       }
     }
   }, 120000);
+
+}
+
+function startCoreBootstrap(r) {
+  if (!CU || !CU.name || !CU.token) return Promise.resolve(false);
+  if (_coreBootstrapReady) return Promise.resolve(true);
+  if (_coreBootstrapPromise) return _coreBootstrapPromise;
+  const sessionName = CU.name;
+  const sessionToken = CU.token;
+  _coreBootstrapError = '';
+  setCoreBootstrapUiState('loading', '⏳ Đã đăng nhập — đang đồng bộ dữ liệu nền...');
+  _coreBootstrapPromise = (async () => {
+    try {
+      const boot = await fetchCoreBootstrapForCurrentSession();
+      if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
+      if (!boot || boot.error || !Array.isArray(boot.users) || boot.users.length === 0) {
+        throw new Error((boot && boot.error) || 'Không tải được dữ liệu khởi tạo.');
+      }
+      const flags = applyCoreBootstrapState(boot);
+      // Chỉ mở lại các tab sau khi toàn bộ UI lõi đã được cấu hình xong.
+      await finalizeAuthenticatedUiAfterCore(r || {}, flags);
+      _coreBootstrapReady = true;
+      setCoreBootstrapUiState('ready');
+      return true;
+    } catch (err) {
+      if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
+      _coreBootstrapReady = false;
+      _coreBootstrapError = (err && err.message) ? err.message : String(err || 'Không đồng bộ được dữ liệu.');
+      console.error('[AUTH-ONLY CORE] Bootstrap lỗi:', err);
+      setCoreBootstrapUiState('failed', _coreBootstrapError + ' — chạm để thử lại.');
+      setPrimarySyncState(false, true);
+      return false;
+    } finally {
+      _coreBootstrapPromise = null;
+    }
+  })();
+  return _coreBootstrapPromise;
+}
+
+function retryCoreBootstrap() {
+  if (!CU) return;
+  startCoreBootstrap({}).catch(() => {});
+}
+
+async function doLogin(){
+  const n=document.getElementById('f-login-name').value;
+  const p=document.getElementById('pin-inp').value;
+  const e=document.getElementById('pin-err');
+
+  if(!n||!p){e.style.color='#dc2626'; e.textContent='Nhập số điện thoại và mã PIN';return;}
+  e.style.color='#1a56a0'; e.textContent='Đang vào...';
+
+  try {
+    const r = await api({action:'login', name:n, pin:p});
+    if (r.error) { e.style.color='#dc2626'; e.textContent=r.error; return; }
+
+    CU = r.user;
+    _myLeaveBalanceCache = null;
+    _myLeaveBalanceSource = '';
+    _coreBootstrapReady = false;
+    _coreBootstrapPromise = null;
+    _coreBootstrapError = '';
+
+    if (r.forcePinChange) {
+      document.getElementById('overlay').style.display='none';
+      document.getElementById('app').style.display='block';
+      document.getElementById('forced-pin-modal').style.display='flex';
+      document.getElementById('fcp-new').focus();
+      return;
+    }
+
+    // Điểm khác biệt chính: response xác thực xong là HIỆN GIAO DIỆN NGAY.
+    // users/settings/MauLich/quyền được tải ở request nền riêng, không còn nằm trong chữ “Đang vào…”.
+    resetEarlyBackgroundFetches();
+    showAuthenticatedShellImmediately();
+    e.textContent = '';
+
+    // TURBO 9.7: có token là khởi động NGAY các request dữ liệu nền song song với core.
+    // Không apply trước khi core xong; chỉ tận dụng thời gian chờ mạng/Apps Script.
+    startEarlyBackgroundFetches();
+
+    // Không await: trả quyền điều khiển cho trình duyệt ngay sau auth.
+    startCoreBootstrap(r).catch(() => {});
+  } catch(ex) {
+    e.style.color='#dc2626';
+    e.textContent='Lỗi kết nối mạng';
+  }
 }
 
 function doLogout() {
@@ -2190,6 +2384,13 @@ function doLogout() {
   if (_tabPrefetchTimer) { clearTimeout(_tabPrefetchTimer); _tabPrefetchTimer = null; }
   _tabPrefetchPromise = null;
   _secondaryPrefetchPromise = null;
+  _coreBootstrapReady = false;
+  _coreBootstrapPromise = null;
+  _coreBootstrapError = '';
+  resetEarlyBackgroundFetches();
+  const _coreBar = document.getElementById('core-sync-banner');
+  if (_coreBar) _coreBar.style.display = 'none';
+  document.querySelectorAll('.tab').forEach(el => { el.style.pointerEvents=''; el.style.opacity=''; });
   // Promise mạng đã chạy không hủy được, nhưng prefetch có kiểm tra session trước khi áp dụng kết quả.
   
   CU = null; allReqs = []; reqsByName = {}; reqsByNameDate = {};
@@ -2427,9 +2628,13 @@ async function doArchive() {
 }
 
 function switchTab(t){
-  ensureDataForTab(t).then(() => switchTabRender(t)).catch(err => {
-    console.error('ensureDataForTab:', err);
-    switchTabRender(t);
+  const waitCore = _coreBootstrapReady ? Promise.resolve(true) : (_coreBootstrapPromise || startCoreBootstrap({}));
+  waitCore.then(ok => {
+    if (!ok) return false;
+    return ensureDataForTab(t).then(() => { switchTabRender(t); return true; });
+  }).catch(err => {
+    console.error('switchTab/ensureCore:', err);
+    setCoreBootstrapUiState('failed', 'Không đồng bộ được dữ liệu — chạm để thử lại.');
   });
 }
 
