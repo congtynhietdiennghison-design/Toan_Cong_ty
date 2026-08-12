@@ -1119,7 +1119,8 @@ let leavePollTimer = null;
 let reqPollTimer = null;
 let _schedRenderTimer = null;
 let _tabPrefetchTimer = null;
-let _tabPrefetchPromise = null;
+let _tabPrefetchPromise = null;          // ưu tiên 1: requests + transfers
+let _secondaryPrefetchPromise = null;    // ưu tiên 2: leaves + balances
 const _dataLoaded = { requests: false, leaves: false, transfers: false, balances: false };
 
 // TURBO UI: theo dõi phiên bản dữ liệu trong RAM. Khi quay lại một tab mà dữ liệu
@@ -1192,11 +1193,15 @@ async function ensureDataForTab(tab) {
     return;
   }
 
-  // FAST TABS: nếu gói tải nền toàn bộ tab đang chạy thì chờ đúng gói đó, không tạo
-  // thêm request GAS trùng dữ liệu. Sau khi gói nền xong sẽ kiểm tra lại; nếu phần nào
-  // thật sự chưa có mới gọi tải chọn lọc như cơ chế cũ.
-  if (_tabPrefetchPromise) {
+  // HYBRID LOGIN: chỉ chờ đúng gói nền mà tab này thực sự cần.
+  // Tab đổi ca không phải đợi gói nghỉ phép; tab nghỉ phép không phải đợi requests.
+  const needsPrimary = keys.includes('requests') || keys.includes('transfers');
+  const needsSecondary = keys.includes('leaves') || keys.includes('balances');
+  if (needsPrimary && _tabPrefetchPromise) {
     try { await _tabPrefetchPromise; } catch (_) {}
+  }
+  if (needsSecondary && _secondaryPrefetchPromise) {
+    try { await _secondaryPrefetchPromise; } catch (_) {}
   }
 
   const opts = {};
@@ -1206,26 +1211,22 @@ async function ensureDataForTab(tab) {
   if (keys.includes('balances') && !_dataLoaded.balances) opts.balances = true;
   if (!opts.requests && !opts.leaves && !opts.transfers && !opts.balances) return;
 
-  // TURBO: nếu các phần còn thiếu đều thuộc gói nghiệp vụ (requests/leaves/balances),
-  // gom vào 1 getTabBundle thay vì Promise.all tạo 2-3 execution Apps Script riêng.
-  // transfers là trường hợp riêng; nếu nó còn thiếu thì fallback cơ chế cũ phía dưới.
-  if (!opts.transfers && (opts.requests || opts.leaves || opts.balances)) {
-    try {
-      const bundle = await api({
-        action: 'getTabBundle',
-        requests: !!opts.requests,
-        leaves: !!opts.leaves,
-        balances: !!opts.balances,
-        myBalance: tab === 'nghi-phep' && !_myLeaveBalanceCache
-      });
-      if (bundle && !bundle.error) {
-        applyPrefetchedTabBundle(bundle);
-        return;
-      }
-    } catch (_) {
-      // Backend cũ/nâng cấp lệch phiên bản: tự fallback bên dưới, không làm hỏng tab.
+  // Backend mới gom được cả transfers vào getTabBundle, nên chỉ cần 1 round-trip
+  // cho đúng phần còn thiếu của tab. Backend cũ vẫn fallback refreshData().
+  try {
+    const bundle = await api({
+      action: 'getTabBundle',
+      requests: !!opts.requests,
+      leaves: !!opts.leaves,
+      transfers: !!opts.transfers,
+      balances: !!opts.balances,
+      myBalance: tab === 'nghi-phep' && !_myLeaveBalanceCache
+    });
+    if (bundle && !bundle.error) {
+      applyPrefetchedTabBundle(bundle);
+      return;
     }
-  }
+  } catch (_) {}
 
   await refreshData(opts);
   if (opts.requests) _dataLoaded.requests = true;
@@ -1323,38 +1324,79 @@ function applyPrefetchedTabBundle(bundle) {
   return true;
 }
 
-async function prefetchAllTabData() {
+function setPrimarySyncState(ready, failed=false) {
+  const btn = document.getElementById('btn-submit');
+  if (!btn) return;
+  if (ready) {
+    btn.disabled = false;
+    btn.textContent = 'Gửi yêu cầu';
+    btn.removeAttribute('data-sync-wait');
+  } else {
+    btn.disabled = true;
+    btn.setAttribute('data-sync-wait','1');
+    btn.textContent = failed ? '⚠️ Chưa đồng bộ - bấm Làm mới' : '⏳ Đang đồng bộ dữ liệu...';
+  }
+}
+
+function refreshTransferDerivedFieldsAfterSync() {
+  if (!CU) return;
+  const myInfo = getUserInfo(CU.name);
+  if (myInfo) {
+    let displayKip = myInfo.kip;
+    const today = localTodayYmd();
+    const latest = getLatestTransfer(CU.name, today);
+    if (latest && latest.newKip) displayKip = latest.newKip;
+    const kipEl = document.getElementById('f-kip');
+    if (kipEl && displayKip) kipEl.value = displayKip;
+  }
+
+  const partner = (document.getElementById('f-partner')?.value || '').trim();
+  if (partner) {
+    const pInfo = getUserInfo(partner);
+    if (pInfo) {
+      const today = localTodayYmd();
+      const latest = getLatestTransfer(partner, today);
+      const kp = (latest && latest.newKip) ? latest.newKip : pInfo.kip;
+      const kpEl = document.getElementById('f-partner-kip');
+      if (kpEl && kp) kpEl.value = kp;
+    }
+  }
+}
+
+async function prefetchPrimaryTabData() {
   if (!CU || !CU.name || !CU.token) return false;
+  if (_dataLoaded.requests && _dataLoaded.transfers) {
+    setPrimarySyncState(true);
+    return true;
+  }
   if (_tabPrefetchPromise) return _tabPrefetchPromise;
 
-  // Sau login: requests đã tải cho tab Đăng ký, transfers đã có từ bootstrap.
-  // Chỉ xin những nhóm CÒN THIẾU thay vì gọi getRefreshBundle và tải lại tất cả.
   const needRequests = !_dataLoaded.requests;
-  const needLeaves = !_dataLoaded.leaves;
-  const needBalances = !!(CU && (CU.role === 'ld' || CU.admin) && !_dataLoaded.balances);
-  const needMyBalance = !_myLeaveBalanceCache;
-  if (!needRequests && !needLeaves && !needBalances && !needMyBalance) return true;
-
+  const needTransfers = !_dataLoaded.transfers;
   const sessionName = CU.name;
   const sessionToken = CU.token;
+
+  setPrimarySyncState(false);
   _tabPrefetchPromise = (async () => {
     try {
       const bundle = await api({
         action: 'getTabBundle',
         requests: needRequests,
-        leaves: needLeaves,
-        balances: needBalances,
-        myBalance: needMyBalance
+        transfers: needTransfers
       });
-      // Nếu người dùng đã đăng xuất/đổi phiên trong lúc request chạy thì bỏ kết quả cũ.
       if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
       if (!bundle || bundle.error) {
-        console.warn('[TURBO TABS] Prefetch không thành công:', bundle && bundle.error);
+        console.warn('[HYBRID PRIMARY] Prefetch không thành công:', bundle && bundle.error);
+        setPrimarySyncState(false, true);
         return false;
       }
-      return applyPrefetchedTabBundle(bundle);
+      const ok = applyPrefetchedTabBundle(bundle);
+      refreshTransferDerivedFieldsAfterSync();
+      if (_dataLoaded.requests && _dataLoaded.transfers) setPrimarySyncState(true);
+      return ok;
     } catch (err) {
-      console.warn('[TURBO TABS] Prefetch lỗi, sẽ tải theo tab khi cần:', err);
+      console.warn('[HYBRID PRIMARY] Prefetch lỗi:', err);
+      if (CU && CU.name === sessionName && CU.token === sessionToken) setPrimarySyncState(false, true);
       return false;
     } finally {
       _tabPrefetchPromise = null;
@@ -1363,12 +1405,58 @@ async function prefetchAllTabData() {
   return _tabPrefetchPromise;
 }
 
+async function prefetchSecondaryTabData() {
+  if (!CU || !CU.name || !CU.token) return false;
+  if (_secondaryPrefetchPromise) return _secondaryPrefetchPromise;
+
+  const needLeaves = !_dataLoaded.leaves;
+  const needBalances = !!(CU && (CU.role === 'ld' || CU.admin) && !_dataLoaded.balances);
+  const needMyBalance = !_myLeaveBalanceCache;
+  if (!needLeaves && !needBalances && !needMyBalance) return true;
+
+  const sessionName = CU.name;
+  const sessionToken = CU.token;
+  _secondaryPrefetchPromise = (async () => {
+    try {
+      const bundle = await api({
+        action: 'getTabBundle',
+        leaves: needLeaves,
+        balances: needBalances,
+        myBalance: needMyBalance
+      });
+      if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
+      if (!bundle || bundle.error) {
+        console.warn('[HYBRID SECONDARY] Prefetch không thành công:', bundle && bundle.error);
+        return false;
+      }
+      return applyPrefetchedTabBundle(bundle);
+    } catch (err) {
+      console.warn('[HYBRID SECONDARY] Prefetch lỗi:', err);
+      return false;
+    } finally {
+      _secondaryPrefetchPromise = null;
+    }
+  })();
+  return _secondaryPrefetchPromise;
+}
+
+async function prefetchAllTabData() {
+  const primaryOk = await prefetchPrimaryTabData();
+  // Dù primary lỗi, secondary vẫn có thể tải độc lập để tab nghỉ phép không bị ảnh hưởng.
+  return prefetchSecondaryTabData();
+}
+
 function scheduleTabPrefetch() {
   if (_tabPrefetchTimer) clearTimeout(_tabPrefetchTimer);
   _tabPrefetchTimer = setTimeout(() => {
     _tabPrefetchTimer = null;
-    prefetchAllTabData().catch(() => {});
-  }, 300);
+    // Ưu tiên requests + transfers trước; khi xong mới tải leaves + balances.
+    prefetchPrimaryTabData()
+      .catch(() => false)
+      .finally(() => {
+        setTimeout(() => { prefetchSecondaryTabData().catch(() => {}); }, 80);
+      });
+  }, 80);
 }
 
 function renderScheduleTableDebounced() {
@@ -1890,11 +1978,14 @@ async function doLogin(){
     // V13.7.4: chỉ sau khi có session thật mới tải danh sách nhân sự, cấu hình được
     // whitelist, mẫu lịch, phân quyền và điều chuyển. Nếu bootstrap lỗi thì thu hồi phiên.
     let _bootIncludedRequests = false;
+    let _bootIncludedTransfers = false;
     try {
-      // V13.7.5 FAST LOGIN: backend mới trả kèm bootstrap ngay trong response login,
-      // loại bỏ thêm 1 round-trip tới Apps Script. Nếu backend cũ/chậm chưa trả kèm
-      // thì vẫn fallback getBootstrap để hai file có thể nâng cấp lệch nhau mà không lỗi.
+      // HYBRID LOGIN: response đăng nhập chỉ kèm bootstrap LÕI, không đọc requests/transfers.
+      // Nếu hai file nâng cấp lệch nhau, thử getCoreBootstrap rồi mới fallback getBootstrap cũ.
       let boot = r.bootstrap || null;
+      if (!boot || boot.error || !boot.users || boot.users.length === 0) {
+        try { boot = await api({ action: 'getCoreBootstrap' }); } catch (_) { boot = null; }
+      }
       if (!boot || boot.error || !boot.users || boot.users.length === 0) {
         boot = await api({ action: 'getBootstrap' });
       }
@@ -1916,12 +2007,13 @@ async function doLogin(){
       allTransfers = (boot.transfers || []).map(t => { t._date = (t.date || "").toString().substring(0, 10); return t; });
       rebuildTransfersByName();
       bumpDataRevision('transfers');
+      _bootIncludedTransfers = boot.transfersLoaded === true;
       if (boot.settings) {
         setupDynamicFields(boot.settings);
         bumpDataRevision('config');
       }
-      // TURBO 2: backend mới preload requests trong chính response login. Nếu có thì
-      // dựng index ngay; backend cũ không có trường này vẫn tự tải bù ở ensureDataForTab().
+      // Tương thích ngược: nếu backend cũ vẫn kèm requests thì dùng luôn.
+      // Backend HYBRID mới không gửi requests ở bước login.
       if (Array.isArray(boot.requests)) {
         applyRequestsFromApi({ requests: boot.requests });
         _bootIncludedRequests = true;
@@ -2054,15 +2146,18 @@ async function doLogin(){
     const now = new Date(); const curYear = now.getFullYear(); const curMonthStr = curYear + '-' + String(now.getMonth()+1).padStart(2,'0'); 
     initYearMonthFilters();
     resetDataLoadedFlags();
-    // transfers + (ở backend TURBO 2) requests đã có ngay trong bootstrap.
     _dataLoaded.requests = _bootIncludedRequests;
-    _dataLoaded.transfers = true;
+    _dataLoaded.transfers = _bootIncludedTransfers;
     _dataLoaded.balances = !(CU.role === 'ld' || CU.admin);
-    await ensureDataForTab('dang-ky');
-    switchTab('dang-ky');
 
-    // TURBO: sau tab đầu tiên, chỉ preload các nhóm CÒN THIẾU (thường chỉ leaves +
-    // balances) bằng getTabBundle nhẹ; không tải lại users/settings/MauLich/transfers.
+    // HYBRID LOGIN: mở tab Đăng ký NGAY, không chờ requests/transfers.
+    // Nút gửi tạm khóa cho tới khi gói dữ liệu ưu tiên đã đồng bộ xong.
+    setPrimarySyncState(_dataLoaded.requests && _dataLoaded.transfers);
+    switchTabRender('dang-ky');
+
+    // Tải nền theo thứ tự ưu tiên:
+    // 1) requests + transfers; 2) leaves + balances.
+    // Bảng đi ca toàn Công ty vẫn lazy-load riêng khi người dùng mở tab đó.
     scheduleTabPrefetch();
   } catch(ex){e.style.color='#dc2626'; e.textContent='Lỗi kết nối mạng';}
   
@@ -2093,7 +2188,9 @@ function doLogout() {
     api({action: "logout", name: CU.name}); 
   }
   if (_tabPrefetchTimer) { clearTimeout(_tabPrefetchTimer); _tabPrefetchTimer = null; }
-  // Promise đang chạy không hủy được, nhưng prefetch có kiểm tra session trước khi áp dụng kết quả.
+  _tabPrefetchPromise = null;
+  _secondaryPrefetchPromise = null;
+  // Promise mạng đã chạy không hủy được, nhưng prefetch có kiểm tra session trước khi áp dụng kết quả.
   
   CU = null; allReqs = []; reqsByName = {}; reqsByNameDate = {};
   allLeaves = []; leavesByName = {}; approvedLeaveByNameDate = {};
@@ -2173,6 +2270,8 @@ async function doRefresh(btn) {
     _dataLoaded.leaves = true;
     _dataLoaded.transfers = true;
     _dataLoaded.balances = !(CU && (CU.role === 'ld' || CU.admin)) || !!(bundle.balanceYear && bundle.balances);
+    setPrimarySyncState(true);
+    refreshTransferDerivedFieldsAfterSync();
 
     // Dựng lại dropdown người dùng vì NV_LIST/quyền có thể vừa thay đổi.
     buildSS('ss-partner', '');
