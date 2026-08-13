@@ -1603,7 +1603,8 @@ function apiOnce(p, timeoutMs) {
           if (err && err.name === 'AbortError') {
             finishReject(new Error(`Yêu cầu quá thời gian (${Math.round(ms / 1000)}s). Apps Script chưa phản hồi.`));
           } else {
-            finishReject(err);
+            const detail = (err && err.message) ? err.message : String(err || 'Lỗi fetch');
+            finishReject(new Error(`Không kết nối được Apps Script khi gọi ${p.action || 'API'}: ${detail}`));
           }
         });
     }
@@ -2498,16 +2499,32 @@ async function doLogin(){
       return;
     }
 
-    // Điểm khác biệt chính: response xác thực xong là HIỆN GIAO DIỆN NGAY.
-    // users/settings/MauLich/quyền được tải ở request nền riêng, không còn nằm trong chữ “Đang vào…”.
+    // V13.7.6: backend mới trả luôn CORE trong chính response login để tránh phụ thuộc
+    // request POST thứ hai ngay sau đăng nhập. Nếu backend cũ/chưa deploy thì vẫn fallback
+    // sang startCoreBootstrap() như trước để không làm gián đoạn tương thích.
     resetEarlyBackgroundFetches();
     showAuthenticatedShellImmediately();
     e.textContent = '';
 
-    // Ưu tiên CORE tuyệt đối sau đăng nhập. Không khởi động getTabBundle song song
-    // vì các request nặng có thể tranh execution Apps Script và làm core bị treo/chậm.
-    // Không await: giao diện vẫn hiện ngay, nhưng chỉ mở đủ chức năng khi core hoàn tất.
-    startCoreBootstrap(r).catch(() => {});
+    const embeddedCore = r && r.coreBootstrap;
+    if (embeddedCore && !embeddedCore.error && Array.isArray(embeddedCore.users) && embeddedCore.users.length > 0) {
+      try {
+        const flags = applyCoreBootstrapState(embeddedCore);
+        await finalizeAuthenticatedUiAfterCore(r || {}, flags);
+        _coreBootstrapReady = true;
+        _coreBootstrapError = '';
+        setCoreBootstrapUiState('ready');
+      } catch (coreErr) {
+        console.error('[LOGIN EMBEDDED CORE] lỗi áp dụng dữ liệu:', coreErr);
+        _coreBootstrapReady = false;
+        _coreBootstrapError = (coreErr && coreErr.message) ? coreErr.message : String(coreErr || 'Không áp dụng được dữ liệu lõi.');
+        setCoreBootstrapUiState('failed', _coreBootstrapError + ' — chạm để thử lại.');
+        setPrimarySyncState(false, true);
+      }
+    } else {
+      // Backend chưa có embedded CORE hoặc dựng CORE thất bại: dùng đường dự phòng cũ.
+      startCoreBootstrap(r).catch(() => {});
+    }
   } catch(ex) {
     e.style.color='#dc2626';
     e.textContent='Lỗi kết nối mạng';
