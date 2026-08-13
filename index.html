@@ -1613,6 +1613,59 @@ function refreshRequestsInBackground(renderFn) {
   }).catch(err => console.warn('Background refresh requests:', err));
 }
 
+// TURBO NGHIỆP VỤ MAX — cập nhật RAM ngay sau khi server đã ghi thành công,
+// còn tải lại toàn bộ dữ liệu chạy nền để người dùng không phải chờ thêm một round-trip.
+function mergeLocalRequests(items) {
+  if (!Array.isArray(items) || items.length === 0) return;
+  const map = new Map((allReqs || []).map(r => [(r.id || '').toString(), r]));
+  items.forEach(r => { if (r && r.id != null) map.set((r.id || '').toString(), r); });
+  applyRequestsFromApi({ requests: Array.from(map.values()) });
+}
+function upsertLocalLeave(lv) {
+  if (!lv || lv.id == null) return;
+  const id = (lv.id || '').toString();
+  const idx = allLeaves.findIndex(x => (x.id || '').toString() === id);
+  if (idx >= 0) allLeaves[idx] = Object.assign({}, allLeaves[idx], lv);
+  else allLeaves.unshift(lv);
+  rebuildLeavesIndexes();
+  bumpDataRevision('leaves');
+  _dataLoaded.leaves = true;
+}
+function patchLocalLeaveFromResult(id, status, updated) {
+  const rid = (id || '').toString();
+  const lv = allLeaves.find(x => (x.id || '').toString() === rid);
+  if (!lv) return false;
+  if (status) lv.status = status;
+  if (updated) Object.keys(updated).forEach(k => { if (updated[k] !== undefined) lv[k] = updated[k]; });
+  rebuildLeavesIndexes();
+  bumpDataRevision('leaves');
+  return true;
+}
+function refreshLeavesInBackground(renderFn) {
+  loadLeaves().then(() => {
+    if (typeof renderFn === 'function') renderFn();
+  }).catch(err => console.warn('Background refresh leaves:', err));
+}
+function mergeLocalTransfers(items) {
+  if (!Array.isArray(items) || items.length === 0) return;
+  const map = new Map((allTransfers || []).map(t => [(t.id || '').toString(), t]));
+  items.forEach(t => {
+    if (!t || t.id == null) return;
+    const x = Object.assign({}, t);
+    x._date = (x.date || '').toString().substring(0, 10);
+    map.set((x.id || '').toString(), x);
+  });
+  allTransfers = Array.from(map.values());
+  rebuildTransfersByName();
+  bumpDataRevision('transfers');
+  _dataLoaded.transfers = true;
+}
+function refreshTransfersInBackground(renderFn) {
+  loadTransfers().then(() => {
+    if (typeof renderFn === 'function') renderFn();
+  }).catch(err => console.warn('Background refresh transfers:', err));
+}
+
 async function api(p) {
   const writeActions = ['add','updateStatus','addDispatchBatch','addTransfer','addTransferBatch','submitLeave','cancelLeave','approveLeaveWeb','rejectLeaveWeb','resetPin'];
   if (writeActions.includes(p.action) && !p.clientRequestId) p.clientRequestId = makeClientRequestId();
@@ -6407,12 +6460,16 @@ async function submitBatchHC() {
   if (cancelIds.size > 0) confirmMsg += `\n\n⚠️ LƯU Ý: Phát hiện có ${cancelIds.size} đơn xin đổi ca đang chờ duyệt bị TRÙNG LỊCH. Hệ thống sẽ TỰ ĐỘNG HỦY các đơn đó!`;
   if(!confirm(confirmMsg)) return;
 
+  const actionKey = 'dispatch-batch:' + (CU?.name || '');
+  if (!beginWebAction(actionKey)) {
+    showLocalAlert('batchhc-msg', '⏳ Lệnh điều động đang được xử lý, không cần bấm lại.', 'ai');
+    return;
+  }
+
   const btn = document.querySelector('button[onclick="submitBatchHC()"]');
-  btn.disabled = true; btn.innerHTML = '⏳ Đang đồng bộ...';
+  if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Đang đồng bộ...'; }
   try {
     const cancelArr = Array.from(cancelIds);
-    // Gộp toàn bộ hủy đơn trùng + thêm lệnh thành MỘT lần gọi GAS, MỘT lock.
-    // Backend tự rollback nếu bất kỳ lệnh nào lỗi, tránh trạng thái lưu dở dang.
     const res = await api({
       action: "addDispatchBatch",
       data: JSON.stringify({ cancelIds: cancelArr, requests: allReqsHC }),
@@ -6420,23 +6477,37 @@ async function submitBatchHC() {
     });
     if (res && res.error) {
       showLocalAlert('batchhc-msg', '❌ LỖI: ' + res.error, 'ae');
-      btn.disabled = false; btn.innerHTML = '⚡ PHÊ DUYỆT LỆNH';
       return;
     }
-    
-    await loadRequests(); showLocalAlert('batchhc-msg', `Đã ban hành ${res.addedCount || allReqsHC.length} lệnh thành công!`, 'as');
-    document.getElementById('hc-table-body').innerHTML = ''; document.getElementById('hc-group-reason').value = '';
+
+    // Server đã ghi xong: cập nhật RAM ngay, không chờ loadRequests() vòng thứ hai.
+    if (Array.isArray(res.requests)) mergeLocalRequests(res.requests);
+    cancelArr.forEach(id => patchLocalRequestFromResult(id, 'cancelled', { status: 'cancelled' }));
+
+    showLocalAlert('batchhc-msg', `Đã ban hành ${res.addedCount || allReqsHC.length} lệnh thành công!`, 'as');
+    document.getElementById('hc-table-body').innerHTML = '';
+    document.getElementById('hc-group-reason').value = '';
     document.getElementById('hc-pin').value = '';
-    renderAdminHCHist(); renderScheduleTable(); 
-  } catch(e) { 
-    // Dù timeout vẫn reload để kiểm tra lệnh có lên không
-    try { await loadRequests(); renderAdminHCHist(); renderScheduleTable(); } catch(_) {}
+    renderAdminHCHist();
+    renderScheduleTable();
+
+    refreshRequestsInBackground(() => {
+      if (document.getElementById('tab-admin-hc')?.classList.contains('active')) {
+        renderAdminHCHist();
+        renderScheduleTable();
+      }
+    });
+  } catch(e) {
+    // Nếu timeout/mạng đứt, đồng bộ nền để xác minh server có ghi thành công hay chưa.
+    refreshRequestsInBackground(() => { renderAdminHCHist(); renderScheduleTable(); });
     const msg = (e && e.message && e.message.includes('quá thời gian'))
-      ? '⚠️ Máy chủ xử lý lâu quá (timeout), nhưng lệnh có thể đã được lưu. Vui lòng kiểm tra bảng phía trên!'
+      ? '⚠️ Máy chủ xử lý lâu quá (timeout), lệnh có thể đã được lưu. Hệ thống đang tự đồng bộ lại.'
       : 'Lỗi mạng hoặc máy chủ: ' + (e && e.message ? e.message : e);
-    showLocalAlert('batchhc-msg', msg, 'ae'); 
+    showLocalAlert('batchhc-msg', msg, 'ae');
+  } finally {
+    endWebAction(actionKey);
+    if (btn) { btn.disabled = false; btn.innerHTML = '⚡ PHÊ DUYỆT LỆNH'; }
   }
-  btn.disabled = false; btn.innerHTML = '⚡ PHÊ DUYỆT LỆNH';
 }
 
 // Khởi tạo Form Điều chuyển
@@ -6699,10 +6770,17 @@ async function submitTransfer() {
   const summary = tasks.map(t => `• ${t.name}  →  ${t.newKip || '(giữ nguyên)'}  (từ ${fmtDate(t.date || date)})`).join('\n');
   if (!confirm(`Xác nhận điều chuyển ${tasks.length} người?\n\n${summary}`)) return;
 
+  const actionKey = 'transfer-batch:' + (CU?.name || '');
+  if (!beginWebAction(actionKey)) {
+    showLocalAlert('transfer-msg', '⏳ Lệnh điều chuyển đang được xử lý, không cần bấm lại.', 'ai');
+    return;
+  }
+
+  const btn = document.querySelector('button[onclick="submitTransfer()"]');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Đang điều chuyển...'; }
   showLocalAlert('transfer-msg', `Đang xử lý ${tasks.length} lệnh điều chuyển...`, 'ai');
 
   try {
-    // Gọi 1 lần duy nhất — GAS gom Telegram theo nhóm, không spam tin
     const items = tasks.map(t => ({
       name: t.name,
       date: t.date || date,
@@ -6718,22 +6796,37 @@ async function submitTransfer() {
 
     if (res.error) {
       showLocalAlert('transfer-msg', res.error, 'ae');
-    } else {
-      await loadTransfers();
-      renderTransferLog();
-      renderScheduleTable();
-      showLocalAlert('transfer-msg', `✅ Điều chuyển thành công ${res.count || tasks.length} người!`, 'as');
-      document.getElementById('tc-date').value = '';
-      document.getElementById('tc-pin').value = '';
-      if (document.getElementById('tc-multi-kip-mode')) {
-        document.getElementById('tc-multi-kip-mode').checked = false;
-        document.getElementById('tc-common-kip-wrap').style.display = '';
-        document.getElementById('tc-date-wrap').style.display = '';
-      }
-      window._tcCheckedState = {}; // reset trạng thái tích sau khi gửi xong
-      filterTCUsers();
+      return;
     }
-  } catch(e) { showLocalAlert('transfer-msg', 'Lỗi kết nối!', 'ae'); }
+
+    if (Array.isArray(res.added)) mergeLocalTransfers(res.added);
+    renderTransferLog();
+    renderScheduleTable();
+    showLocalAlert('transfer-msg', `✅ Điều chuyển thành công ${res.count || tasks.length} người!`, 'as');
+
+    document.getElementById('tc-date').value = '';
+    document.getElementById('tc-pin').value = '';
+    if (document.getElementById('tc-multi-kip-mode')) {
+      document.getElementById('tc-multi-kip-mode').checked = false;
+      document.getElementById('tc-common-kip-wrap').style.display = '';
+      document.getElementById('tc-date-wrap').style.display = '';
+    }
+    window._tcCheckedState = {};
+    filterTCUsers();
+
+    refreshTransfersInBackground(() => {
+      if (document.getElementById('tab-admin-hc')?.classList.contains('active')) {
+        renderTransferLog();
+        renderScheduleTable();
+      }
+    });
+  } catch(e) {
+    showLocalAlert('transfer-msg', 'Lỗi kết nối!', 'ae');
+    refreshTransfersInBackground(() => { renderTransferLog(); renderScheduleTable(); });
+  } finally {
+    endWebAction(actionKey);
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ XÁC NHẬN ĐIỀU CHUYỂN'; }
+  }
 }
 
 async function loadTransfers() {
@@ -7231,31 +7324,56 @@ document.getElementById('leave-confirm-modal').style.display = 'flex';
 
 // Bước 2: Thực sự gửi sau khi xác nhận
 async function doSubmitLeave() {
-if (!_pendingLeaveData) return;
-document.getElementById('leave-confirm-modal').style.display = 'none';
-const btn = document.getElementById('btn-submit-leave');
-btn.disabled = true; btn.textContent = '⏳ Đang gửi...';
-try {
-const res = await api({ action: 'submitLeave', data: JSON.stringify(_pendingLeaveData) });
-if (res.error) { showLocalAlert('leave-msg', res.error, 'ae'); }
-else {
-showLocalAlert('leave-msg', '✅ Đã gửi đơn đăng ký nghỉ thành công! Chờ Lãnh đạo phê duyệt.', 'as');
-selectedLeaveDates = [];
-document.getElementById('f-leave-reason').value = '';
-document.getElementById('f-leave-location').value = '';
-document.getElementById('f-leave-type').value = 'P';
-onLeaveTypeChange();
-_pendingLeaveData = null;
-await loadLeaves();
-renderLeaveCalendar();
-renderLeavePending();
-syncLeavePollTimer('nghi-phep');
-}
-} catch(e) { showLocalAlert('leave-msg', 'Lỗi kết nối!', 'ae'); }
-btn.disabled = false;
-const lt = document.getElementById('f-leave-type')?.value || 'P';
-const label = {P:'Nghỉ phép năm', VR:'Nghỉ việc riêng hưởng lương', TS:'Nghỉ thai sản', O_m:'Nghỉ ốm', O:'Nghỉ không hưởng lương'}[lt] || '';
-btn.textContent = `📨 Gửi đơn ${label}`;
+  if (!_pendingLeaveData) return;
+
+  const actionKey = 'submit-leave:' + (CU?.name || '');
+  if (!beginWebAction(actionKey)) {
+    showLocalAlert('leave-msg', '⏳ Đơn nghỉ đang được gửi, không cần bấm lại.', 'ai');
+    return;
+  }
+
+  const payload = JSON.parse(JSON.stringify(_pendingLeaveData));
+  document.getElementById('leave-confirm-modal').style.display = 'none';
+  const btn = document.getElementById('btn-submit-leave');
+  btn.disabled = true; btn.textContent = '⏳ Đang gửi...';
+
+  try {
+    const res = await api({ action: 'submitLeave', data: JSON.stringify(payload) });
+    if (res.error) {
+      showLocalAlert('leave-msg', res.error, 'ae');
+      return;
+    }
+
+    if (res.leave) upsertLocalLeave(res.leave);
+    showLocalAlert('leave-msg', '✅ Đã gửi đơn đăng ký nghỉ thành công! Chờ Lãnh đạo phê duyệt.', 'as');
+
+    selectedLeaveDates = [];
+    document.getElementById('f-leave-reason').value = '';
+    document.getElementById('f-leave-location').value = '';
+    document.getElementById('f-leave-type').value = 'P';
+    onLeaveTypeChange();
+    _pendingLeaveData = null;
+
+    // UI phản hồi ngay từ RAM; server sync lại ở nền.
+    renderLeaveCalendar();
+    renderLeavePending();
+    syncLeavePollTimer('nghi-phep');
+    refreshLeavesInBackground(() => {
+      if (document.getElementById('tab-nghi-phep')?.classList.contains('active')) {
+        renderLeaveCalendar();
+        renderLeavePending();
+      }
+    });
+  } catch(e) {
+    showLocalAlert('leave-msg', 'Lỗi kết nối!', 'ae');
+    refreshLeavesInBackground(() => { renderLeaveCalendar(); renderLeavePending(); });
+  } finally {
+    endWebAction(actionKey);
+    btn.disabled = false;
+    const lt = document.getElementById('f-leave-type')?.value || 'P';
+    const label = {P:'Nghỉ phép năm', VR:'Nghỉ việc riêng hưởng lương', TS:'Nghỉ thai sản', O_m:'Nghỉ ốm', O:'Nghỉ không hưởng lương'}[lt] || '';
+    btn.textContent = `📨 Gửi đơn ${label}`;
+  }
 }
 function renderLeaveApproveList() {
   const el = document.getElementById('leave-approve-list');
@@ -7290,8 +7408,8 @@ function renderLeaveApproveList() {
     let kipHienThi = lv.kip || '—';
     if (typeof allTransfers !== 'undefined' && allTransfers.length > 0) {
       const refDate = dateOnlyYmdFromAny(lv.createdAt);
-      const sorted = allTransfers.filter(t => t.name === lv.name && t.date <= refDate && t.newKip).sort((a,b) => b.date.localeCompare(a.date));
-      if (sorted.length > 0) kipHienThi = sorted[0].newKip;
+      const latest = getLatestTransfer(lv.name, refDate);
+      if (latest && latest.newKip) kipHienThi = latest.newKip;
     }
     const leaveTypeLabels = {P:'Nghỉ phép (Công P)', VR:'Việc riêng (Công VR)', TS:'Thai sản (Công TS)', O_m:'Nghỉ ốm (Công Ô)', O:'Không hưởng lương (Công O)'};
     const leaveLabel = leaveTypeLabels[lv.leaveType] || 'Nghỉ phép (Công P)';
@@ -7340,18 +7458,36 @@ async function doApproveLeaveWithPin() {
   const pin = document.getElementById('leave-approve-pin-inp').value.trim();
   const err = document.getElementById('leave-approve-err');
   if (!pin) { err.textContent = '⚠️ Vui lòng nhập mã PIN!'; return; }
+
+  const id = _pendingLeaveActionId;
+  const actionKey = 'leave-approve:' + (id || '');
+  if (!beginWebAction(actionKey)) {
+    err.textContent = '⏳ Đơn này đang được xử lý, không cần bấm lại.';
+    return;
+  }
+
   const btn = document.querySelector('#leave-approve-modal .btn-success');
   btn.disabled = true; btn.textContent = '⏳ Đang xử lý...';
   try {
-    const res = await api({ action: 'approveLeaveWeb', id: _pendingLeaveActionId, approver: CU.name, verifyPin: pin });
-    if (res && res.error) { err.textContent = '❌ ' + res.error; }
-    else {
-      closeLeaveApproveModal();
-      showAlert('app', '✅ Đã phê duyệt nghỉ phép!', 'as');
-      await loadLeaves(); renderLeaveApproveList(); renderScheduleTable();
-    }
-  } catch(e) { err.textContent = 'Lỗi kết nối!'; }
-  btn.disabled = false; btn.textContent = '✅ Xác nhận duyệt';
+    const res = await api({ action: 'approveLeaveWeb', id, approver: CU.name, verifyPin: pin });
+    if (res && res.error) { err.textContent = '❌ ' + res.error; return; }
+
+    patchLocalLeaveFromResult(id, res.status || 'approved', res.updated || {});
+    closeLeaveApproveModal();
+    showAlert('app', res.duplicate ? '✅ Đơn nghỉ này đã được duyệt trước đó.' : '✅ Đã phê duyệt nghỉ phép!', 'as');
+    renderLeaveApproveList();
+    renderScheduleTable();
+
+    refreshLeavesInBackground(() => {
+      if (document.getElementById('tab-duyet-np')?.classList.contains('active')) renderLeaveApproveList();
+      renderScheduleTable();
+    });
+  } catch(e) {
+    err.textContent = 'Lỗi kết nối!';
+  } finally {
+    endWebAction(actionKey);
+    btn.disabled = false; btn.textContent = '✅ Xác nhận duyệt';
+  }
 }
 
 function rejectLeaveWeb(id, btn) {
@@ -7377,18 +7513,34 @@ async function doRejectLeaveConfirm() {
   const err = document.getElementById('leave-reject-err');
   if (!reason) { err.textContent = '⚠️ Vui lòng nhập lý do từ chối!'; document.getElementById('leave-reject-reason-inp').focus(); return; }
   if (!pin) { err.textContent = '⚠️ Vui lòng nhập mã PIN!'; document.getElementById('leave-reject-pin-inp').focus(); return; }
+
+  const id = _pendingLeaveActionId;
+  const actionKey = 'leave-reject:' + (id || '');
+  if (!beginWebAction(actionKey)) {
+    err.textContent = '⏳ Đơn này đang được xử lý, không cần bấm lại.';
+    return;
+  }
+
   const btn = document.querySelector('#leave-reject-modal .btn-danger');
   btn.disabled = true; btn.textContent = '⏳ Đang xử lý...';
   try {
-    const res = await api({ action: 'rejectLeaveWeb', id: _pendingLeaveActionId, approver: CU.name, rejectReason: reason, verifyPin: pin });
-    if (res && res.error) { err.textContent = '❌ ' + res.error; }
-    else {
-      closeLeaveRejectModal();
-      showAlert('app', '❌ Đã từ chối nghỉ phép!', 'as');
-      await loadLeaves(); renderLeaveApproveList();
-    }
-  } catch(e) { err.textContent = 'Lỗi kết nối!'; }
-  btn.disabled = false; btn.textContent = '❌ Xác nhận từ chối';
+    const res = await api({ action: 'rejectLeaveWeb', id, approver: CU.name, rejectReason: reason, verifyPin: pin });
+    if (res && res.error) { err.textContent = '❌ ' + res.error; return; }
+
+    patchLocalLeaveFromResult(id, res.status || 'rejected', res.updated || {});
+    closeLeaveRejectModal();
+    showAlert('app', '❌ Đã từ chối nghỉ phép!', 'as');
+    renderLeaveApproveList();
+
+    refreshLeavesInBackground(() => {
+      if (document.getElementById('tab-duyet-np')?.classList.contains('active')) renderLeaveApproveList();
+    });
+  } catch(e) {
+    err.textContent = 'Lỗi kết nối!';
+  } finally {
+    endWebAction(actionKey);
+    btn.disabled = false; btn.textContent = '❌ Xác nhận từ chối';
+  }
 }
 
 
@@ -7499,19 +7651,33 @@ el.innerHTML = myLeaves.map(lv => {
 }).join('');
 }
 async function cancelLeaveForm(id) {
-if (!confirm('Bạn có chắc muốn hủy đơn nghỉ phép này không?')) return;
-try {
-const res = await api({ action: 'cancelLeave', id, reqName: CU.name });
-if (res.error) { showAlert('app', res.error, 'ae'); }
-else {
-  showAlert('app', 'Đã hủy đơn!', 'as');
-  await loadLeaves();
-  // Phòng trường hợp backend cho phép hủy một đơn P đã ảnh hưởng số phép: đồng bộ lại từ server.
-  if (_myLeaveBalanceSource === 'server') await loadMyLeaveBalance(true);
-  renderLeavePending(); renderLeaveCalendar();
+  if (!confirm('Bạn có chắc muốn hủy đơn nghỉ phép này không?')) return;
+  const actionKey = 'leave-cancel:' + id;
+  if (!beginWebAction(actionKey)) {
+    showAlert('app', '⏳ Đơn này đang được xử lý, không cần bấm lại.', 'ai');
+    return;
+  }
+  try {
+    const res = await api({ action: 'cancelLeave', id, reqName: CU.name });
+    if (res.error) { showAlert('app', res.error, 'ae'); return; }
+
+    patchLocalLeaveFromResult(id, res.status || 'cancelled', res.updated || {});
+    showAlert('app', 'Đã hủy đơn!', 'as');
+    renderLeavePending();
+    renderLeaveCalendar();
+
+    refreshLeavesInBackground(() => {
+      renderLeavePending();
+      renderLeaveCalendar();
+    });
+    if (_myLeaveBalanceSource === 'server') loadMyLeaveBalance(true).catch(()=>{});
+  } catch(e) {
+    showAlert('app', 'Lỗi kết nối!', 'ae');
+  } finally {
+    endWebAction(actionKey);
+  }
 }
-} catch(e) { showAlert('app', 'Lỗi kết nối!', 'ae'); }
-}
+
 function renderLeaveHistory() {
   const { yr, mo } = getYM('f-leave-hist-year', 'f-leave-hist-month');
   const fst = document.getElementById('f-leave-hist-status')?.value || '';
