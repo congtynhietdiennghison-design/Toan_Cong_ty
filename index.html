@@ -1127,6 +1127,9 @@ const _dataLoaded = { requests: false, leaves: false, transfers: false, balances
 let _coreBootstrapReady = false;
 let _coreBootstrapPromise = null;
 let _coreBootstrapError = '';
+// SINGLE INITIAL BUNDLE: sau login chỉ gọi getRefreshBundle đúng 1 lần.
+// Cờ này ngăn finalizeAuthenticatedUiAfterCore() khởi động thêm prefetch cũ.
+let _initialFullBundleReady = false;
 // TURBO 9.7: ngay sau khi auth có token, khởi động song song các request dữ liệu nền.
 // Chỉ GIỮ bundle thô; đợi core users/settings xong mới apply để không tính lịch bằng NV_LIST rỗng.
 let _earlyPrimaryBundlePromise = null;
@@ -1413,10 +1416,7 @@ function renderLoginPerfDiag() {
       <button type="button" onclick="document.getElementById('login-perf-diag').style.display='none'" style="border:0;background:transparent;color:#fff;font-size:18px;line-height:1;cursor:pointer">×</button>
     </div>
     <div>LOGIN: <b>${_perfFmt(d.steps.login)}</b></div>
-    <div>CORE: <b>${_perfFmt(d.steps.core)}</b></div>
-    <div>TRANSFERS: <b>${_perfFmt(d.steps.transfers)}</b></div>
-    <div>REQUESTS: <b>${_perfFmt(d.steps.requests)}</b></div>
-    <div>LEAVES/BALANCE: <b>${_perfFmt(d.steps.leaves)}</b></div>
+    <div>INITIAL BUNDLE: <b>${_perfFmt(d.steps.core)}</b></div>
     <div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.18)">Kíp sẵn sàng: <b>${d.kipReadyMs == null ? '…' : d.kipReadyMs + ' ms'}</b></div>
     <div>Gửi yêu cầu sẵn sàng: <b>${d.submitReadyMs == null ? '…' : d.submitReadyMs + ' ms'}</b></div>
     <div style="opacity:.7;margin-top:5px">Tổng từ lúc bấm đăng nhập: ${total} ms</div>`;
@@ -2469,10 +2469,10 @@ async function finalizeAuthenticatedUiAfterCore(r, flags) {
     setPrimarySyncState(_dataLoaded.requests && _dataLoaded.transfers);
     switchTabRender('dang-ky');
 
-    // Tải nền theo thứ tự ưu tiên:
-    // 1) requests + transfers; 2) leaves + balances.
-    // Bảng đi ca toàn Công ty vẫn lazy-load riêng khi người dùng mở tab đó.
-    scheduleTabPrefetch();
+    // Nếu đăng nhập bằng SINGLE INITIAL BUNDLE thì requests/transfers/leaves/balance
+    // đã nằm trong cùng response, tuyệt đối không gọi thêm prefetch Apps Script.
+    // Đường cũ chỉ giữ làm fallback cho client/backend lệch phiên bản.
+    if (!_initialFullBundleReady) scheduleTabPrefetch();
 
   // TỰ ĐỘNG CẬP NHẬT — giãn ra 120s, và CHỈ chạy khi tab đang mở (giảm số lệnh gọi GAS)
   if (autoRefreshTimer) clearInterval(autoRefreshTimer); 
@@ -2494,6 +2494,88 @@ async function finalizeAuthenticatedUiAfterCore(r, flags) {
     }
   }, 120000);
 
+}
+
+function startInitialFullBundle(r) {
+  if (!CU || !CU.name || !CU.token) return Promise.resolve(false);
+  if (_coreBootstrapReady && _initialFullBundleReady) return Promise.resolve(true);
+  if (_coreBootstrapPromise) return _coreBootstrapPromise;
+
+  const sessionName = CU.name;
+  const sessionToken = CU.token;
+  _coreBootstrapError = '';
+  _initialFullBundleReady = false;
+  setCoreBootstrapUiState('loading', '⏳ Đã đăng nhập — đang tải dữ liệu một lần...');
+
+  _coreBootstrapPromise = (async () => {
+    const t0 = beginLoginPerfStep('core');
+    try {
+      // QUAN TRỌNG: chỉ 1 round-trip Apps Script sau login.
+      // getRefreshBundle đã gồm users/settings/quyền/transfers/requests/leaves/balance.
+      const bundle = await api({ action: 'getRefreshBundle' });
+      if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
+      if (!bundle || bundle.error || !Array.isArray(bundle.users) || bundle.users.length === 0) {
+        throw new Error((bundle && bundle.error) || 'Không nhận được gói dữ liệu khởi tạo.');
+      }
+
+      // Dùng lại bộ dựng UI lõi hiện có. Gắn transfersLoaded=true để finalize biết
+      // requests + transfers đã có sẵn và không khóa nút Gửi yêu cầu vô ích.
+      const boot = Object.assign({}, bundle, { transfersLoaded: true });
+      const flags = applyCoreBootstrapState(boot);
+
+      // Phải bật cờ TRƯỚC finalize để chặn scheduleTabPrefetch() cũ.
+      _initialFullBundleReady = true;
+      await finalizeAuthenticatedUiAfterCore(r || {}, flags);
+
+      // finalize chỉ xử lý core/requests/transfers; áp dụng nốt leaves/balance từ
+      // chính bundle đã nhận — không gọi server thêm lần nào.
+      if (Array.isArray(bundle.leaves)) {
+        allLeaves = bundle.leaves;
+        rebuildLeavesIndexes();
+        bumpDataRevision('leaves');
+        _dataLoaded.leaves = true;
+      }
+      if (bundle.balanceYear && bundle.balances && CU && (CU.role === 'ld' || CU.admin)) {
+        allLeaveBalances[bundle.balanceYear] = bundle.balances;
+        _leaveBalancesLoadedYears[bundle.balanceYear] = true;
+        bumpDataRevision('balances');
+        _dataLoaded.balances = true;
+      } else if (!(CU && (CU.role === 'ld' || CU.admin))) {
+        _dataLoaded.balances = true;
+      }
+      if (bundle.myBalance) applyMyLeaveBalance(bundle.myBalance, 'server');
+      else if (Array.isArray(bundle.leaves)) refreshMyLeaveBalanceFromLocalLeaves();
+
+      _dataLoaded.requests = true;
+      _dataLoaded.transfers = true;
+      setPrimarySyncState(true);
+      refreshTransferDerivedFieldsAfterSync();
+
+      _coreBootstrapReady = true;
+      setCoreBootstrapUiState('ready');
+
+      const note = `${bundle.users.length} nhân sự | ${(bundle.transfers || []).length} ĐC | ${(bundle.requests || []).length} đơn | ${(bundle.leaves || []).length} nghỉ`;
+      endLoginPerfStep('core', t0, '', note);
+      markLoginPerfTotal('kip');
+      markLoginPerfTotal('submit');
+      return true;
+    } catch (err) {
+      if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
+      _initialFullBundleReady = false;
+      _coreBootstrapReady = false;
+      _coreBootstrapError = (err && err.message) ? err.message : String(err || 'Không đồng bộ được dữ liệu.');
+      if (_loginPerfDiag && _loginPerfDiag.steps.core && _loginPerfDiag.steps.core.ms == null) {
+        endLoginPerfStep('core', t0, _coreBootstrapError);
+      }
+      console.error('[SINGLE INITIAL BUNDLE] lỗi:', err);
+      setCoreBootstrapUiState('failed', _coreBootstrapError + ' — chạm để thử lại.');
+      setPrimarySyncState(false, true);
+      return false;
+    } finally {
+      _coreBootstrapPromise = null;
+    }
+  })();
+  return _coreBootstrapPromise;
 }
 
 function startCoreBootstrap(r) {
@@ -2539,7 +2621,7 @@ function startCoreBootstrap(r) {
 
 function retryCoreBootstrap() {
   if (!CU) return;
-  startCoreBootstrap({}).catch(() => {});
+  startInitialFullBundle({}).catch(() => {});
 }
 
 async function doLogin(){
@@ -2581,9 +2663,10 @@ async function doLogin(){
     showAuthenticatedShellImmediately();
     e.textContent = '';
 
-    // Chỉ tải CORE ngay sau đăng nhập. Dữ liệu nghiệp vụ được tải tuần tự sau khi core xong.
-    // Không await: giao diện vẫn xuất hiện ngay sau khi xác thực.
-    startCoreBootstrap(r).catch(() => {});
+    // Sau login chỉ gọi đúng 1 API getRefreshBundle. Bundle này mang toàn bộ dữ liệu
+    // khởi tạo nên không còn CORE -> TRANSFERS -> REQUESTS -> LEAVES nối tiếp.
+    // Không await: giao diện khung vẫn xuất hiện ngay sau khi xác thực.
+    startInitialFullBundle(r).catch(() => {});
   } catch(ex) {
     endLoginPerfStep('login', _diagLoginT0, (ex && ex.message) ? ex.message : 'Lỗi kết nối mạng');
     e.style.color='#dc2626';
@@ -2603,6 +2686,7 @@ function doLogout() {
   _coreBootstrapReady = false;
   _coreBootstrapPromise = null;
   _coreBootstrapError = '';
+  _initialFullBundleReady = false;
   resetEarlyBackgroundFetches();
   const _coreBar = document.getElementById('core-sync-banner');
   if (_coreBar) _coreBar.style.display = 'none';
@@ -2844,7 +2928,7 @@ async function doArchive() {
 }
 
 function switchTab(t){
-  const waitCore = _coreBootstrapReady ? Promise.resolve(true) : (_coreBootstrapPromise || startCoreBootstrap({}));
+  const waitCore = _coreBootstrapReady ? Promise.resolve(true) : (_coreBootstrapPromise || startInitialFullBundle({}));
   waitCore.then(ok => {
     if (!ok) return false;
     return ensureDataForTab(t).then(() => { switchTabRender(t); return true; });
