@@ -1419,40 +1419,43 @@ async function prefetchPrimaryTabData() {
   }
   if (_tabPrefetchPromise) return _tabPrefetchPromise;
 
-  const needRequests = !_dataLoaded.requests;
-  const needTransfers = !_dataLoaded.transfers;
   const sessionName = CU.name;
   const sessionToken = CU.token;
-  const sessionKey = `${sessionName}|${sessionToken}`;
 
   setPrimarySyncState(false);
   _tabPrefetchPromise = (async () => {
     try {
-      let bundle = null;
-      // Nếu bundle đã được tải sớm trong lúc core bootstrap chạy thì dùng luôn, không gọi GAS lần nữa.
-      if (_earlyFetchSessionKey === sessionKey && _earlyPrimaryBundlePromise) {
-        bundle = await _earlyPrimaryBundlePromise;
-        _earlyPrimaryBundlePromise = null;
+      let ok = false;
+
+      // Điều chuyển rất ít dòng và cần để xác định kíp thực tế: tải trước.
+      if (!_dataLoaded.transfers) {
+        const transferBundle = await api({ action: 'getTabBundle', transfers: true });
+        if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
+        if (!transferBundle || transferBundle.error || !Array.isArray(transferBundle.transfers)) {
+          console.warn('[PRIMARY TRANSFERS] Không tải được điều chuyển:', transferBundle && transferBundle.error);
+          setPrimarySyncState(false, true);
+          return false;
+        }
+        ok = applyPrefetchedTabBundle(transferBundle) || ok;
+        refreshTransferDerivedFieldsAfterSync();
       }
-      if (!bundle) {
-        bundle = await api({
-          action: 'getTabBundle',
-          requests: needRequests,
-          transfers: needTransfers
-        });
+
+      // Requests là gói nặng nhất: chỉ tải sau khi core + điều chuyển đã xong.
+      if (!_dataLoaded.requests) {
+        const requestBundle = await api({ action: 'getTabBundle', requests: true });
+        if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
+        if (!requestBundle || requestBundle.error || !Array.isArray(requestBundle.requests)) {
+          console.warn('[PRIMARY REQUESTS] Không tải được đơn đổi ca:', requestBundle && requestBundle.error);
+          setPrimarySyncState(false, true);
+          return false;
+        }
+        ok = applyPrefetchedTabBundle(requestBundle) || ok;
       }
-      if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
-      if (!bundle || bundle.error) {
-        console.warn('[TURBO 9.7 PRIMARY] Prefetch không thành công:', bundle && bundle.error);
-        setPrimarySyncState(false, true);
-        return false;
-      }
-      const ok = applyPrefetchedTabBundle(bundle);
-      refreshTransferDerivedFieldsAfterSync();
+
       if (_dataLoaded.requests && _dataLoaded.transfers) setPrimarySyncState(true);
-      return ok;
+      return ok || (_dataLoaded.requests && _dataLoaded.transfers);
     } catch (err) {
-      console.warn('[TURBO 9.7 PRIMARY] Prefetch lỗi:', err);
+      console.warn('[PRIMARY] Prefetch lỗi:', err);
       if (CU && CU.name === sessionName && CU.token === sessionToken) setPrimarySyncState(false, true);
       return false;
     } finally {
@@ -1506,21 +1509,21 @@ async function prefetchSecondaryTabData() {
 }
 
 async function prefetchAllTabData() {
-  const results = await Promise.allSettled([
-    prefetchPrimaryTabData(),
-    prefetchSecondaryTabData()
-  ]);
-  return results.some(r => r.status === 'fulfilled' && r.value === true);
+  const primaryOk = await prefetchPrimaryTabData().catch(() => false);
+  const secondaryOk = await prefetchSecondaryTabData().catch(() => false);
+  return !!(primaryOk || secondaryOk);
 }
 
 function scheduleTabPrefetch() {
   if (_tabPrefetchTimer) clearTimeout(_tabPrefetchTimer);
   _tabPrefetchTimer = setTimeout(() => {
     _tabPrefetchTimer = null;
-    // TURBO 9.7: hai nhóm đã được fetch song song từ ngay sau auth; tại đây chủ yếu
-    // consume/apply bundle đã sẵn, hoặc fallback gọi server nếu fetch sớm lỗi.
-    prefetchPrimaryTabData().catch(() => false);
-    prefetchSecondaryTabData().catch(() => false);
+    // Không chạy song song: Core đã xong -> Transfers -> Requests -> Leaves/Balance.
+    prefetchPrimaryTabData()
+      .catch(() => false)
+      .finally(() => {
+        if (CU && _coreBootstrapReady) prefetchSecondaryTabData().catch(() => false);
+      });
   }, 20);
 }
 
@@ -2447,11 +2450,8 @@ async function doLogin(){
     showAuthenticatedShellImmediately();
     e.textContent = '';
 
-    // TURBO 9.7: có token là khởi động NGAY các request dữ liệu nền song song với core.
-    // Không apply trước khi core xong; chỉ tận dụng thời gian chờ mạng/Apps Script.
-    startEarlyBackgroundFetches();
-
-    // Không await: trả quyền điều khiển cho trình duyệt ngay sau auth.
+    // Chỉ tải CORE ngay sau đăng nhập. Dữ liệu nghiệp vụ được tải tuần tự sau khi core xong.
+    // Không await: giao diện vẫn xuất hiện ngay sau khi xác thực.
     startCoreBootstrap(r).catch(() => {});
   } catch(ex) {
     e.style.color='#dc2626';
