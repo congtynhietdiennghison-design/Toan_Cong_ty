@@ -1380,7 +1380,9 @@ function resetEarlyBackgroundFetches() {
 }
 
 function startEarlyBackgroundFetches() {
-  if (!CU || !CU.name || !CU.token) return;
+  // Chỉ cho phép chạy sau CORE. Hiện luồng đăng nhập không gọi hàm này nữa;
+  // guard này ngăn vô tình tái tạo tình trạng 3 request tranh nhau ngay sau auth.
+  if (!CU || !CU.name || !CU.token || !_coreBootstrapReady) return;
   const sessionKey = `${CU.name}|${CU.token}`;
   if (_earlyFetchSessionKey === sessionKey && (_earlyPrimaryBundlePromise || _earlySecondaryBundlePromise)) return;
 
@@ -1517,10 +1519,13 @@ function scheduleTabPrefetch() {
   if (_tabPrefetchTimer) clearTimeout(_tabPrefetchTimer);
   _tabPrefetchTimer = setTimeout(() => {
     _tabPrefetchTimer = null;
-    // TURBO 9.7: hai nhóm đã được fetch song song từ ngay sau auth; tại đây chủ yếu
-    // consume/apply bundle đã sẵn, hoặc fallback gọi server nếu fetch sớm lỗi.
-    prefetchPrimaryTabData().catch(() => false);
-    prefetchSecondaryTabData().catch(() => false);
+    // Sau khi CORE đã xong mới tải nghiệp vụ. Ưu tiên requests + transfers trước
+    // để Kíp/Ca đổi và nút Gửi yêu cầu sẵn sàng sớm; nghỉ phép/balance tải sau.
+    prefetchPrimaryTabData()
+      .catch(() => false)
+      .finally(() => {
+        if (CU && _coreBootstrapReady) prefetchSecondaryTabData().catch(() => false);
+      });
   }, 20);
 }
 
@@ -1551,29 +1556,56 @@ function isBusyError(msg) {
   return s.includes('Hệ thống đang bận') || s.includes('Hệ thống bận');
 }
 
-function apiOnce(p) {
+function apiOnce(p, timeoutMs) {
+  const ms = Math.max(5000, Number(timeoutMs) || 90000);
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const finishResolve = (res) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(res);
+    };
+    const finishReject = (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(err);
+    };
+
+    let controller = null;
     const timeout = setTimeout(() => {
-      reject(new Error("Yêu cầu quá thời gian (90s). Vui lòng kiểm tra mạng hoặc Apps Script!"));
-    }, 90000);
+      if (controller) {
+        try { controller.abort(); } catch (_) {}
+      }
+      finishReject(new Error(`Yêu cầu quá thời gian (${Math.round(ms / 1000)}s). Apps Script chưa phản hồi.`));
+    }, ms);
 
     if (typeof google !== 'undefined' && google.script && google.script.run) {
       google.script.run
-        .withSuccessHandler(res => { clearTimeout(timeout); resolve(res); })
-        .withFailureHandler(err => { clearTimeout(timeout); reject(err); })
+        .withSuccessHandler(finishResolve)
+        .withFailureHandler(finishReject)
         .apiRun(p);
     } else {
+      controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
       fetch(SCRIPT_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams(p).toString()
+        body: new URLSearchParams(p).toString(),
+        signal: controller ? controller.signal : undefined
       })
         .then(r => {
           if (!r.ok) throw new Error("Mã lỗi HTTP: " + r.status);
           return r.json();
         })
-        .then(res => { clearTimeout(timeout); resolve(res); })
-        .catch(err => { clearTimeout(timeout); reject(err); });
+        .then(finishResolve)
+        .catch(err => {
+          if (err && err.name === 'AbortError') {
+            finishReject(new Error(`Yêu cầu quá thời gian (${Math.round(ms / 1000)}s). Apps Script chưa phản hồi.`));
+          } else {
+            finishReject(err);
+          }
+        });
     }
   });
 }
@@ -1666,7 +1698,9 @@ function refreshTransfersInBackground(renderFn) {
   }).catch(err => console.warn('Background refresh transfers:', err));
 }
 
-async function api(p) {
+async function api(p, options) {
+  const opts = options || {};
+  const timeoutMs = Math.max(5000, Number(opts.timeoutMs) || 90000);
   const writeActions = ['add','updateStatus','addDispatchBatch','addTransfer','addTransferBatch','submitLeave','cancelLeave','approveLeaveWeb','rejectLeaveWeb','resetPin'];
   if (writeActions.includes(p.action) && !p.clientRequestId) p.clientRequestId = makeClientRequestId();
   if (typeof CU !== 'undefined' && CU && CU.token) {
@@ -1677,7 +1711,7 @@ async function api(p) {
   const busyDelays = [2000, 4000];
   for (let attempt = 0; attempt <= busyDelays.length; attempt++) {
     try {
-      const res = await apiOnce(p);
+      const res = await apiOnce(p, timeoutMs);
       if (res && res.error && isBusyError(res.error) && attempt < busyDelays.length) {
         await sleep(busyDelays[attempt]);
         continue;
@@ -2179,15 +2213,29 @@ function showAuthenticatedShellImmediately() {
 }
 
 async function fetchCoreBootstrapForCurrentSession() {
-  // Backend AUTH-ONLY không còn trả bootstrap trong response login.
-  // getCoreBootstrap vẫn là gói lõi an toàn, có checkToken server-side.
+  // Ưu tiên tuyệt đối gói lõi sau đăng nhập. Không cho requests/leaves/transfers
+  // chạy song song ở bước này để tránh tranh execution Apps Script/Google Sheets.
   let boot = null;
-  try { boot = await api({ action: 'getCoreBootstrap' }); } catch (_) { boot = null; }
-  // Tương thích khi deploy lệch phiên bản: fallback bootstrap đầy đủ cũ.
-  if (!boot || boot.error || !Array.isArray(boot.users) || boot.users.length === 0) {
-    try { boot = await api({ action: 'getBootstrap' }); } catch (_) { boot = null; }
+  try {
+    boot = await api({ action: 'getCoreBootstrap' }, { timeoutMs: 30000 });
+  } catch (err) {
+    const msg = (err && err.message) ? err.message : String(err || 'Apps Script không phản hồi.');
+    return { error: 'Không tải được dữ liệu lõi: ' + msg };
   }
-  return boot;
+
+  if (boot && !boot.error && Array.isArray(boot.users) && boot.users.length > 0) return boot;
+
+  // Chỉ fallback khi server ĐÃ phản hồi nhưng gói core không hợp lệ/không được hỗ trợ.
+  // Nếu request core timeout/lỗi mạng thì đã trả lỗi ở trên, không bắn thêm một request nặng.
+  const coreError = (boot && boot.error) ? boot.error : 'Gói dữ liệu lõi không hợp lệ.';
+  try {
+    const fallback = await api({ action: 'getBootstrap' }, { timeoutMs: 45000 });
+    if (fallback && !fallback.error && Array.isArray(fallback.users) && fallback.users.length > 0) return fallback;
+    return { error: (fallback && fallback.error) ? fallback.error : coreError };
+  } catch (err) {
+    const msg = (err && err.message) ? err.message : String(err || coreError);
+    return { error: 'Không tải được dữ liệu khởi tạo: ' + msg };
+  }
 }
 
 function applyCoreBootstrapState(boot) {
@@ -2346,8 +2394,8 @@ async function finalizeAuthenticatedUiAfterCore(r, flags) {
     setPrimarySyncState(_dataLoaded.requests && _dataLoaded.transfers);
     switchTabRender('dang-ky');
 
-    // Tải nền theo thứ tự ưu tiên:
-    // 1) requests + transfers; 2) leaves + balances.
+    // Tải nền tuần tự theo ưu tiên sau khi CORE đã sẵn sàng:
+    // 1) requests + transfers; xong mới 2) leaves + balances.
     // Bảng đi ca toàn Công ty vẫn lazy-load riêng khi người dùng mở tab đó.
     scheduleTabPrefetch();
 
@@ -2447,11 +2495,9 @@ async function doLogin(){
     showAuthenticatedShellImmediately();
     e.textContent = '';
 
-    // TURBO 9.7: có token là khởi động NGAY các request dữ liệu nền song song với core.
-    // Không apply trước khi core xong; chỉ tận dụng thời gian chờ mạng/Apps Script.
-    startEarlyBackgroundFetches();
-
-    // Không await: trả quyền điều khiển cho trình duyệt ngay sau auth.
+    // Ưu tiên CORE tuyệt đối sau đăng nhập. Không khởi động getTabBundle song song
+    // vì các request nặng có thể tranh execution Apps Script và làm core bị treo/chậm.
+    // Không await: giao diện vẫn hiện ngay, nhưng chỉ mở đủ chức năng khi core hoàn tất.
     startCoreBootstrap(r).catch(() => {});
   } catch(ex) {
     e.style.color='#dc2626';
