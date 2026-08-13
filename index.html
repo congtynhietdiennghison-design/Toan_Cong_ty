@@ -1583,6 +1583,36 @@ function makeClientRequestId() {
   return 'cr_' + Date.now() + '_' + Math.random().toString(36).slice(2) + '_' + Math.random().toString(36).slice(2);
 }
 
+// TURBO WEB SAFE: mutex theo nghiệp vụ, không phụ thuộc một nút DOM cụ thể.
+const _webActionLocks = new Set();
+function beginWebAction(key) {
+  if (!key) return true;
+  if (_webActionLocks.has(key)) return false;
+  _webActionLocks.add(key);
+  return true;
+}
+function endWebAction(key) {
+  if (key) _webActionLocks.delete(key);
+}
+function patchLocalRequestFromResult(id, status, updated) {
+  const rid = (id || '').toString();
+  const r = allReqs.find(x => (x.id || '').toString() === rid);
+  if (!r) return false;
+  if (status) r.status = status;
+  if (updated) {
+    Object.keys(updated).forEach(k => {
+      if (updated[k] !== undefined) r[k] = updated[k];
+    });
+  }
+  applyRequestsFromApi({ requests: allReqs.slice() });
+  return true;
+}
+function refreshRequestsInBackground(renderFn) {
+  loadRequests().then(() => {
+    if (typeof renderFn === 'function') renderFn();
+  }).catch(err => console.warn('Background refresh requests:', err));
+}
+
 async function api(p) {
   const writeActions = ['add','updateStatus','addDispatchBatch','addTransfer','addTransferBatch','submitLeave','cancelLeave','approveLeaveWeb','rejectLeaveWeb','resetPin'];
   if (writeActions.includes(p.action) && !p.clientRequestId) p.clientRequestId = makeClientRequestId();
@@ -2849,38 +2879,93 @@ async function partnerOk(id, btn){
   if(!req) return; 
   const err = validateExistingReq(req); 
   if(err) { showAlert('app', `Hệ thống chặn: ${err}`, 'ae'); return; } 
-  
+
   if(!confirm("Xác nhận ĐỒNG Ý đi thay ca?")) return; 
-  
-  if(btn){ btn.disabled=true; btn.innerHTML='⏳ Đang xử lý...'; btn.style.opacity='0.6'; btn.style.cursor='not-allowed'; } 
+
+  const actionKey = 'partner-confirm:' + id;
+  if (!beginWebAction(actionKey)) {
+    showAlert('app', '⏳ Đơn này đang được xử lý, không cần bấm lại.', 'ai');
+    return;
+  }
+
+  if(btn){ 
+    btn.disabled=true; 
+    btn.innerHTML='⏳ Đang xử lý...'; 
+    btn.style.opacity='0.6'; 
+    btn.style.cursor='not-allowed'; 
+  } 
   showAlert('app', 'Đang xử lý...', 'ai'); 
-  
+
   try{ 
     const res = await api({action:"updateStatus",id,status:"pending_ld",by:CU.name}); 
     if (res.error) { showAlert('app', res.error, 'ae'); return; }
-    await loadRequests(); 
+
+    patchLocalRequestFromResult(id, res.status || 'pending_ld', res.updated || {});
     renderDongY(); 
-    showAlert('app', 'Đã đồng ý!', 'as'); 
+    showAlert('app', res.duplicate ? 'Đơn đã được xác nhận trước đó.' : 'Đã đồng ý!', 'as'); 
+
+    refreshRequestsInBackground(() => {
+      if (document.getElementById('tab-dong-y')?.classList.contains('active')) {
+        renderDongY();
+      }
+    });
   }catch(e){ 
-    if(btn){ btn.disabled=false; btn.innerHTML='Đồng ý'; btn.style.opacity='1'; btn.style.cursor='pointer'; } 
     showAlert('app', 'Lỗi mạng!', 'ae');
-  } 
+  } finally {
+    endWebAction(actionKey);
+    if(btn && document.body.contains(btn)){ 
+      btn.disabled=false; 
+      btn.innerHTML='Đồng ý'; 
+      btn.style.opacity='1'; 
+      btn.style.cursor='pointer'; 
+    } 
+  }
 }
+
 async function partnerNo(id, btn){ 
   const rs=prompt("Lý do từ chối (Bắt buộc):"); 
   if(!rs)return; 
-  if(btn){ btn.disabled=true; btn.innerHTML='⏳ Đang xử lý...'; btn.style.opacity='0.6'; btn.style.cursor='not-allowed'; } 
+
+  const actionKey = 'partner-reject:' + id;
+  if (!beginWebAction(actionKey)) {
+    showAlert('app', '⏳ Đơn này đang được xử lý, không cần bấm lại.', 'ai');
+    return;
+  }
+
+  if(btn){ 
+    btn.disabled=true; 
+    btn.innerHTML='⏳ Đang xử lý...'; 
+    btn.style.opacity='0.6'; 
+    btn.style.cursor='not-allowed'; 
+  } 
   showAlert('app', 'Đang xử lý...', 'ai'); 
+
   try{ 
     const res = await api({action:"updateStatus",id,status:"rejected",by:CU.name,rejectReason:rs}); 
     if (res.error) { showAlert('app', res.error, 'ae'); return; }
-    await loadRequests(); 
+
+    patchLocalRequestFromResult(id, res.status || 'rejected', res.updated || {});
     renderDongY(); 
     showAlert('app', 'Đã từ chối.', 'ae'); 
+
+    refreshRequestsInBackground(() => {
+      if (document.getElementById('tab-dong-y')?.classList.contains('active')) {
+        renderDongY();
+      }
+    });
   }catch(e){ 
-    if(btn){ btn.disabled=false; btn.innerHTML='Từ chối'; btn.style.opacity='1'; btn.style.cursor='pointer'; } 
+    showAlert('app', 'Lỗi mạng!', 'ae');
+  } finally {
+    endWebAction(actionKey);
+    if(btn && document.body.contains(btn)){ 
+      btn.disabled=false; 
+      btn.innerHTML='Từ chối'; 
+      btn.style.opacity='1'; 
+      btn.style.cursor='pointer'; 
+    } 
   } 
 }
+
 
 function renderPheDuyet(){ 
   const el = document.getElementById('list-phe-duyet'); 
@@ -2953,20 +3038,59 @@ async function doApproveNoImage() {
   const err = document.getElementById('approve-err');
   if(!pin) { err.textContent = '⚠️ Vui lòng nhập mã PIN!'; return; }
 
-  const id = currentApproveId; const btn = currentApproveBtn;
-  
-  // 👉 ĐÃ SỬA: Chỉ ẩn bảng đi, KHÔNG DÙNG hàm closeApproveModal() để tránh xóa mất biến
-  document.getElementById('approve-modal').style.display = 'none'; 
+  const id = currentApproveId;
+  const btn = currentApproveBtn;
+  const actionKey = 'approve-request:' + (id || '');
 
-  btn.disabled = true; btn.innerHTML = '⏳ Đang duyệt...';
+  if (!beginWebAction(actionKey)) {
+    showAlert('app', '⏳ Đơn này đang được xử lý, không cần bấm lại.', 'ai');
+    return;
+  }
+
+  document.getElementById('approve-modal').style.display = 'none';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Đang duyệt...';
+  }
+
   try {
-    const res = await api({action:"updateStatus", id, status:"approved", by:CU.name, verifyPin: pin});
-    if(res.error) {
-      btn.disabled = false; btn.innerHTML = 'Duyệt'; showAlert('app', res.error, 'ae');
-    } else {
-      await loadRequests(); renderPheDuyet(); showAlert('app', 'Đã phê duyệt thành công!', 'as'); 
+    const res = await api({
+      action: "updateStatus",
+      id,
+      status: "approved",
+      by: CU.name,
+      verifyPin: pin
+    });
+
+    if (res.error) {
+      showAlert('app', res.error, 'ae');
+      return;
     }
-  } catch(e) { btn.disabled = false; btn.innerHTML = 'Duyệt'; showAlert('app', 'Lỗi mạng!', 'ae'); }
+
+    patchLocalRequestFromResult(id, res.status || 'approved', res.updated || {});
+    renderPheDuyet();
+
+    showAlert(
+      'app',
+      res.duplicate ? 'Đơn này đã được phê duyệt trước đó.' : 'Đã phê duyệt thành công!',
+      'as'
+    );
+
+    // Đồng bộ chuẩn từ server ở nền; không bắt LĐ chờ thêm 1 round-trip loadRequests().
+    refreshRequestsInBackground(() => {
+      if (document.getElementById('tab-phe-duyet')?.classList.contains('active')) {
+        renderPheDuyet();
+      }
+    });
+  } catch(e) {
+    showAlert('app', 'Lỗi mạng!', 'ae');
+  } finally {
+    endWebAction(actionKey);
+    if (btn && document.body.contains(btn)) {
+      btn.disabled = false;
+      btn.innerHTML = 'Duyệt';
+    }
+  }
 }
 
 // Nút Đăng ảnh
@@ -2997,6 +3121,15 @@ document.getElementById('camera-upload').addEventListener('change', function(e) 
     }
 
     const btn = currentApproveBtn;
+    const _imgApproveId = currentApproveId;
+    const _imgActionKey = 'approve-request:' + (_imgApproveId || '');
+
+    if (!beginWebAction(_imgActionKey)) {
+        showAlert('app', '⏳ Đơn này đang được xử lý, không cần bấm lại.', 'ai');
+        document.getElementById('camera-upload').value = '';
+        return;
+    }
+
     if(btn){ 
         btn.disabled = true; 
         btn.innerHTML = '⏳ Đang nén & gửi...'; 
@@ -3045,14 +3178,25 @@ document.getElementById('camera-upload').addEventListener('change', function(e) 
                 
                 if (res.error) throw new Error(res.error);
 
-                await loadRequests(); 
+                patchLocalRequestFromResult(
+                    currentApproveId,
+                    res.status || 'approved',
+                    res.updated || { minhChung: imgRes.url }
+                );
                 renderPheDuyet(); 
-                showAlert('app', 'Đã phê duyệt kèm ảnh minh chứng!', 'as'); 
+                showAlert('app', 'Đã phê duyệt kèm ảnh minh chứng!', 'as');
+
+                refreshRequestsInBackground(() => {
+                    if (document.getElementById('tab-phe-duyet')?.classList.contains('active')) {
+                        renderPheDuyet();
+                    }
+                });
             } catch(err) { 
                 showAlert('app', 'Lỗi: ' + err.message, 'ae');
             } finally {
+                endWebAction(_imgActionKey);
                 // QUAN TRỌNG: Dù thành công hay thất bại cũng phải dọn dẹp để làm lần sau
-                if(btn) {
+                if(btn && document.body.contains(btn)) {
                     btn.disabled = false; 
                     btn.innerHTML = 'Duyệt'; 
                     btn.style.opacity = '1';
@@ -3069,18 +3213,55 @@ document.getElementById('camera-upload').addEventListener('change', function(e) 
 async function ldNo(id, btn){ 
   const rs=prompt("Lý do từ chối (Bắt buộc):"); 
   if(!rs)return; 
-  if(btn){ btn.disabled=true; btn.innerHTML='⏳ Đang xử lý...'; btn.style.opacity='0.6'; btn.style.cursor='not-allowed'; } 
+
+  const actionKey = 'leader-reject:' + id;
+  if (!beginWebAction(actionKey)) {
+    showAlert('app', '⏳ Đơn này đang được xử lý, không cần bấm lại.', 'ai');
+    return;
+  }
+
+  if(btn){ 
+    btn.disabled=true; 
+    btn.innerHTML='⏳ Đang xử lý...'; 
+    btn.style.opacity='0.6'; 
+    btn.style.cursor='not-allowed'; 
+  } 
   showAlert('app', 'Đang xử lý...', 'ai'); 
+
   try{ 
-    const res = await api({action:"updateStatus", id: id, status:"rejected", by:CU.name, rejectReason: rs}); 
+    const res = await api({
+      action:"updateStatus", 
+      id: id, 
+      status:"rejected", 
+      by:CU.name, 
+      rejectReason: rs
+    }); 
+
     if (res.error) { showAlert('app', res.error, 'ae'); return; }
-    await loadRequests(); 
+
+    patchLocalRequestFromResult(id, res.status || 'rejected', res.updated || {});
     renderPheDuyet(); 
     showAlert('app', 'Đã từ chối.', 'ae'); 
+
+    refreshRequestsInBackground(() => {
+      if (document.getElementById('tab-phe-duyet')?.classList.contains('active')) {
+        renderPheDuyet();
+      }
+    });
+
   }catch(e){ 
-    if(btn){ btn.disabled=false; btn.innerHTML='Từ chối'; btn.style.opacity='1'; btn.style.cursor='pointer'; } 
+    showAlert('app', 'Lỗi mạng!', 'ae');
+  } finally {
+    endWebAction(actionKey);
+    if(btn && document.body.contains(btn)){ 
+      btn.disabled=false; 
+      btn.innerHTML='Từ chối'; 
+      btn.style.opacity='1'; 
+      btn.style.cursor='pointer'; 
+    } 
   } 
 }
+
 function getCurrentKip(userName, baseKip) {
   // TURBO: transfersByName đã được sắp giảm dần một lần khi tải dữ liệu.
   // Không filter + sort TOÀN BỘ allTransfers cho mỗi lần tra kíp nữa.
@@ -3612,17 +3793,76 @@ if (document.getElementById('f-no-return').checked) {
   if (warningMsg !== "") confirmText = "⚠️ CẢNH BÁO SẮP QUÁ ĐỊNH MỨC:\n" + warningMsg + "\nBạn có chắc chắn VẪN MUỐN TIẾP TỤC gửi đơn không?";
 
   if(!confirm(confirmText)) return;
-  
-  const btn = document.getElementById('btn-submit'); btn.disabled = true; btn.textContent = 'Đang gửi...';
-  try{ 
-    const res = await api({ action: "add", data: JSON.stringify({name, kip, caDoi, ngayDoi, caTra, ngayTra, partner, partnerKip, partnerRole, reason}) }); 
-    if (res.error) { showApiError('submit-msg', res, 'Không gửi được đơn. Vui lòng thử lại.'); return; }
-    await loadRequests(); showLocalAlert('submit-msg','Đã gửi đơn thành công!','as'); 
-    ['f-ca-doi','f-ca-tra','f-partner-kip','f-partner-role','f-ngay-doi','f-ngay-tra','f-reason','f-partner'].forEach(id=>document.getElementById(id).value='');
+
+  const actionKey = 'submit-swap:' + name;
+  if (!beginWebAction(actionKey)) {
+    showLocalAlert('submit-msg','⏳ Đơn đang được gửi, không cần bấm lại.','ai');
+    return;
+  }
+
+  const btn = document.getElementById('btn-submit');
+  btn.disabled = true;
+  btn.textContent = '⏳ Đang gửi...';
+
+  try {
+    const payload = {
+      name, kip, caDoi, ngayDoi, caTra, ngayTra,
+      partner, partnerKip, partnerRole, reason
+    };
+
+    const res = await api({
+      action: "add",
+      data: JSON.stringify(payload)
+    });
+
+    if (res.error) {
+      showApiError('submit-msg', res, 'Không gửi được đơn. Vui lòng thử lại.');
+      return;
+    }
+
+    // Cập nhật RAM ngay từ response an toàn của server, không chờ loadRequests().
+    if (res.request) {
+      const rid = (res.request.id || res.id || '').toString();
+      const next = allReqs.filter(x => (x.id || '').toString() !== rid);
+      next.unshift(res.request);
+      applyRequestsFromApi({ requests: next });
+    }
+
+    showLocalAlert(
+      'submit-msg',
+      res.duplicate
+        ? '✅ Đơn này đã được gửi trước đó, hệ thống không tạo thêm đơn trùng.'
+        : 'Đã gửi đơn thành công!',
+      'as'
+    );
+
+    [
+      'f-ca-doi','f-ca-tra','f-partner-kip','f-partner-role',
+      'f-ngay-doi','f-ngay-tra','f-reason','f-partner'
+    ].forEach(id => document.getElementById(id).value = '');
+
     document.getElementById('f-partner-role').disabled = false;
-    document.getElementById('f-no-return').checked = false; toggleNoReturn();
-    document.getElementById('ss-partner-lbl').textContent='-- Chọn --'; document.querySelector('#ss-partner .ss-btn').classList.add('ph'); switchTab('lich-su'); 
-  } catch(e){ showLocalAlert('submit-msg','Lỗi kết nối. Vui lòng thử lại.','ae'); } btn.disabled = false; btn.textContent = 'Gửi yêu cầu';
+    document.getElementById('f-no-return').checked = false;
+    toggleNoReturn();
+
+    document.getElementById('ss-partner-lbl').textContent='-- Chọn --';
+    document.querySelector('#ss-partner .ss-btn').classList.add('ph');
+    switchTab('lich-su');
+
+    // Đồng bộ chuẩn từ server ở nền.
+    refreshRequestsInBackground(() => {
+      if (document.getElementById('tab-lich-su')?.classList.contains('active')) {
+        renderHistory();
+      }
+    });
+
+  } catch(e) {
+    showLocalAlert('submit-msg','Lỗi kết nối. Vui lòng thử lại.','ae');
+  } finally {
+    endWebAction(actionKey);
+    btn.disabled = false;
+    btn.textContent = 'Gửi yêu cầu';
+  }
 }
 
 
