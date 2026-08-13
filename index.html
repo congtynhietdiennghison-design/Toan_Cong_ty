@@ -345,15 +345,15 @@ textarea{resize:none;height:80px}
         <div id="diag-loading" style="display:none;padding:12px;color:#64748b;">⏳ Đang tải log chẩn đoán...</div>
 
         <div class="table-wrapper" style="max-height:430px;">
-          <table class="dt" style="min-width:1400px;">
+          <table class="dt" style="min-width:1750px;">
             <thead style="position:sticky;top:0;z-index:2;background:#f8fafc;">
               <tr>
                 <th>Thời gian</th><th>Người dùng</th><th>Bộ phận</th><th>Thao tác</th><th>Kết quả</th>
                 <th>Tổng ms</th><th>Auth</th><th>Chờ lock</th><th>Trong lock</th><th>Thông báo</th>
-                <th>Bước chậm nhất</th><th>Request ID</th><th>Lỗi</th>
+                <th>Bước chậm nhất</th><th>Chi tiết hàm con</th><th>Request ID</th><th>Lỗi</th>
               </tr>
             </thead>
-            <tbody id="diag-log-body"><tr><td colspan="13" class="empty">Chưa tải log</td></tr></tbody>
+            <tbody id="diag-log-body"><tr><td colspan="14" class="empty">Chưa tải log</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -1265,6 +1265,7 @@ function resetDataLoadedFlags() {
   _dataLoaded.transfers = false;
   _dataLoaded.balances = false;
   _tabRenderStamp = {};
+  clearSharedReadCache();
 }
 
 async function ensureDataForTab(tab) {
@@ -1296,7 +1297,7 @@ async function ensureDataForTab(tab) {
   // Backend mới gom được cả transfers vào getTabBundle, nên chỉ cần 1 round-trip
   // cho đúng phần còn thiếu của tab. Backend cũ vẫn fallback refreshData().
   try {
-    const bundle = await api({
+    const bundle = await apiSharedRead({
       action: 'getTabBundle',
       requests: !!opts.requests,
       leaves: !!opts.leaves,
@@ -1647,7 +1648,7 @@ function startEarlyBackgroundFetches() {
 
   _earlyFetchSessionKey = sessionKey;
   // Ưu tiên requests + transfers chạy ngay song song với core bootstrap.
-  _earlyPrimaryBundlePromise = api({
+  _earlyPrimaryBundlePromise = apiSharedRead({
     action: 'getTabBundle',
     requests: true,
     transfers: true
@@ -1660,7 +1661,7 @@ function startEarlyBackgroundFetches() {
   // nhưng vẫn chạy SONG SONG trong lúc core bootstrap đang tải.
   _earlySecondaryBundlePromise = new Promise(resolve => setTimeout(resolve, 120)).then(() => {
     if (!CU || `${CU.name}|${CU.token}` !== sessionKey) return null;
-    return api({
+    return apiSharedRead({
       action: 'getTabBundle',
       leaves: true,
       balances: !!(CU.role === 'ld' || CU.admin),
@@ -1691,7 +1692,7 @@ async function prefetchPrimaryTabData() {
       // Điều chuyển rất ít dòng và cần để xác định kíp thực tế: tải trước.
       if (!_dataLoaded.transfers) {
         const _diagTransferT0 = beginLoginPerfStep('transfers');
-        const transferBundle = await api({ action: 'getTabBundle', transfers: true });
+        const transferBundle = await apiSharedRead({ action: 'getTabBundle', transfers: true });
         if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
         if (!transferBundle || transferBundle.error || !Array.isArray(transferBundle.transfers)) {
           const _diagTransferErr = (transferBundle && transferBundle.error) || 'Dữ liệu điều chuyển không hợp lệ';
@@ -1712,7 +1713,7 @@ async function prefetchPrimaryTabData() {
       // Requests là gói nặng nhất: chỉ tải sau khi core + điều chuyển đã xong.
       if (!_dataLoaded.requests) {
         const _diagRequestT0 = beginLoginPerfStep('requests');
-        const requestBundle = await api({ action: 'getTabBundle', requests: true });
+        const requestBundle = await apiSharedRead({ action: 'getTabBundle', requests: true });
         if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
         if (!requestBundle || requestBundle.error || !Array.isArray(requestBundle.requests)) {
           const _diagRequestErr = (requestBundle && requestBundle.error) || 'Dữ liệu đơn đổi ca không hợp lệ';
@@ -1765,7 +1766,7 @@ async function prefetchSecondaryTabData() {
       let _diagLeavesT0 = null;
       if (!bundle) {
         _diagLeavesT0 = beginLoginPerfStep('leaves');
-        bundle = await api({
+        bundle = await apiSharedRead({
           action: 'getTabBundle',
           leaves: needLeaves,
           balances: needBalances,
@@ -1955,6 +1956,44 @@ function refreshTransfersInBackground(renderFn) {
   }).catch(err => console.warn('Background refresh transfers:', err));
 }
 
+const SHARED_READ_CACHE_TTL_MS = 3000;
+const _sharedReadInflight = new Map();
+const _sharedReadCache = new Map();
+let _loadRequestsPromise = null;
+let _loadLeavesPromise = null;
+let _loadTransfersPromise = null;
+
+function _sharedReadKey(p) {
+  const session = (typeof CU !== 'undefined' && CU) ? `${CU.name || ''}|${CU.token || ''}` : '';
+  const clean = {};
+  Object.keys(p || {}).sort().forEach(k => {
+    if (k === 'clientRequestId' || k === 'reqName' || k === 'reqToken') return;
+    clean[k] = p[k];
+  });
+  return session + '|' + JSON.stringify(clean);
+}
+
+function clearSharedReadCache() {
+  _sharedReadCache.clear();
+}
+
+async function apiSharedRead(p, ttlMs = SHARED_READ_CACHE_TTL_MS) {
+  const key = _sharedReadKey(p);
+  const now = Date.now();
+  const cached = _sharedReadCache.get(key);
+  if (cached && ttlMs > 0 && (now - cached.at) <= ttlMs) return cached.value;
+  if (_sharedReadInflight.has(key)) return _sharedReadInflight.get(key);
+
+  const promise = api(Object.assign({}, p)).then(res => {
+    if (res && !res.error && ttlMs > 0) _sharedReadCache.set(key, { at: Date.now(), value: res });
+    return res;
+  }).finally(() => {
+    if (_sharedReadInflight.get(key) === promise) _sharedReadInflight.delete(key);
+  });
+  _sharedReadInflight.set(key, promise);
+  return promise;
+}
+
 async function api(p) {
   const writeActions = ['add','updateStatus','addDispatchBatch','addTransfer','addTransferBatch','submitLeave','cancelLeave','approveLeaveWeb','rejectLeaveWeb','resetPin'];
   // Mọi API đều có Request ID để đối chiếu log; backend chỉ dùng idempotency cho writeActions.
@@ -1972,6 +2011,7 @@ async function api(p) {
         await sleep(busyDelays[attempt]);
         continue;
       }
+      if (writeActions.includes(p.action) && res && !res.error) clearSharedReadCache();
       return res;
     } catch (err) {
       const msg = (err && err.message) ? err.message : String(err);
@@ -2197,13 +2237,18 @@ async function applyRequestsFromApi(d) {
 }
 
 async function loadRequests() {
-  const d = await api({ action: 'getAll' });
-  if (!d || d.error || !Array.isArray(d.requests)) throw new Error((d && d.error) || 'Không tải được dữ liệu đổi ca.');
-  applyRequestsFromApi(d);
-  _startupRequestsReady = false;
-  _startupRequestWindowStart = '';
-  return true;
+  if (_loadRequestsPromise) return _loadRequestsPromise;
+  _loadRequestsPromise = (async () => {
+    const d = await api({ action: 'getAll' });
+    if (!d || d.error || !Array.isArray(d.requests)) throw new Error((d && d.error) || 'Không tải được dữ liệu đổi ca.');
+    applyRequestsFromApi(d);
+    _startupRequestsReady = false;
+    _startupRequestWindowStart = '';
+    return true;
+  })().finally(() => { _loadRequestsPromise = null; });
+  return _loadRequestsPromise;
 }
+
 
 
 async function prefetchRegistrationGuardData(force=false) {
@@ -2216,7 +2261,7 @@ async function prefetchRegistrationGuardData(force=false) {
   _registrationGuardPromise = (async () => {
     const t0 = beginLoginPerfStep('guard');
     try {
-      const bundle = await api({ action: 'getRegistrationGuardBundle' });
+      const bundle = await apiSharedRead({ action: 'getRegistrationGuardBundle' });
       if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
       if (!bundle || bundle.error || !Array.isArray(bundle.requests)) {
         throw new Error((bundle && bundle.error) || 'Không tải được dữ liệu kiểm tra.');
@@ -2297,16 +2342,21 @@ function showApiError(targetId, res, fallback) {
 }
 
 async function loadLeaves() {
-  const res = await api({ action: 'getLeaves' });
-  if (!res || res.error || !Array.isArray(res.leaves)) throw new Error((res && res.error) || 'Không tải được dữ liệu nghỉ cá nhân.');
-  // Chỉ thay dữ liệu RAM SAU KHI server trả gói hợp lệ; lỗi mạng/hết phiên không làm bảng đang xem bị trắng.
-  allLeaves = res.leaves;
-  rebuildLeavesIndexes();
-  bumpDataRevision('leaves');
-  _dataLoaded.leaves = true;
-  refreshMyLeaveBalanceFromLocalLeaves();
-  return true;
+  if (_loadLeavesPromise) return _loadLeavesPromise;
+  _loadLeavesPromise = (async () => {
+    const res = await api({ action: 'getLeaves' });
+    if (!res || res.error || !Array.isArray(res.leaves)) throw new Error((res && res.error) || 'Không tải được dữ liệu nghỉ cá nhân.');
+    // Chỉ thay dữ liệu RAM SAU KHI server trả gói hợp lệ; lỗi mạng/hết phiên không làm bảng đang xem bị trắng.
+    allLeaves = res.leaves;
+    rebuildLeavesIndexes();
+    bumpDataRevision('leaves');
+    _dataLoaded.leaves = true;
+    refreshMyLeaveBalanceFromLocalLeaves();
+    return true;
+  })().finally(() => { _loadLeavesPromise = null; });
+  return _loadLeavesPromise;
 }
+
 
 
 // ===============================================================
@@ -3219,6 +3269,41 @@ function _diagNum(v) {
   return Number.isFinite(n) ? Math.round(n) : 0;
 }
 
+// Chỉ dùng cho nhật ký chẩn đoán: Date từ Google Sheet có thể về trình duyệt
+// dưới dạng ISO UTC (VD 2026-08-14T04:29:31.000Z). Hiển thị lại theo giờ Việt Nam.
+function _diagFmtTime(v) {
+  if (!v) return '';
+  try {
+    const s = String(v).trim();
+
+    // Nếu backend đã trả sẵn giờ Việt Nam dạng dd/MM/yyyy HH:mm[:ss].
+    let m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2})(?::\d{2})?/);
+    if (m) return `${m[4]}:${m[5]} ${m[1]}/${m[2]}/${m[3]}`;
+
+    // ISO có timezone (Z hoặc +07:00/-...). Chuyển đúng về Asia/Ho_Chi_Minh.
+    if (/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:?\d{2})$/i.test(s)) {
+      const d = new Date(s);
+      if (!Number.isNaN(d.getTime())) {
+        const parts = new Intl.DateTimeFormat('en-GB', {
+          timeZone: 'Asia/Ho_Chi_Minh',
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', hour12: false
+        }).formatToParts(d);
+        const x = Object.fromEntries(parts.map(p => [p.type, p.value]));
+        return `${x.hour}:${x.minute} ${x.day}/${x.month}/${x.year}`;
+      }
+    }
+
+    // Chuỗi yyyy-MM-dd HH:mm hoặc ISO không kèm timezone: giữ nguyên giờ ghi trong chuỗi.
+    m = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:T|\s)(\d{2}):(\d{2})/);
+    if (m) return `${m[4]}:${m[5]} ${m[3]}/${m[2]}/${m[1]}`;
+
+    return s;
+  } catch (e) {
+    return String(v || '');
+  }
+}
+
 function _diagFilteredRows() {
   const userQ = (document.getElementById('diag-filter-user')?.value || '').trim().toLowerCase();
   const actionQ = document.getElementById('diag-filter-action')?.value || '';
@@ -3270,13 +3355,13 @@ function renderSystemDiag() {
   }
 
   if (!rows.length) {
-    body.innerHTML = '<tr><td colspan="13" class="empty">Không có log phù hợp bộ lọc.</td></tr>';
+    body.innerHTML = '<tr><td colspan="14" class="empty">Không có log phù hợp bộ lọc.</td></tr>';
     return;
   }
 
   body.innerHTML = rows.map(r => `
     <tr>
-      <td style="white-space:nowrap">${escapeHTML(r.time || '')}</td>
+      <td style="white-space:nowrap">${escapeHTML(_diagFmtTime(r.time))}</td>
       <td>${escapeHTML(r.user || '')}</td>
       <td>${escapeHTML(r.boPhan || '')}</td>
       <td><b>${escapeHTML(r.action || '')}</b></td>
@@ -3287,6 +3372,7 @@ function renderSystemDiag() {
       <td style="text-align:right">${_diagNum(r.writeMs)}</td>
       <td style="text-align:right">${_diagNum(r.notifyMs)}</td>
       <td style="white-space:nowrap">${escapeHTML(r.slowestStep || '')}</td>
+      <td style="min-width:320px;max-width:520px;white-space:normal;font-size:11px;line-height:1.45">${escapeHTML(r.detail || '')}</td>
       <td style="font-family:monospace;font-size:11px;max-width:210px;word-break:break-all">${escapeHTML(r.clientRequestId || '')}</td>
       <td style="max-width:320px;white-space:normal;color:${r.error ? '#b91c1c' : '#64748b'}">${escapeHTML(r.error || '')}</td>
     </tr>`).join('');
@@ -3309,7 +3395,7 @@ async function loadSystemDiag(force = false, limit = 200) {
     renderSystemDiag();
   } catch (e) {
     const body = document.getElementById('diag-log-body');
-    if (body) body.innerHTML = `<tr><td colspan="13" class="empty" style="color:#b91c1c">❌ ${escapeHTML(e && e.message ? e.message : String(e))}</td></tr>`;
+    if (body) body.innerHTML = `<tr><td colspan="14" class="empty" style="color:#b91c1c">❌ ${escapeHTML(e && e.message ? e.message : String(e))}</td></tr>`;
   } finally {
     if (loading) loading.style.display = 'none';
   }
@@ -3365,7 +3451,7 @@ async function exportSystemDiagCsv() {
     const res = await api({ action: 'getSystemDiag', limit: 1000 });
     if (!res || res.error) throw new Error((res && res.error) || 'Không tải được log để xuất.');
     const rows = Array.isArray(res.logs) ? res.logs : [];
-    const cols = ['time','user','boPhan','action','result','totalMs','authMs','lockWaitMs','writeMs','notifyMs','otherMs','slowestStep','clientRequestId','duplicate','error','version','mode'];
+    const cols = ['time','user','boPhan','action','result','totalMs','authMs','lockWaitMs','writeMs','notifyMs','otherMs','slowestStep','clientRequestId','duplicate','error','version','mode','detail'];
     const csv = '\uFEFF' + [cols.map(_diagCsvCell).join(',')]
       .concat(rows.map(r => cols.map(c => _diagCsvCell(r[c])).join(','))).join('\r\n');
     const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
@@ -7541,18 +7627,22 @@ async function submitTransfer() {
 }
 
 async function loadTransfers() {
-  const res = await api({ action: "getTransfers" });
-  if (!Array.isArray(res)) throw new Error((res && res.error) || 'Không tải được dữ liệu điều chuyển.');
-  allTransfers = res.map(t => {
-    t._date = (t.date || "").toString().substring(0, 10);
-    return t;
-  });
-  // Tối ưu: Index theo tên để tìm kiếm nhanh hơn
-  rebuildTransfersByName();
-  bumpDataRevision('transfers');
-  _dataLoaded.transfers = true;
-  return true;
+  if (_loadTransfersPromise) return _loadTransfersPromise;
+  _loadTransfersPromise = (async () => {
+    const res = await api({ action: "getTransfers" });
+    if (!Array.isArray(res)) throw new Error((res && res.error) || 'Không tải được dữ liệu điều chuyển.');
+    allTransfers = res.map(t => {
+      t._date = (t.date || "").toString().substring(0, 10);
+      return t;
+    });
+    rebuildTransfersByName();
+    bumpDataRevision('transfers');
+    _dataLoaded.transfers = true;
+    return true;
+  })().finally(() => { _loadTransfersPromise = null; });
+  return _loadTransfersPromise;
 }
+
 
 
 function renderTransferLog() {
