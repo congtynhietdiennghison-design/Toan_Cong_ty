@@ -1132,6 +1132,9 @@ let _coreBootstrapError = '';
 let _initialFullBundleReady = false;
 let _startupRequestsReady = false;
 let _startupRequestWindowStart = '';
+let _startupUiCacheApplied = false;
+const STARTUP_UI_CACHE_PREFIX = 'CHAMCONG_STARTUP_UI_V1__';
+const STARTUP_UI_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 // TURBO 9.7: ngay sau khi auth có token, khởi động song song các request dữ liệu nền.
 // Chỉ GIỮ bundle thô; đợi core users/settings xong mới apply để không tính lịch bằng NV_LIST rỗng.
 let _earlyPrimaryBundlePromise = null;
@@ -1363,6 +1366,7 @@ function resetLoginPerfDiag() {
       leaves: null
     },
     kipReadyMs: null,
+    cacheReadyMs: null,
     submitReadyMs: null
   };
   renderLoginPerfDiag();
@@ -1391,6 +1395,7 @@ function markLoginPerfTotal(key) {
   if (!_loginPerfDiag) return;
   const ms = Math.max(0, Math.round(_perfNow() - _loginPerfDiag.startedAt));
   if (key === 'kip') _loginPerfDiag.kipReadyMs = ms;
+  if (key === 'cache') _loginPerfDiag.cacheReadyMs = ms;
   if (key === 'submit') _loginPerfDiag.submitReadyMs = ms;
   renderLoginPerfDiag();
 }
@@ -1421,7 +1426,8 @@ function renderLoginPerfDiag() {
     </div>
     <div>LOGIN: <b>${_perfFmt(d.steps.login)}</b></div>
     <div>STARTUP BUNDLE: <b>${_perfFmt(d.steps.core)}</b></div>
-    <div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.18)">Kíp sẵn sàng: <b>${d.kipReadyMs == null ? '…' : d.kipReadyMs + ' ms'}</b></div>
+    <div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.18)">Kíp hiển thị: <b>${d.kipReadyMs == null ? '…' : d.kipReadyMs + ' ms'}</b></div>
+    <div>Giao diện cache sẵn sàng: <b>${d.cacheReadyMs == null ? 'không có cache' : d.cacheReadyMs + ' ms'}</b></div>
     <div>Gửi yêu cầu sẵn sàng: <b>${d.submitReadyMs == null ? '…' : d.submitReadyMs + ' ms'}</b></div>
     <div style="opacity:.7;margin-top:5px">Tổng từ lúc bấm đăng nhập: ${total} ms</div>`;
   box.style.display = '';
@@ -1431,6 +1437,178 @@ function hideLoginPerfDiag() {
   const box = document.getElementById('login-perf-diag');
   if (box) box.style.display = 'none';
   _loginPerfDiag = null;
+}
+
+// ============================================================
+// FAST SHELL CACHE — chỉ lưu dữ liệu giao diện đã được server lọc cho tài khoản.
+// Không lưu PIN, token, đơn đổi ca hay đơn nghỉ. Bundle mới luôn chạy nền và
+// nút Gửi yêu cầu vẫn khóa cho tới khi dữ liệu kiểm tra nghiệp vụ mới về.
+// ============================================================
+function _startupUiCacheKey(name) {
+  return STARTUP_UI_CACHE_PREFIX + encodeURIComponent((name || '').toString().trim());
+}
+
+function _sanitizeStartupCacheUsers(bundle) {
+  const qm = (bundle && bundle.quyenMap) || {};
+  return ((bundle && bundle.users) || []).map(u => {
+    const q = qm[u.name] || {};
+    const isMe = !!(CU && (u.name || '').toString().trim() === (CU.name || '').toString().trim());
+    return {
+      name: u.name || '',
+      role: u.role || '',
+      kip: u.kip || '',
+      chucDanh: u.chucDanh || '',
+      boPhan: u.boPhan || '',
+      phamViQuyen: u.phamViQuyen || '',
+      chucDanhDuPhong: q.chucDanhDuPhong || u.chucDanhDuPhong || '',
+      // Chỉ giữ quyền của chính tài khoản để dựng đúng các nút ngay sau login.
+      quyenDuyet: isMe ? (q.quyenDuyet || u.quyenDuyet || CU.quyenDuyet || '') : '',
+      quyenDuyetNghi: isMe ? (q.quyenDuyetNghi || u.quyenDuyetNghi || CU.quyenDuyetNghi || '') : '',
+      quyenDieuDong: isMe ? (q.quyenDieuDong || u.quyenDieuDong || CU.quyenDieuDong || '') : ''
+    };
+  });
+}
+
+function saveStartupUiCache(bundle) {
+  if (!CU || !CU.name || !bundle || bundle.error || !Array.isArray(bundle.users) || !bundle.users.length) return;
+  try {
+    const cache = {
+      savedAt: Date.now(),
+      userName: CU.name,
+      boPhan: (CU.boPhan || '').toString(),
+      users: _sanitizeStartupCacheUsers(bundle),
+      settings: bundle.settings || {},
+      mauLich: bundle.mauLich || {},
+      transfers: Array.isArray(bundle.transfers) ? bundle.transfers : []
+    };
+    localStorage.setItem(_startupUiCacheKey(CU.name), JSON.stringify(cache));
+  } catch (e) {
+    console.warn('[FAST SHELL CACHE] Không lưu được cache:', e);
+  }
+}
+
+function readStartupUiCache() {
+  if (!CU || !CU.name) return null;
+  try {
+    const raw = localStorage.getItem(_startupUiCacheKey(CU.name));
+    if (!raw) return null;
+    const cache = JSON.parse(raw);
+    if (!cache || cache.userName !== CU.name || !Array.isArray(cache.users) || !cache.users.length) return null;
+    if (!cache.savedAt || (Date.now() - Number(cache.savedAt)) > STARTUP_UI_CACHE_TTL_MS) {
+      localStorage.removeItem(_startupUiCacheKey(CU.name));
+      return null;
+    }
+    // Nếu tài khoản vừa được chuyển bộ phận, bỏ cache cũ để không ló dữ liệu phạm vi trước.
+    const curBP = (CU.boPhan || '').toString().trim();
+    const cacheBP = (cache.boPhan || '').toString().trim();
+    if (curBP && cacheBP && curBP !== cacheBP) {
+      localStorage.removeItem(_startupUiCacheKey(CU.name));
+      return null;
+    }
+    return cache;
+  } catch (e) {
+    return null;
+  }
+}
+
+function captureRegistrationDraft() {
+  const get = id => document.getElementById(id);
+  return {
+    caDoi: get('f-ca-doi')?.value || '',
+    ngayDoi: get('f-ngay-doi')?.value || '',
+    caTra: get('f-ca-tra')?.value || '',
+    ngayTra: get('f-ngay-tra')?.value || '',
+    noReturn: !!get('f-no-return')?.checked,
+    partner: get('f-partner')?.value || '',
+    partnerLabel: get('ss-partner-lbl')?.textContent || '',
+    partnerKip: get('f-partner-kip')?.value || '',
+    partnerRole: get('f-partner-role')?.value || '',
+    reason: get('f-reason')?.value || ''
+  };
+}
+
+function restoreRegistrationDraft(d) {
+  if (!d) return;
+  const setVal = (id, value) => {
+    const el = document.getElementById(id);
+    if (!el || value == null || value === '') return;
+    // Select chỉ khôi phục khi option mới vẫn còn hợp lệ.
+    if (el.tagName === 'SELECT') {
+      const ok = Array.from(el.options || []).some(o => o.value === value);
+      if (!ok) return;
+    }
+    el.value = value;
+  };
+  setVal('f-ca-doi', d.caDoi);
+  setVal('f-ngay-doi', d.ngayDoi);
+  setVal('f-ca-tra', d.caTra);
+  setVal('f-ngay-tra', d.ngayTra);
+  setVal('f-partner-kip', d.partnerKip);
+  setVal('f-partner-role', d.partnerRole);
+  const reasonEl = document.getElementById('f-reason');
+  if (reasonEl && d.reason) reasonEl.value = d.reason;
+
+  const partnerEl = document.getElementById('f-partner');
+  if (partnerEl && d.partner && getUserInfo(d.partner)) {
+    partnerEl.value = d.partner;
+    const lbl = document.getElementById('ss-partner-lbl');
+    if (lbl) lbl.textContent = d.partnerLabel || d.partner;
+    const btn = document.querySelector('#ss-partner .ss-btn');
+    if (btn) btn.classList.remove('ph');
+  }
+
+  const chk = document.getElementById('f-no-return');
+  const caTra = document.getElementById('f-ca-tra');
+  const ngayTra = document.getElementById('f-ngay-tra');
+  if (chk) chk.checked = !!d.noReturn;
+  if (caTra && ngayTra) {
+    caTra.disabled = !!d.noReturn;
+    ngayTra.disabled = !!d.noReturn;
+    caTra.style.opacity = d.noReturn ? '0.5' : '1';
+    ngayTra.style.opacity = d.noReturn ? '0.5' : '1';
+    if (d.noReturn) { caTra.value = ''; ngayTra.value = ''; }
+  }
+}
+
+async function applyStartupUiCacheIfAvailable() {
+  const cache = readStartupUiCache();
+  if (!cache || !CU) return false;
+  const sessionName = CU.name;
+  const sessionToken = CU.token;
+  try {
+    const boot = {
+      users: cache.users || [],
+      settings: cache.settings || {},
+      mauLich: cache.mauLich || {},
+      transfers: cache.transfers || [],
+      transfersLoaded: true
+    };
+    const flags = applyCoreBootstrapState(boot);
+    if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
+
+    // Chặn prefetch trong lần dựng giao diện từ cache. Bundle thật vẫn được gọi ngay sau đó.
+    const oldInitial = _initialFullBundleReady;
+    _initialFullBundleReady = true;
+    await finalizeAuthenticatedUiAfterCore({}, flags);
+    _initialFullBundleReady = oldInitial;
+
+    _startupUiCacheApplied = true;
+    _coreBootstrapReady = false;
+    _dataLoaded.requests = false;
+    _dataLoaded.leaves = false;
+    _dataLoaded.transfers = false; // cache chỉ để hiển thị; dữ liệu mới phải về trước khi gửi
+    _dataLoaded.balances = false;
+    setPrimarySyncState(false);
+    refreshTransferDerivedFieldsAfterSync();
+    setCoreBootstrapUiState('loading', '✅ Đã vào phần mềm — đang cập nhật dữ liệu mới...');
+    markLoginPerfTotal('cache');
+    if (_loginPerfDiag && _loginPerfDiag.kipReadyMs == null) markLoginPerfTotal('kip');
+    return true;
+  } catch (e) {
+    console.warn('[FAST SHELL CACHE] Áp dụng cache lỗi:', e);
+    _startupUiCacheApplied = false;
+    return false;
+  }
 }
 
 function setPrimarySyncState(ready, failed=false) {
@@ -2285,6 +2463,15 @@ function showAuthenticatedShellImmediately() {
     const el = document.getElementById(id);
     if (el) el.innerHTML = '<option value="">⏳ Đang đồng bộ...</option>';
   });
+  // Kíp gốc đã có ngay trong response login. Hiển thị tức thời để người dùng không
+  // phải nhìn "Đang đồng bộ"; bundle/cache sẽ cập nhật lại nếu có điều chuyển kíp.
+  const loginKipEl = document.getElementById('f-kip');
+  if (loginKipEl && CU.kip) {
+    loginKipEl.innerHTML = `<option value="${escapeAttr(CU.kip)}">${escapeHTML(CU.kip)}</option>`;
+    loginKipEl.value = CU.kip;
+    loginKipEl.title = 'Kíp đăng nhập; hệ thống đang kiểm tra điều chuyển mới nhất';
+    if (_loginPerfDiag && _loginPerfDiag.kipReadyMs == null) markLoginPerfTotal('kip');
+  }
   const partnerHidden = document.getElementById('f-partner');
   if (partnerHidden) partnerHidden.value = '';
   const partnerLbl = document.getElementById('ss-partner-lbl');
@@ -2541,8 +2728,12 @@ function startInitialFullBundle(r) {
         throw new Error((bundle && bundle.error) || 'Không nhận được gói dữ liệu khởi tạo.');
       }
 
+      const draft = captureRegistrationDraft();
       const boot = Object.assign({}, bundle, { transfersLoaded: true });
       const flags = applyCoreBootstrapState(boot);
+
+      // Cache chỉ phần giao diện nhẹ cho lần đăng nhập sau; không cache đơn nghiệp vụ.
+      saveStartupUiCache(bundle);
 
       // Chặn prefetch cũ trước khi finalize. Requests đang có là gói tác nghiệp một phần,
       // đủ cho màn Đăng ký; các tab lịch sử/duyệt sẽ lazy-load toàn bộ khi mở.
@@ -2550,6 +2741,9 @@ function startInitialFullBundle(r) {
       _startupRequestsReady = bundle.requestsPartial === true;
       _startupRequestWindowStart = (bundle.requestWindowStart || '').toString().substring(0, 10);
       await finalizeAuthenticatedUiAfterCore(r || {}, flags);
+      // Nếu người dùng đã bắt đầu nhập bằng dữ liệu cache trong lúc bundle chạy,
+      // giữ lại nội dung hợp lệ thay vì reset form khi dữ liệu mới vừa về.
+      if (_startupUiCacheApplied) restoreRegistrationDraft(draft);
 
       _dataLoaded.transfers = true;
       _dataLoaded.requests = false; // false = CHƯA có toàn bộ lịch sử Requests
@@ -2565,14 +2759,16 @@ function startInitialFullBundle(r) {
 
       const note = `${bundle.users.length} nhân sự | ${(bundle.transfers || []).length} ĐC | ${(bundle.requests || []).length} đơn tác nghiệp`;
       endLoginPerfStep('core', t0, '', note);
-      markLoginPerfTotal('kip');
+      if (_loginPerfDiag && _loginPerfDiag.kipReadyMs == null) markLoginPerfTotal('kip');
       markLoginPerfTotal('submit');
+      _startupUiCacheApplied = false;
       return true;
     } catch (err) {
       if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
       _initialFullBundleReady = false;
       _startupRequestsReady = false;
       _startupRequestWindowStart = '';
+      _startupUiCacheApplied = false;
       _coreBootstrapReady = false;
       _coreBootstrapError = (err && err.message) ? err.message : String(err || 'Không đồng bộ được dữ liệu.');
       if (_loginPerfDiag && _loginPerfDiag.steps.core && _loginPerfDiag.steps.core.ms == null) {
@@ -2662,6 +2858,7 @@ async function doLogin(){
     _initialFullBundleReady = false;
     _startupRequestsReady = false;
     _startupRequestWindowStart = '';
+    _startupUiCacheApplied = false;
 
     if (r.forcePinChange) {
       document.getElementById('overlay').style.display='none';
@@ -2677,9 +2874,12 @@ async function doLogin(){
     showAuthenticatedShellImmediately();
     e.textContent = '';
 
-    // Sau login chỉ gọi đúng 1 API getStartupBundle. Bundle này chỉ mang dữ liệu cần cho Đăng ký
-    // khởi tạo nên không còn CORE -> TRANSFERS -> REQUESTS -> LEAVES nối tiếp.
-    // Không await: giao diện khung vẫn xuất hiện ngay sau khi xác thực.
+    // Dựng ngay giao diện từ cache của lần đồng bộ thành công trước (nếu có). Cache không
+    // chứa PIN/token/đơn nghiệp vụ; nút Gửi vẫn khóa cho tới khi bundle mới hoàn tất.
+    await applyStartupUiCacheIfAvailable();
+
+    // Sau login chỉ gọi đúng 1 API getStartupBundle ở nền để xác nhận dữ liệu mới nhất.
+    // Người dùng có thể bắt đầu nhập form bằng cache trong lúc chờ, nhưng chưa thể Gửi.
     startInitialFullBundle(r).catch(() => {});
   } catch(ex) {
     endLoginPerfStep('login', _diagLoginT0, (ex && ex.message) ? ex.message : 'Lỗi kết nối mạng');
@@ -2703,6 +2903,7 @@ function doLogout() {
   _initialFullBundleReady = false;
   _startupRequestsReady = false;
   _startupRequestWindowStart = '';
+  _startupUiCacheApplied = false;
   resetEarlyBackgroundFetches();
   const _coreBar = document.getElementById('core-sync-banner');
   if (_coreBar) _coreBar.style.display = 'none';
@@ -2737,6 +2938,7 @@ async function doRefresh(btn) {
     if (!bundle || bundle.error) {
       throw new Error((bundle && bundle.error) || 'Không nhận được dữ liệu làm mới từ máy chủ.');
     }
+    saveStartupUiCache(bundle);
 
     // 1) Nhân sự + cấu hình công khai
     if (Array.isArray(bundle.users) && bundle.users.length > 0) {
