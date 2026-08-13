@@ -1348,101 +1348,18 @@ function applyPrefetchedTabBundle(bundle) {
 
 
 // ============================================================
-// CHẨN ĐOÁN FRONTEND TẠM THỜI — tự đo thời gian sau đăng nhập
-// Không gửi log ra server, không lưu PIN/token; chỉ hiển thị tại trình duyệt.
+// BẢN PHÁT HÀNH: tắt hoàn toàn chẩn đoán/đếm thời gian frontend.
+// Giữ các hàm no-op để không phải chạm vào luồng nghiệp vụ đã kiểm thử.
 // ============================================================
 let _loginPerfDiag = null;
-
-function _perfNow() {
-  return (window.performance && typeof performance.now === 'function') ? performance.now() : Date.now();
-}
-
-function resetLoginPerfDiag() {
-  _loginPerfDiag = {
-    startedAt: _perfNow(),
-    steps: {
-      login: null,
-      core: null,
-      guard: null,
-      transfers: null,
-      requests: null,
-      leaves: null
-    },
-    kipReadyMs: null,
-    cacheReadyMs: null,
-    submitReadyMs: null,
-    guardReadyMs: null
-  };
-  renderLoginPerfDiag();
-}
-
-function beginLoginPerfStep(key) {
-  if (!_loginPerfDiag) return null;
-  const t = _perfNow();
-  _loginPerfDiag.steps[key] = { startedAt: t, ms: null, error: '', note: '' };
-  renderLoginPerfDiag();
-  return t;
-}
-
-function endLoginPerfStep(key, startedAt, error, note) {
-  if (!_loginPerfDiag) return;
-  const st = _loginPerfDiag.steps[key] || {};
-  const t0 = (typeof startedAt === 'number') ? startedAt : st.startedAt;
-  st.ms = (typeof t0 === 'number') ? Math.max(0, Math.round(_perfNow() - t0)) : null;
-  st.error = error ? String(error) : '';
-  st.note = note ? String(note) : '';
-  _loginPerfDiag.steps[key] = st;
-  renderLoginPerfDiag();
-}
-
-function markLoginPerfTotal(key) {
-  if (!_loginPerfDiag) return;
-  const ms = Math.max(0, Math.round(_perfNow() - _loginPerfDiag.startedAt));
-  if (key === 'kip') _loginPerfDiag.kipReadyMs = ms;
-  if (key === 'cache') _loginPerfDiag.cacheReadyMs = ms;
-  if (key === 'submit') _loginPerfDiag.submitReadyMs = ms;
-  if (key === 'guard') _loginPerfDiag.guardReadyMs = ms;
-  renderLoginPerfDiag();
-}
-
-function _perfFmt(step) {
-  if (!step) return '…';
-  if (step.ms == null) return 'đang chạy…';
-  if (step.error) return `❌ ${step.ms} ms — ${step.error}`;
-  const extra = step.note ? ` — ${step.note}` : '';
-  return `✅ ${step.ms} ms${extra}`;
-}
-
-function renderLoginPerfDiag() {
-  if (!_loginPerfDiag) return;
-  let box = document.getElementById('login-perf-diag');
-  if (!box) {
-    box = document.createElement('div');
-    box.id = 'login-perf-diag';
-    box.style.cssText = 'position:fixed;right:10px;bottom:10px;z-index:10050;width:min(360px,calc(100vw - 20px));max-height:52vh;overflow:auto;background:rgba(15,23,42,.96);color:#fff;border:1px solid rgba(255,255,255,.18);border-radius:10px;padding:10px 12px;box-shadow:0 8px 28px rgba(0,0,0,.28);font:12px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;text-align:left';
-    document.body.appendChild(box);
-  }
-  const d = _loginPerfDiag;
-  const total = Math.max(0, Math.round(_perfNow() - d.startedAt));
-  box.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px">
-      <b style="font-size:13px">⏱ Chẩn đoán đăng nhập</b>
-      <button type="button" onclick="document.getElementById('login-perf-diag').style.display='none'" style="border:0;background:transparent;color:#fff;font-size:18px;line-height:1;cursor:pointer">×</button>
-    </div>
-    <div>LOGIN: <b>${_perfFmt(d.steps.login)}</b></div>
-    <div>STARTUP SHELL: <b>${_perfFmt(d.steps.core)}</b></div>
-    <div>GUARD DATA (nền): <b>${_perfFmt(d.steps.guard)}</b></div>
-    <div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.18)">Kíp hiển thị: <b>${d.kipReadyMs == null ? '…' : d.kipReadyMs + ' ms'}</b></div>
-    <div>Giao diện cache trình duyệt: <b>${d.cacheReadyMs == null ? 'không dùng' : d.cacheReadyMs + ' ms'}</b></div>
-    <div>Form sẵn sàng: <b>${d.submitReadyMs == null ? '…' : d.submitReadyMs + ' ms'}</b></div>
-    <div>Dữ liệu kiểm tra sẵn sàng: <b>${d.guardReadyMs == null ? 'đang tải nền…' : d.guardReadyMs + ' ms'}</b></div>
-    <div style="opacity:.7;margin-top:5px">Tổng từ lúc bấm đăng nhập: ${total} ms</div>`;
-  box.style.display = '';
-}
-
+function resetLoginPerfDiag() { _loginPerfDiag = null; }
+function beginLoginPerfStep() { return null; }
+function endLoginPerfStep() {}
+function markLoginPerfTotal() {}
+function renderLoginPerfDiag() {}
 function hideLoginPerfDiag() {
   const box = document.getElementById('login-perf-diag');
-  if (box) box.style.display = 'none';
+  if (box) box.remove();
   _loginPerfDiag = null;
 }
 
