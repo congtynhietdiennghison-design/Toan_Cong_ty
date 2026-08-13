@@ -1380,9 +1380,7 @@ function resetEarlyBackgroundFetches() {
 }
 
 function startEarlyBackgroundFetches() {
-  // Chỉ cho phép chạy sau CORE. Hiện luồng đăng nhập không gọi hàm này nữa;
-  // guard này ngăn vô tình tái tạo tình trạng 3 request tranh nhau ngay sau auth.
-  if (!CU || !CU.name || !CU.token || !_coreBootstrapReady) return;
+  if (!CU || !CU.name || !CU.token) return;
   const sessionKey = `${CU.name}|${CU.token}`;
   if (_earlyFetchSessionKey === sessionKey && (_earlyPrimaryBundlePromise || _earlySecondaryBundlePromise)) return;
 
@@ -1519,13 +1517,10 @@ function scheduleTabPrefetch() {
   if (_tabPrefetchTimer) clearTimeout(_tabPrefetchTimer);
   _tabPrefetchTimer = setTimeout(() => {
     _tabPrefetchTimer = null;
-    // Sau khi CORE đã xong mới tải nghiệp vụ. Ưu tiên requests + transfers trước
-    // để Kíp/Ca đổi và nút Gửi yêu cầu sẵn sàng sớm; nghỉ phép/balance tải sau.
-    prefetchPrimaryTabData()
-      .catch(() => false)
-      .finally(() => {
-        if (CU && _coreBootstrapReady) prefetchSecondaryTabData().catch(() => false);
-      });
+    // TURBO 9.7: hai nhóm đã được fetch song song từ ngay sau auth; tại đây chủ yếu
+    // consume/apply bundle đã sẵn, hoặc fallback gọi server nếu fetch sớm lỗi.
+    prefetchPrimaryTabData().catch(() => false);
+    prefetchSecondaryTabData().catch(() => false);
   }, 20);
 }
 
@@ -1556,57 +1551,29 @@ function isBusyError(msg) {
   return s.includes('Hệ thống đang bận') || s.includes('Hệ thống bận');
 }
 
-function apiOnce(p, timeoutMs) {
-  const ms = Math.max(5000, Number(timeoutMs) || 90000);
+function apiOnce(p) {
   return new Promise((resolve, reject) => {
-    let settled = false;
-    const finishResolve = (res) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      resolve(res);
-    };
-    const finishReject = (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      reject(err);
-    };
-
-    let controller = null;
     const timeout = setTimeout(() => {
-      if (controller) {
-        try { controller.abort(); } catch (_) {}
-      }
-      finishReject(new Error(`Yêu cầu quá thời gian (${Math.round(ms / 1000)}s). Apps Script chưa phản hồi.`));
-    }, ms);
+      reject(new Error("Yêu cầu quá thời gian (90s). Vui lòng kiểm tra mạng hoặc Apps Script!"));
+    }, 90000);
 
     if (typeof google !== 'undefined' && google.script && google.script.run) {
       google.script.run
-        .withSuccessHandler(finishResolve)
-        .withFailureHandler(finishReject)
+        .withSuccessHandler(res => { clearTimeout(timeout); resolve(res); })
+        .withFailureHandler(err => { clearTimeout(timeout); reject(err); })
         .apiRun(p);
     } else {
-      controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
       fetch(SCRIPT_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams(p).toString(),
-        signal: controller ? controller.signal : undefined
+        body: new URLSearchParams(p).toString()
       })
         .then(r => {
           if (!r.ok) throw new Error("Mã lỗi HTTP: " + r.status);
           return r.json();
         })
-        .then(finishResolve)
-        .catch(err => {
-          if (err && err.name === 'AbortError') {
-            finishReject(new Error(`Yêu cầu quá thời gian (${Math.round(ms / 1000)}s). Apps Script chưa phản hồi.`));
-          } else {
-            const detail = (err && err.message) ? err.message : String(err || 'Lỗi fetch');
-            finishReject(new Error(`Không kết nối được Apps Script khi gọi ${p.action || 'API'}: ${detail}`));
-          }
-        });
+        .then(res => { clearTimeout(timeout); resolve(res); })
+        .catch(err => { clearTimeout(timeout); reject(err); });
     }
   });
 }
@@ -1699,9 +1666,7 @@ function refreshTransfersInBackground(renderFn) {
   }).catch(err => console.warn('Background refresh transfers:', err));
 }
 
-async function api(p, options) {
-  const opts = options || {};
-  const timeoutMs = Math.max(5000, Number(opts.timeoutMs) || 90000);
+async function api(p) {
   const writeActions = ['add','updateStatus','addDispatchBatch','addTransfer','addTransferBatch','submitLeave','cancelLeave','approveLeaveWeb','rejectLeaveWeb','resetPin'];
   if (writeActions.includes(p.action) && !p.clientRequestId) p.clientRequestId = makeClientRequestId();
   if (typeof CU !== 'undefined' && CU && CU.token) {
@@ -1712,7 +1677,7 @@ async function api(p, options) {
   const busyDelays = [2000, 4000];
   for (let attempt = 0; attempt <= busyDelays.length; attempt++) {
     try {
-      const res = await apiOnce(p, timeoutMs);
+      const res = await apiOnce(p);
       if (res && res.error && isBusyError(res.error) && attempt < busyDelays.length) {
         await sleep(busyDelays[attempt]);
         continue;
@@ -2214,38 +2179,15 @@ function showAuthenticatedShellImmediately() {
 }
 
 async function fetchCoreBootstrapForCurrentSession() {
-  // Ưu tiên tuyệt đối gói lõi sau đăng nhập. Không cho requests/leaves/transfers
-  // chạy song song ở bước này để tránh tranh execution Apps Script/Google Sheets.
-  // GAS đôi khi có lỗi fetch/redirect thoáng qua ngay sau login, nên thử CORE
-  // thêm 1 lần trước khi fallback sang bootstrap đầy đủ.
+  // Backend AUTH-ONLY không còn trả bootstrap trong response login.
+  // getCoreBootstrap vẫn là gói lõi an toàn, có checkToken server-side.
   let boot = null;
-  let lastCoreError = '';
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      boot = await api({ action: 'getCoreBootstrap' }, { timeoutMs: 30000 });
-      if (boot && !boot.error && Array.isArray(boot.users) && boot.users.length > 0) return boot;
-      lastCoreError = (boot && boot.error) ? boot.error : 'Gói dữ liệu lõi không hợp lệ.';
-      break; // Server đã phản hồi: không cần lặp lại cùng action.
-    } catch (err) {
-      lastCoreError = (err && err.message) ? err.message : String(err || 'Apps Script không phản hồi.');
-      if (attempt === 0) await sleep(1200);
-    }
+  try { boot = await api({ action: 'getCoreBootstrap' }); } catch (_) { boot = null; }
+  // Tương thích khi deploy lệch phiên bản: fallback bootstrap đầy đủ cũ.
+  if (!boot || boot.error || !Array.isArray(boot.users) || boot.users.length === 0) {
+    try { boot = await api({ action: 'getBootstrap' }); } catch (_) { boot = null; }
   }
-
-  // Fallback tuần tự, KHÔNG chạy song song với CORE. Đây cũng là lớp dự phòng khi
-  // CORE gặp "Failed to fetch"/redirect lỗi hoặc frontend/backend lệch phiên bản.
-  try {
-    const fallback = await api({ action: 'getBootstrap' }, { timeoutMs: 45000 });
-    if (fallback && !fallback.error && Array.isArray(fallback.users) && fallback.users.length > 0) return fallback;
-    return { error: (fallback && fallback.error) ? fallback.error : (lastCoreError || 'Không tải được dữ liệu khởi tạo.') };
-  } catch (err) {
-    const fallbackError = (err && err.message) ? err.message : String(err || 'Apps Script không phản hồi.');
-    const detail = lastCoreError && lastCoreError !== fallbackError
-      ? (lastCoreError + '; dự phòng: ' + fallbackError)
-      : fallbackError;
-    return { error: 'Không tải được dữ liệu lõi: ' + detail };
-  }
+  return boot;
 }
 
 function applyCoreBootstrapState(boot) {
@@ -2404,8 +2346,8 @@ async function finalizeAuthenticatedUiAfterCore(r, flags) {
     setPrimarySyncState(_dataLoaded.requests && _dataLoaded.transfers);
     switchTabRender('dang-ky');
 
-    // Tải nền tuần tự theo ưu tiên sau khi CORE đã sẵn sàng:
-    // 1) requests + transfers; xong mới 2) leaves + balances.
+    // Tải nền theo thứ tự ưu tiên:
+    // 1) requests + transfers; 2) leaves + balances.
     // Bảng đi ca toàn Công ty vẫn lazy-load riêng khi người dùng mở tab đó.
     scheduleTabPrefetch();
 
@@ -2499,32 +2441,18 @@ async function doLogin(){
       return;
     }
 
-    // V13.7.6: backend mới trả luôn CORE trong chính response login để tránh phụ thuộc
-    // request POST thứ hai ngay sau đăng nhập. Nếu backend cũ/chưa deploy thì vẫn fallback
-    // sang startCoreBootstrap() như trước để không làm gián đoạn tương thích.
+    // Điểm khác biệt chính: response xác thực xong là HIỆN GIAO DIỆN NGAY.
+    // users/settings/MauLich/quyền được tải ở request nền riêng, không còn nằm trong chữ “Đang vào…”.
     resetEarlyBackgroundFetches();
     showAuthenticatedShellImmediately();
     e.textContent = '';
 
-    const embeddedCore = r && r.coreBootstrap;
-    if (embeddedCore && !embeddedCore.error && Array.isArray(embeddedCore.users) && embeddedCore.users.length > 0) {
-      try {
-        const flags = applyCoreBootstrapState(embeddedCore);
-        await finalizeAuthenticatedUiAfterCore(r || {}, flags);
-        _coreBootstrapReady = true;
-        _coreBootstrapError = '';
-        setCoreBootstrapUiState('ready');
-      } catch (coreErr) {
-        console.error('[LOGIN EMBEDDED CORE] lỗi áp dụng dữ liệu:', coreErr);
-        _coreBootstrapReady = false;
-        _coreBootstrapError = (coreErr && coreErr.message) ? coreErr.message : String(coreErr || 'Không áp dụng được dữ liệu lõi.');
-        setCoreBootstrapUiState('failed', _coreBootstrapError + ' — chạm để thử lại.');
-        setPrimarySyncState(false, true);
-      }
-    } else {
-      // Backend chưa có embedded CORE hoặc dựng CORE thất bại: dùng đường dự phòng cũ.
-      startCoreBootstrap(r).catch(() => {});
-    }
+    // TURBO 9.7: có token là khởi động NGAY các request dữ liệu nền song song với core.
+    // Không apply trước khi core xong; chỉ tận dụng thời gian chờ mạng/Apps Script.
+    startEarlyBackgroundFetches();
+
+    // Không await: trả quyền điều khiển cho trình duyệt ngay sau auth.
+    startCoreBootstrap(r).catch(() => {});
   } catch(ex) {
     e.style.color='#dc2626';
     e.textContent='Lỗi kết nối mạng';
