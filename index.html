@@ -1133,6 +1133,8 @@ let _initialFullBundleReady = false;
 let _startupRequestsReady = false;
 let _startupRequestWindowStart = '';
 let _startupUiCacheApplied = false;
+let _registrationGuardReady = false;
+let _registrationGuardPromise = null;
 const STARTUP_UI_CACHE_PREFIX = 'CHAMCONG_STARTUP_UI_V1__';
 const STARTUP_UI_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 // TURBO 9.7: ngay sau khi auth có token, khởi động song song các request dữ liệu nền.
@@ -1361,13 +1363,15 @@ function resetLoginPerfDiag() {
     steps: {
       login: null,
       core: null,
+      guard: null,
       transfers: null,
       requests: null,
       leaves: null
     },
     kipReadyMs: null,
     cacheReadyMs: null,
-    submitReadyMs: null
+    submitReadyMs: null,
+    guardReadyMs: null
   };
   renderLoginPerfDiag();
 }
@@ -1397,6 +1401,7 @@ function markLoginPerfTotal(key) {
   if (key === 'kip') _loginPerfDiag.kipReadyMs = ms;
   if (key === 'cache') _loginPerfDiag.cacheReadyMs = ms;
   if (key === 'submit') _loginPerfDiag.submitReadyMs = ms;
+  if (key === 'guard') _loginPerfDiag.guardReadyMs = ms;
   renderLoginPerfDiag();
 }
 
@@ -1425,10 +1430,12 @@ function renderLoginPerfDiag() {
       <button type="button" onclick="document.getElementById('login-perf-diag').style.display='none'" style="border:0;background:transparent;color:#fff;font-size:18px;line-height:1;cursor:pointer">×</button>
     </div>
     <div>LOGIN: <b>${_perfFmt(d.steps.login)}</b></div>
-    <div>STARTUP BUNDLE: <b>${_perfFmt(d.steps.core)}</b></div>
+    <div>STARTUP SHELL: <b>${_perfFmt(d.steps.core)}</b></div>
+    <div>GUARD DATA (nền): <b>${_perfFmt(d.steps.guard)}</b></div>
     <div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(255,255,255,.18)">Kíp hiển thị: <b>${d.kipReadyMs == null ? '…' : d.kipReadyMs + ' ms'}</b></div>
-    <div>Giao diện cache sẵn sàng: <b>${d.cacheReadyMs == null ? 'không có cache' : d.cacheReadyMs + ' ms'}</b></div>
-    <div>Gửi yêu cầu sẵn sàng: <b>${d.submitReadyMs == null ? '…' : d.submitReadyMs + ' ms'}</b></div>
+    <div>Giao diện cache trình duyệt: <b>${d.cacheReadyMs == null ? 'không dùng' : d.cacheReadyMs + ' ms'}</b></div>
+    <div>Form sẵn sàng: <b>${d.submitReadyMs == null ? '…' : d.submitReadyMs + ' ms'}</b></div>
+    <div>Dữ liệu kiểm tra sẵn sàng: <b>${d.guardReadyMs == null ? 'đang tải nền…' : d.guardReadyMs + ' ms'}</b></div>
     <div style="opacity:.7;margin-top:5px">Tổng từ lúc bấm đăng nhập: ${total} ms</div>`;
   box.style.display = '';
 }
@@ -2220,12 +2227,65 @@ async function loadRequests() {
   return true;
 }
 
+
+async function prefetchRegistrationGuardData(force=false) {
+  if (!CU || !CU.name || !CU.token) return false;
+  if (_registrationGuardReady && !force) return true;
+  if (_registrationGuardPromise) return _registrationGuardPromise;
+
+  const sessionName = CU.name;
+  const sessionToken = CU.token;
+  _registrationGuardPromise = (async () => {
+    const t0 = beginLoginPerfStep('guard');
+    try {
+      const bundle = await api({ action: 'getRegistrationGuardBundle' });
+      if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
+      if (!bundle || bundle.error || !Array.isArray(bundle.requests)) {
+        throw new Error((bundle && bundle.error) || 'Không tải được dữ liệu kiểm tra.');
+      }
+
+      applyRequestsFromApi({ requests: bundle.requests || [] });
+      _startupRequestsReady = bundle.requestsPartial === true;
+      _startupRequestWindowStart = (bundle.requestWindowStart || '').toString().substring(0, 10);
+      _dataLoaded.requests = false; // chỉ là dữ liệu tác nghiệp, chưa phải toàn bộ lịch sử
+
+      if (Array.isArray(bundle.leaves)) {
+        allLeaves = bundle.leaves;
+        rebuildLeavesIndexes();
+        bumpDataRevision('leaves');
+        _dataLoaded.leaves = true;
+        refreshMyLeaveBalanceFromLocalLeaves();
+      }
+
+      _registrationGuardReady = true;
+      try { updatePartnerListRealtime(); } catch (_) {}
+      const note = `${(bundle.requests || []).length} đơn tác nghiệp | ${(bundle.leaves || []).length} đơn nghỉ`;
+      endLoginPerfStep('guard', t0, '', note);
+      markLoginPerfTotal('guard');
+      return true;
+    } catch (err) {
+      _registrationGuardReady = false;
+      endLoginPerfStep('guard', t0, (err && err.message) ? err.message : String(err || 'Lỗi tải dữ liệu kiểm tra.'));
+      console.warn('[REGISTRATION GUARD] lỗi:', err);
+      return false;
+    } finally {
+      _registrationGuardPromise = null;
+    }
+  })();
+  return _registrationGuardPromise;
+}
+
 async function ensureRequestCoverageForForm(ngayDoi, ngayTra) {
   if (_dataLoaded.requests) return true;
-  if (!_startupRequestsReady || !_startupRequestWindowStart) {
-    await loadRequests();
-    return true;
+
+  // Shell đăng nhập không còn mang Requests để vào phần mềm nhanh. Nếu dữ liệu kiểm tra
+  // nền chưa về kịp lúc người dùng bấm Gửi, chờ đúng gói guard tại đây.
+  if (!_registrationGuardReady || !_startupRequestsReady || !_startupRequestWindowStart) {
+    showLocalAlert('submit-msg', '⏳ Đang hoàn tất kiểm tra lịch đổi ca/nghỉ trước khi gửi...', 'ai');
+    const ok = await prefetchRegistrationGuardData(true);
+    if (!ok) throw new Error('Không tải được dữ liệu kiểm tra');
   }
+
   const dates = [ngayDoi, ngayTra].filter(Boolean).map(v => v.toString().substring(0, 10));
   const needsOlder = dates.some(d => d && d < _startupRequestWindowStart);
   if (!needsOlder) return true;
@@ -2716,65 +2776,79 @@ function startInitialFullBundle(r) {
   _initialFullBundleReady = false;
   _startupRequestsReady = false;
   _startupRequestWindowStart = '';
-  setCoreBootstrapUiState('loading', '⏳ Đã đăng nhập — đang tải dữ liệu khởi tạo nhẹ...');
+  _registrationGuardReady = false;
+  _registrationGuardPromise = null;
+  setCoreBootstrapUiState('loading', '⏳ Đã đăng nhập — đang dựng giao diện...');
 
   _coreBootstrapPromise = (async () => {
     const t0 = beginLoginPerfStep('core');
     try {
-      // Chỉ 1 round-trip sau login, nhưng KHÔNG kéo toàn bộ lịch sử 590+ đơn và Leaves.
-      const bundle = await api({ action: 'getStartupBundle' });
+      // Nhanh nhất: cache server đã nóng thì shell đi kèm ngay response LOGIN.
+      // Fallback: chỉ khi cache server miss mới gọi thêm getStartupBundle.
+      let bundle = (r && r.startupShell) ? r.startupShell : null;
+      const cameWithLogin = !!bundle;
+      if (!bundle) bundle = await api({ action: 'getStartupBundle' });
+
       if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
       if (!bundle || bundle.error || !Array.isArray(bundle.users) || bundle.users.length === 0) {
-        throw new Error((bundle && bundle.error) || 'Không nhận được gói dữ liệu khởi tạo.');
+        throw new Error((bundle && bundle.error) || 'Không nhận được gói giao diện khởi tạo.');
       }
 
       const draft = captureRegistrationDraft();
       const boot = Object.assign({}, bundle, { transfersLoaded: true });
       const flags = applyCoreBootstrapState(boot);
 
-      // Cache chỉ phần giao diện nhẹ cho lần đăng nhập sau; không cache đơn nghiệp vụ.
+      // Vẫn lưu cache trình duyệt làm lớp dự phòng, nhưng lần đầu trên máy mới không phụ thuộc nó.
       saveStartupUiCache(bundle);
 
-      // Chặn prefetch cũ trước khi finalize. Requests đang có là gói tác nghiệp một phần,
-      // đủ cho màn Đăng ký; các tab lịch sử/duyệt sẽ lazy-load toàn bộ khi mở.
+      // Shell đã đủ users/settings/quyền/transfers để dùng màn Đăng ký.
+      // Requests/Leaves được tải NỀN sau khi giao diện đã hiện.
       _initialFullBundleReady = true;
-      _startupRequestsReady = bundle.requestsPartial === true;
-      _startupRequestWindowStart = (bundle.requestWindowStart || '').toString().substring(0, 10);
+      _startupRequestsReady = false;
+      _startupRequestWindowStart = '';
       await finalizeAuthenticatedUiAfterCore(r || {}, flags);
-      // Nếu người dùng đã bắt đầu nhập bằng dữ liệu cache trong lúc bundle chạy,
-      // giữ lại nội dung hợp lệ thay vì reset form khi dữ liệu mới vừa về.
       if (_startupUiCacheApplied) restoreRegistrationDraft(draft);
 
       _dataLoaded.transfers = true;
-      _dataLoaded.requests = false; // false = CHƯA có toàn bộ lịch sử Requests
+      _dataLoaded.requests = false;
       _dataLoaded.leaves = false;
       _dataLoaded.balances = !(CU && (CU.role === 'ld' || CU.admin));
 
-      // Màn Đăng ký vẫn sẵn sàng vì startup requests đã đủ từ đầu tháng hiện tại trở đi.
+      // Cho phép người dùng nhập form ngay. Nếu bấm Gửi quá sớm, submitRequest()
+      // sẽ tự chờ guard data trước khi kiểm tra client; server vẫn kiểm tra đầy đủ lần cuối.
       setPrimarySyncState(true);
       refreshTransferDerivedFieldsAfterSync();
 
       _coreBootstrapReady = true;
       setCoreBootstrapUiState('ready');
 
-      const note = `${bundle.users.length} nhân sự | ${(bundle.transfers || []).length} ĐC | ${(bundle.requests || []).length} đơn tác nghiệp`;
+      const shellSrc = cameWithLogin ? 'đi kèm LOGIN' : (bundle.serverShellCacheHit ? 'cache server' : 'rebuild cache server');
+      const note = `${bundle.users.length} nhân sự | ${(bundle.transfers || []).length} ĐC | ${shellSrc}`;
       endLoginPerfStep('core', t0, '', note);
       if (_loginPerfDiag && _loginPerfDiag.kipReadyMs == null) markLoginPerfTotal('kip');
       markLoginPerfTotal('submit');
       _startupUiCacheApplied = false;
+
+      // Chỉ sau khi giao diện đã paint xong mới đọc Requests/Leaves. Không tranh tài nguyên với login/shell.
+      setTimeout(() => {
+        if (CU && CU.name === sessionName && CU.token === sessionToken) {
+          prefetchRegistrationGuardData(false).catch(() => false);
+        }
+      }, 120);
       return true;
     } catch (err) {
       if (!CU || CU.name !== sessionName || CU.token !== sessionToken) return false;
       _initialFullBundleReady = false;
       _startupRequestsReady = false;
       _startupRequestWindowStart = '';
+      _registrationGuardReady = false;
       _startupUiCacheApplied = false;
       _coreBootstrapReady = false;
       _coreBootstrapError = (err && err.message) ? err.message : String(err || 'Không đồng bộ được dữ liệu.');
       if (_loginPerfDiag && _loginPerfDiag.steps.core && _loginPerfDiag.steps.core.ms == null) {
         endLoginPerfStep('core', t0, _coreBootstrapError);
       }
-      console.error('[STARTUP BUNDLE] lỗi:', err);
+      console.error('[STARTUP SHELL] lỗi:', err);
       setCoreBootstrapUiState('failed', _coreBootstrapError + ' — chạm để thử lại.');
       setPrimarySyncState(false, true);
       return false;
@@ -2859,6 +2933,8 @@ async function doLogin(){
     _startupRequestsReady = false;
     _startupRequestWindowStart = '';
     _startupUiCacheApplied = false;
+    _registrationGuardReady = false;
+    _registrationGuardPromise = null;
 
     if (r.forcePinChange) {
       document.getElementById('overlay').style.display='none';
@@ -2874,12 +2950,10 @@ async function doLogin(){
     showAuthenticatedShellImmediately();
     e.textContent = '';
 
-    // Dựng ngay giao diện từ cache của lần đồng bộ thành công trước (nếu có). Cache không
-    // chứa PIN/token/đơn nghiệp vụ; nút Gửi vẫn khóa cho tới khi bundle mới hoàn tất.
-    await applyStartupUiCacheIfAvailable();
+    // Nếu server cache đã nóng, shell đã đi kèm response LOGIN: không cần đọc localStorage
+    // và cũng không cần round-trip startup thứ hai. Chỉ fallback cache trình duyệt khi server miss.
+    if (!r.startupShell) await applyStartupUiCacheIfAvailable();
 
-    // Sau login chỉ gọi đúng 1 API getStartupBundle ở nền để xác nhận dữ liệu mới nhất.
-    // Người dùng có thể bắt đầu nhập form bằng cache trong lúc chờ, nhưng chưa thể Gửi.
     startInitialFullBundle(r).catch(() => {});
   } catch(ex) {
     endLoginPerfStep('login', _diagLoginT0, (ex && ex.message) ? ex.message : 'Lỗi kết nối mạng');
@@ -2904,6 +2978,8 @@ function doLogout() {
   _startupRequestsReady = false;
   _startupRequestWindowStart = '';
   _startupUiCacheApplied = false;
+  _registrationGuardReady = false;
+  _registrationGuardPromise = null;
   resetEarlyBackgroundFetches();
   const _coreBar = document.getElementById('core-sync-banner');
   if (_coreBar) _coreBar.style.display = 'none';
