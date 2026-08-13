@@ -20,6 +20,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px}
 .tab{padding:10px 16px;border:1px solid #d1d5db;border-radius:8px;background:#fff;font-size:13px;cursor:pointer;color:#4b5563;white-space:nowrap; flex-grow: 1; text-align: center; font-weight: 500;}
 .tab.active{background:#1a56a0;color:#fff;border-color:#1a56a0;}
+/* PHẢN HỒI CHẠM TAB: hiện ngay vòng xoay trong lúc đang chờ dữ liệu/render. */
+.tab.tab-loading{cursor:wait;pointer-events:none;box-shadow:0 0 0 2px rgba(37,99,235,.12) inset;}
+.tab-loading-spinner{display:inline-block;width:14px;height:14px;margin-right:7px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-2px;animation:tabLoadingSpin .65s linear infinite;}
+@keyframes tabLoadingSpin{to{transform:rotate(360deg)}}
 .section{display:none}.section.active{display:block}
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
 .form-row.full{grid-template-columns:1fr}
@@ -2730,7 +2734,7 @@ async function finalizeAuthenticatedUiAfterCore(r, flags) {
         } else if (['nghi-phep', 'duyet-np', 'lich-su-np'].includes(t)) await loadLeaves();
         else if (t && t !== 'dang-ky') await loadRequests();
         // Tab Đăng ký không tự tải toàn bộ 590+ đơn định kỳ. Server vẫn kiểm tra đầy đủ khi Gửi.
-        if (activeBtn && ['dong-y', 'phe-duyet', 'lich-su', 'duyet-np'].includes(t)) switchTab(t);
+        if (activeBtn && ['dong-y', 'phe-duyet', 'lich-su', 'duyet-np'].includes(t)) switchTab(t, false);
       } catch (err) {
         console.warn('[AUTO REFRESH] giữ dữ liệu cũ vì làm mới thất bại:', err);
       }
@@ -3378,14 +3382,41 @@ async function exportSystemDiagCsv() {
   }
 }
 
-function switchTab(t){
+function setTabLoadingState(t, loading){
+  const btn = document.querySelector(`.tab[onclick="switchTab('${t}')"]`);
+  if (!btn) return;
+
+  if (loading) {
+    // Lưu nguyên HTML gốc để giữ đúng icon/tên/màu của từng tab sau khi tải xong.
+    if (!btn.dataset.tabOriginalHtml) btn.dataset.tabOriginalHtml = btn.innerHTML;
+    btn.classList.add('tab-loading');
+    btn.setAttribute('aria-busy', 'true');
+    btn.innerHTML = '<span class="tab-loading-spinner" aria-hidden="true"></span><span>Đang tải…</span>';
+  } else {
+    btn.classList.remove('tab-loading');
+    btn.removeAttribute('aria-busy');
+    if (btn.dataset.tabOriginalHtml) btn.innerHTML = btn.dataset.tabOriginalHtml;
+  }
+}
+
+function switchTab(t, showLoading = true){
+  // Phản hồi NGAY tại nút vừa chạm để người dùng biết hệ thống đã nhận thao tác,
+  // đặc biệt trên điện thoại khi ensureDataForTab còn đang chờ Apps Script.
+  // Tự làm mới nền 120s gọi showLoading=false để không làm tab nhấp nháy ngoài ý muốn.
+  if (showLoading) setTabLoadingState(t, true);
+
   const waitCore = _coreBootstrapReady ? Promise.resolve(true) : (_coreBootstrapPromise || startInitialFullBundle({}));
-  waitCore.then(ok => {
+  return waitCore.then(ok => {
     if (!ok) return false;
     return ensureDataForTab(t).then(() => { switchTabRender(t); return true; });
   }).catch(err => {
     console.error('switchTab/ensureCore:', err);
     setCoreBootstrapUiState('failed', 'Không đồng bộ được dữ liệu — chạm để thử lại.');
+    return false;
+  }).finally(() => {
+    // Hai frame giúp spinner còn hiện trong lúc các tab nặng (Bảng đi ca/Thống kê)
+    // hoàn tất phần render đã được xếp bằng requestAnimationFrame.
+    if (showLoading) requestAnimationFrame(() => requestAnimationFrame(() => setTabLoadingState(t, false)));
   });
 }
 
