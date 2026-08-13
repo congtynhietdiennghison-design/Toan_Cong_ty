@@ -302,6 +302,57 @@ textarea{resize:none;height:80px}
           Phần mềm tải cửa sổ ±2 năm quanh năm hiện tại. Chỉ được chốt các năm cũ hơn 2 năm lùi (VD năm 2026: chốt 2023 trở về trước). Dữ liệu không tự xóa; Transfers không chốt/xóa để giữ mốc điều chuyển kíp.
         </div>
       </div>
+
+      <div class="card" id="system-diag-card" style="border-top:4px solid #2563eb; margin-top:16px;">
+        <div class="sec-title" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+          <span>🔧 Chẩn đoán hệ thống</span>
+          <span id="diag-mode-badge" style="font-size:12px;font-weight:800;padding:5px 10px;border-radius:999px;background:#ecfdf5;color:#166534;">PRODUCTION</span>
+        </div>
+
+        <div style="font-size:13px;color:#475569;line-height:1.6;margin-bottom:12px;">
+          <b>Production:</b> chỉ ghi lỗi, thao tác trùng và thao tác chậm để không làm nặng hệ thống.
+          <b>Debug:</b> ghi mọi API trong thời gian kiểm tra. Không ghi PIN, token hay secret.
+        </div>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px;">
+          <label style="display:flex;align-items:center;gap:8px;margin:0;font-weight:700;cursor:pointer;">
+            <input type="checkbox" id="diag-debug-toggle" onchange="toggleSystemDiagMode(this)" style="width:20px;height:20px;appearance:auto;-webkit-appearance:auto;">
+            Bật Debug tạm thời
+          </label>
+          <button class="btn" onclick="loadSystemDiag(true)" style="padding:8px 12px;">🔄 Làm mới log</button>
+          <button class="btn btn-success" onclick="exportSystemDiagCsv()" style="padding:8px 12px;">⬇ Xuất CSV</button>
+          <button class="btn btn-danger" onclick="clearSystemDiagLogsUI()" style="padding:8px 12px;">🗑 Xóa log</button>
+          <span id="diag-threshold-note" style="font-size:12px;color:#64748b;"></span>
+        </div>
+
+        <div class="form-row three" style="margin-bottom:10px;">
+          <div><label>Người dùng</label><input id="diag-filter-user" type="text" placeholder="Tìm theo tên..." oninput="renderSystemDiag()"></div>
+          <div><label>Thao tác</label><select id="diag-filter-action" onchange="renderSystemDiag()"><option value="">Tất cả thao tác</option></select></div>
+          <div><label>Kết quả</label><select id="diag-filter-result" onchange="renderSystemDiag()">
+            <option value="">Tất cả</option>
+            <option value="ERROR">ERROR</option>
+            <option value="DUPLICATE">DUPLICATE</option>
+            <option value="SLOW">SLOW</option>
+            <option value="OK">OK</option>
+          </select></div>
+        </div>
+
+        <div id="diag-summary" style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 12px;"></div>
+        <div id="diag-loading" style="display:none;padding:12px;color:#64748b;">⏳ Đang tải log chẩn đoán...</div>
+
+        <div class="table-wrapper" style="max-height:430px;">
+          <table class="dt" style="min-width:1400px;">
+            <thead style="position:sticky;top:0;z-index:2;background:#f8fafc;">
+              <tr>
+                <th>Thời gian</th><th>Người dùng</th><th>Bộ phận</th><th>Thao tác</th><th>Kết quả</th>
+                <th>Tổng ms</th><th>Auth</th><th>Chờ lock</th><th>Trong lock</th><th>Thông báo</th>
+                <th>Bước chậm nhất</th><th>Request ID</th><th>Lỗi</th>
+              </tr>
+            </thead>
+            <tbody id="diag-log-body"><tr><td colspan="13" class="empty">Chưa tải log</td></tr></tbody>
+          </table>
+        </div>
+      </div>
     </div>
   <div id="tab-admin-hc" class="section">
 <div class="card" style="border-top: 4px solid #ea580c; margin-bottom: 20px;">
@@ -1150,6 +1201,11 @@ let _tabRenderStamp = {};
 let _myLeaveBalanceCache = null; // { annual, remaining, at }
 let _myLeaveBalanceSource = ''; // 'server' | 'local' — không cho dữ liệu lọc ở client ghi đè kết quả server
 
+// ADMIN DIAGNOSTICS
+let _systemDiagLogs = [];
+let _systemDiagStatus = null;
+let _systemDiagLoadedAt = 0;
+
 function bumpDataRevision(key) {
   if (!Object.prototype.hasOwnProperty.call(_dataRevision, key)) return;
   _dataRevision[key]++;
@@ -1897,7 +1953,8 @@ function refreshTransfersInBackground(renderFn) {
 
 async function api(p) {
   const writeActions = ['add','updateStatus','addDispatchBatch','addTransfer','addTransferBatch','submitLeave','cancelLeave','approveLeaveWeb','rejectLeaveWeb','resetPin'];
-  if (writeActions.includes(p.action) && !p.clientRequestId) p.clientRequestId = makeClientRequestId();
+  // Mọi API đều có Request ID để đối chiếu log; backend chỉ dùng idempotency cho writeActions.
+  if (!p.clientRequestId) p.clientRequestId = makeClientRequestId();
   if (typeof CU !== 'undefined' && CU && CU.token) {
     p.reqName = CU.name;
     p.reqToken = CU.token;
@@ -3140,6 +3197,187 @@ async function doArchive() {
   }
 }
 
+
+function _diagResultBadge(v) {
+  const x = (v || '').toString().toUpperCase();
+  const map = {
+    ERROR: ['#fee2e2','#991b1b'],
+    DUPLICATE: ['#fef3c7','#92400e'],
+    SLOW: ['#ffedd5','#9a3412'],
+    OK: ['#dcfce7','#166534']
+  };
+  const c = map[x] || ['#e2e8f0','#334155'];
+  return `<span style="display:inline-block;padding:3px 7px;border-radius:999px;font-size:11px;font-weight:800;background:${c[0]};color:${c[1]}">${escapeHTML(x || '-')}</span>`;
+}
+
+function _diagNum(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n) : 0;
+}
+
+function _diagFilteredRows() {
+  const userQ = (document.getElementById('diag-filter-user')?.value || '').trim().toLowerCase();
+  const actionQ = document.getElementById('diag-filter-action')?.value || '';
+  const resultQ = document.getElementById('diag-filter-result')?.value || '';
+  return (_systemDiagLogs || []).filter(r => {
+    if (userQ && !(r.user || '').toString().toLowerCase().includes(userQ)) return false;
+    if (actionQ && (r.action || '') !== actionQ) return false;
+    if (resultQ && (r.result || '') !== resultQ) return false;
+    return true;
+  });
+}
+
+function renderSystemDiag() {
+  const body = document.getElementById('diag-log-body');
+  if (!body) return;
+
+  const st = _systemDiagStatus || {};
+  const badge = document.getElementById('diag-mode-badge');
+  const toggle = document.getElementById('diag-debug-toggle');
+  const threshold = document.getElementById('diag-threshold-note');
+  if (badge) {
+    badge.textContent = st.debug ? 'DEBUG' : 'PRODUCTION';
+    badge.style.background = st.debug ? '#fef3c7' : '#ecfdf5';
+    badge.style.color = st.debug ? '#92400e' : '#166534';
+  }
+  if (toggle) toggle.checked = !!st.debug;
+  if (threshold) threshold.textContent = st.slowMs ? `Ngưỡng chậm: ≥ ${st.slowMs} ms | Lock chậm: ≥ ${st.lockSlowMs || 1500} ms` : '';
+
+  const actionSel = document.getElementById('diag-filter-action');
+  if (actionSel) {
+    const current = actionSel.value;
+    const actions = [...new Set((_systemDiagLogs || []).map(x => (x.action || '').toString()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi'));
+    actionSel.innerHTML = '<option value="">Tất cả thao tác</option>' + actions.map(a => `<option value="${escapeAttr(a)}">${escapeHTML(a)}</option>`).join('');
+    if (actions.includes(current)) actionSel.value = current;
+  }
+
+  const rows = _diagFilteredRows();
+  const counts = { ERROR:0, DUPLICATE:0, SLOW:0, OK:0 };
+  rows.forEach(r => { const k=(r.result||'').toString().toUpperCase(); if (counts[k] !== undefined) counts[k]++; });
+  const summary = document.getElementById('diag-summary');
+  if (summary) {
+    const chip = (label,n,bg,fg) => `<span style="padding:5px 9px;border-radius:8px;background:${bg};color:${fg};font-size:12px;font-weight:800">${label}: ${n}</span>`;
+    summary.innerHTML =
+      chip('Đang hiển thị', rows.length, '#eff6ff','#1d4ed8') +
+      chip('ERROR', counts.ERROR, '#fee2e2','#991b1b') +
+      chip('DUPLICATE', counts.DUPLICATE, '#fef3c7','#92400e') +
+      chip('SLOW', counts.SLOW, '#ffedd5','#9a3412') +
+      chip('OK', counts.OK, '#dcfce7','#166534');
+  }
+
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="13" class="empty">Không có log phù hợp bộ lọc.</td></tr>';
+    return;
+  }
+
+  body.innerHTML = rows.map(r => `
+    <tr>
+      <td style="white-space:nowrap">${escapeHTML(r.time || '')}</td>
+      <td>${escapeHTML(r.user || '')}</td>
+      <td>${escapeHTML(r.boPhan || '')}</td>
+      <td><b>${escapeHTML(r.action || '')}</b></td>
+      <td>${_diagResultBadge(r.result)}</td>
+      <td style="text-align:right;font-weight:800">${_diagNum(r.totalMs)}</td>
+      <td style="text-align:right">${_diagNum(r.authMs)}</td>
+      <td style="text-align:right">${_diagNum(r.lockWaitMs)}</td>
+      <td style="text-align:right">${_diagNum(r.writeMs)}</td>
+      <td style="text-align:right">${_diagNum(r.notifyMs)}</td>
+      <td style="white-space:nowrap">${escapeHTML(r.slowestStep || '')}</td>
+      <td style="font-family:monospace;font-size:11px;max-width:210px;word-break:break-all">${escapeHTML(r.clientRequestId || '')}</td>
+      <td style="max-width:320px;white-space:normal;color:${r.error ? '#b91c1c' : '#64748b'}">${escapeHTML(r.error || '')}</td>
+    </tr>`).join('');
+}
+
+async function loadSystemDiag(force = false, limit = 200) {
+  if (!CU || !CU.admin) return;
+  if (!force && _systemDiagLoadedAt && (Date.now() - _systemDiagLoadedAt) < 30000) {
+    renderSystemDiag();
+    return;
+  }
+  const loading = document.getElementById('diag-loading');
+  if (loading) loading.style.display = 'block';
+  try {
+    const res = await api({ action: 'getSystemDiag', limit });
+    if (!res || res.error) throw new Error((res && res.error) || 'Không tải được log chẩn đoán.');
+    _systemDiagStatus = res.status || {};
+    _systemDiagLogs = Array.isArray(res.logs) ? res.logs : [];
+    _systemDiagLoadedAt = Date.now();
+    renderSystemDiag();
+  } catch (e) {
+    const body = document.getElementById('diag-log-body');
+    if (body) body.innerHTML = `<tr><td colspan="13" class="empty" style="color:#b91c1c">❌ ${escapeHTML(e && e.message ? e.message : String(e))}</td></tr>`;
+  } finally {
+    if (loading) loading.style.display = 'none';
+  }
+}
+
+async function toggleSystemDiagMode(cb) {
+  if (!CU || !CU.admin) return;
+  const enable = !!cb.checked;
+  if (enable) {
+    const ok = confirm('Bật DEBUG sẽ ghi mọi API vào log trong thời gian kiểm tra và có thể làm hệ thống chậm hơn một chút. Chỉ nên bật tạm thời. Tiếp tục?');
+    if (!ok) { cb.checked = false; return; }
+  }
+  cb.disabled = true;
+  try {
+    const res = await api({ action: 'setSystemDiagMode', enabled: enable });
+    if (!res || res.error) throw new Error((res && res.error) || 'Không đổi được chế độ chẩn đoán.');
+    _systemDiagStatus = res.status || _systemDiagStatus;
+    renderSystemDiag();
+    showAlert('app', enable ? '🔧 Đã bật DEBUG. Kiểm tra xong nên tắt lại Production.' : '✅ Đã trở về Production.', enable ? 'ai' : 'as');
+  } catch (e) {
+    cb.checked = !enable;
+    showAlert('app', '❌ ' + (e && e.message ? e.message : e), 'ae');
+  } finally {
+    cb.disabled = false;
+  }
+}
+
+async function clearSystemDiagLogsUI() {
+  if (!CU || !CU.admin) return;
+  if (!confirm('Xóa toàn bộ log chẩn đoán hiện có? Thao tác này không ảnh hưởng dữ liệu nghiệp vụ.')) return;
+  try {
+    const res = await api({ action: 'clearSystemDiagLogs' });
+    if (!res || res.error) throw new Error((res && res.error) || 'Không xóa được log.');
+    _systemDiagLogs = [];
+    _systemDiagStatus = res.status || _systemDiagStatus;
+    _systemDiagLoadedAt = Date.now();
+    renderSystemDiag();
+    showAlert('app', 'Đã xóa log chẩn đoán.', 'as');
+  } catch (e) {
+    showAlert('app', '❌ ' + (e && e.message ? e.message : e), 'ae');
+  }
+}
+
+function _diagCsvCell(v) {
+  const x = (v == null ? '' : String(v)).replace(/\r?\n/g, ' ');
+  return '"' + x.replace(/"/g, '""') + '"';
+}
+
+async function exportSystemDiagCsv() {
+  if (!CU || !CU.admin) return;
+  try {
+    // Xuất tối đa 1000 dòng gần nhất, độc lập bộ lọc đang hiển thị.
+    const res = await api({ action: 'getSystemDiag', limit: 1000 });
+    if (!res || res.error) throw new Error((res && res.error) || 'Không tải được log để xuất.');
+    const rows = Array.isArray(res.logs) ? res.logs : [];
+    const cols = ['time','user','boPhan','action','result','totalMs','authMs','lockWaitMs','writeMs','notifyMs','otherMs','slowestStep','clientRequestId','duplicate','error','version','mode'];
+    const csv = '\uFEFF' + [cols.map(_diagCsvCell).join(',')]
+      .concat(rows.map(r => cols.map(c => _diagCsvCell(r[c])).join(','))).join('\r\n');
+    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const d = new Date();
+    const stamp = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}_${String(d.getHours()).padStart(2,'0')}${String(d.getMinutes()).padStart(2,'0')}`;
+    a.href = url;
+    a.download = `system_diag_${stamp}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (e) {
+    showAlert('app', '❌ Xuất log thất bại: ' + (e && e.message ? e.message : e), 'ae');
+  }
+}
+
 function switchTab(t){
   const waitCore = _coreBootstrapReady ? Promise.resolve(true) : (_coreBootstrapPromise || startInitialFullBundle({}));
   waitCore.then(ok => {
@@ -3182,6 +3420,9 @@ function switchTabRender(t){
     initTransferForm();
     filterTCUsers();
     renderTransferLog();
+  }
+  if(t==='admin' && CU && CU.admin) {
+    loadSystemDiag(false).catch(err => console.warn('SystemDiag:', err));
   }
 
   // Poll phải đồng bộ theo tab đang mở kể cả khi bỏ qua render.
