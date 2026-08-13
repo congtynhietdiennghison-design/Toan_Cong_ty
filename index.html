@@ -2215,26 +2215,35 @@ function showAuthenticatedShellImmediately() {
 async function fetchCoreBootstrapForCurrentSession() {
   // Ưu tiên tuyệt đối gói lõi sau đăng nhập. Không cho requests/leaves/transfers
   // chạy song song ở bước này để tránh tranh execution Apps Script/Google Sheets.
+  // GAS đôi khi có lỗi fetch/redirect thoáng qua ngay sau login, nên thử CORE
+  // thêm 1 lần trước khi fallback sang bootstrap đầy đủ.
   let boot = null;
-  try {
-    boot = await api({ action: 'getCoreBootstrap' }, { timeoutMs: 30000 });
-  } catch (err) {
-    const msg = (err && err.message) ? err.message : String(err || 'Apps Script không phản hồi.');
-    return { error: 'Không tải được dữ liệu lõi: ' + msg };
+  let lastCoreError = '';
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      boot = await api({ action: 'getCoreBootstrap' }, { timeoutMs: 30000 });
+      if (boot && !boot.error && Array.isArray(boot.users) && boot.users.length > 0) return boot;
+      lastCoreError = (boot && boot.error) ? boot.error : 'Gói dữ liệu lõi không hợp lệ.';
+      break; // Server đã phản hồi: không cần lặp lại cùng action.
+    } catch (err) {
+      lastCoreError = (err && err.message) ? err.message : String(err || 'Apps Script không phản hồi.');
+      if (attempt === 0) await sleep(1200);
+    }
   }
 
-  if (boot && !boot.error && Array.isArray(boot.users) && boot.users.length > 0) return boot;
-
-  // Chỉ fallback khi server ĐÃ phản hồi nhưng gói core không hợp lệ/không được hỗ trợ.
-  // Nếu request core timeout/lỗi mạng thì đã trả lỗi ở trên, không bắn thêm một request nặng.
-  const coreError = (boot && boot.error) ? boot.error : 'Gói dữ liệu lõi không hợp lệ.';
+  // Fallback tuần tự, KHÔNG chạy song song với CORE. Đây cũng là lớp dự phòng khi
+  // CORE gặp "Failed to fetch"/redirect lỗi hoặc frontend/backend lệch phiên bản.
   try {
     const fallback = await api({ action: 'getBootstrap' }, { timeoutMs: 45000 });
     if (fallback && !fallback.error && Array.isArray(fallback.users) && fallback.users.length > 0) return fallback;
-    return { error: (fallback && fallback.error) ? fallback.error : coreError };
+    return { error: (fallback && fallback.error) ? fallback.error : (lastCoreError || 'Không tải được dữ liệu khởi tạo.') };
   } catch (err) {
-    const msg = (err && err.message) ? err.message : String(err || coreError);
-    return { error: 'Không tải được dữ liệu khởi tạo: ' + msg };
+    const fallbackError = (err && err.message) ? err.message : String(err || 'Apps Script không phản hồi.');
+    const detail = lastCoreError && lastCoreError !== fallbackError
+      ? (lastCoreError + '; dự phòng: ' + fallbackError)
+      : fallbackError;
+    return { error: 'Không tải được dữ liệu lõi: ' + detail };
   }
 }
 
