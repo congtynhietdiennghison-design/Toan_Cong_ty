@@ -324,7 +324,7 @@ textarea{resize:none;height:80px}
             Bật Debug tạm thời
           </label>
           <button class="btn" onclick="loadSystemDiag(true)" style="padding:8px 12px;">🔄 Làm mới log</button>
-          <button class="btn btn-success" onclick="exportSystemDiagCsv()" style="padding:8px 12px;">⬇ Xuất CSV</button>
+          <button class="btn btn-success" onclick="exportSystemDiagCsv()" style="padding:8px 12px;">⬇ Xuất XLSX</button>
           <button class="btn btn-danger" onclick="clearSystemDiagLogsUI()" style="padding:8px 12px;">🗑 Xóa log</button>
           <span id="diag-threshold-note" style="font-size:12px;color:#64748b;"></span>
         </div>
@@ -3447,25 +3447,16 @@ function _diagCsvCell(v) {
 async function exportSystemDiagCsv() {
   if (!CU || !CU.admin) return;
   try {
-    // Xuất tối đa 1000 dòng gần nhất, độc lập bộ lọc đang hiển thị.
     const res = await api({ action: 'getSystemDiag', limit: 1000 });
     if (!res || res.error) throw new Error((res && res.error) || 'Không tải được log để xuất.');
-    const rows = Array.isArray(res.logs) ? res.logs : [];
-    const cols = ['time','user','boPhan','action','result','totalMs','authMs','lockWaitMs','writeMs','notifyMs','otherMs','slowestStep','clientRequestId','duplicate','error','version','mode','detail'];
-    const csv = '\uFEFF' + [cols.map(_diagCsvCell).join(',')]
-      .concat(rows.map(r => cols.map(c => _diagCsvCell(r[c])).join(','))).join('\r\n');
-    const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    const d = new Date();
-    const stamp = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}_${String(d.getHours()).padStart(2,'0')}${String(d.getMinutes()).padStart(2,'0')}`;
-    a.href = url;
-    a.download = `system_diag_${stamp}.csv`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  } catch (e) {
-    showAlert('app', '❌ Xuất log thất bại: ' + (e && e.message ? e.message : e), 'ae');
-  }
+    const logs = Array.isArray(res.logs) ? res.logs : [];
+    if (!logs.length) { showAlert('app','Không có log để xuất!','ae'); return; }
+    const headers=['Thời gian','Mức','API','Người dùng','Thời lượng ms','Lock wait ms','Chi tiết'];
+    const body=logs.map(r=>`<tr><td>${escapeHTML(r.createdAt||r.time||'')}</td><td>${escapeHTML(r.level||'')}</td><td>${escapeHTML(r.action||r.api||'')}</td><td>${escapeHTML(r.user||r.userName||'')}</td><td>${escapeHTML(r.durationMs??r.duration??'')}</td><td>${escapeHTML(r.lockWaitMs??'')}</td><td>${escapeHTML(r.detail||r.message||'')}</td></tr>`).join('');
+    const html=`<table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
+    const stamp=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
+    await downloadExcel(html,`system_diag_${stamp}.xlsx`,'SystemDiag');
+  } catch(e) { showAlert('app','Không xuất được log: '+(e&&e.message?e.message:e),'ae'); }
 }
 
 function setTabLoadingState(t, loading){
@@ -5034,7 +5025,7 @@ function renderWarn() {
   // =======================================================
   // HIỂN THỊ DÒNG TỔNG CỘNG ĐỘC QUYỀN CHO LÃNH ĐẠO
   // =======================================================
-  if(CU.role === 'ld' && totalLechThang > 0) {
+  if((CU.role === 'ld' || CU.admin) && totalLechThang > 0) {
     wHtml += `
       <div style="margin-top: 16px; padding: 12px 14px; background: #f8fafc; border: 1px dashed #1a56a0; border-radius: 8px; display: flex; justify-content: space-between; align-items: center;">
         <span style="font-weight: 700; color: #1a56a0; font-size: 13px;">TỔNG LỆCH CA THÁNG ${mo}/${yr}:</span>
@@ -5093,7 +5084,7 @@ function renderStaffStats() {
     }
   });
 
-  let entries = Object.entries(staffMap); if (CU.role !== 'ld') { entries = entries.filter(([n, v]) => n === CU.name); } entries.sort((a,b)=>b[1].tao-a[1].tao);
+  let entries = Object.entries(staffMap); if (CU.role !== 'ld' && !CU.admin) { entries = entries.filter(([n, v]) => n === CU.name); } entries.sort((a,b)=>b[1].tao-a[1].tao);
   
   // BIẾN ĐỂ TÍNH TỔNG
   let totalTao = 0, totalDongY = 0, totalLech = 0;
@@ -5115,10 +5106,10 @@ function renderStaffStats() {
     document.getElementById('staff-body').innerHTML = '<tr><td colspan="5" class="empty">Chưa có dữ liệu</td></tr>';
   } else {
     // CHỈ HIỂN THỊ DÒNG TỔNG CỘNG CHO LÃNH ĐẠO
-    if (CU.role === 'ld') {
+    if (CU.role === 'ld' || CU.admin) {
       tableHtml += `
         <tr style="background-color: #ebf3ff; font-weight: 700; color: #1a56a0; border-top: 2px solid #bfdbfe;">
-          <td colspan="3" style="text-align: center;">TỔNG CỘNG TOÀN PX:</td>
+          <td colspan="3" style="text-align: center;">TỔNG CỘNG:</td>
           <td>${totalTao}</td>
           <td>${totalDongY}</td>
           <td>+${totalLech}</td>
@@ -5129,10 +5120,174 @@ function renderStaffStats() {
   }
 }
 
-function downloadExcel(htmlTable, filename, worksheetName) {
-  const uri = 'data:application/vnd.ms-excel;base64,'; const template = '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel" xmlns="http://www.w3.org/TR/REC-html40"><head><meta charset="utf-8"></head><body><table border="1">{table}</table></body></html>';
-  const base64 = function(s) { return window.btoa(unescape(encodeURIComponent(s))) }; const format = function(s, c) { return s.replace(/{(\w+)}/g, function(m, p) { return c[p]; }) };
-  const ctx = { worksheet: worksheetName, table: htmlTable }; const link = document.createElement("a"); link.download = filename; link.href = uri + base64(format(template, ctx)); document.body.appendChild(link); link.click(); document.body.removeChild(link);
+// ===============================================================
+// XUẤT EXCEL CHUNG: XLSX THẬT CHO TẤT CẢ CÁC BẢNG TẢI VỀ
+// - Không còn HTML giả dạng .xls.
+// - Mọi file Excel tải về đều dùng đuôi .xlsx và MIME XLSX chuẩn.
+// - Khi Admin/LĐ Công ty để "Tất cả bộ phận", các bảng được tách thành
+//   từng KHỐI BỘ PHẬN trong CÙNG 1 sheet, theo đúng BO_PHAN_ORDER.
+// ===============================================================
+function _xlsxEsc(v) {
+  return (v == null ? '' : String(v)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function _xlsxColName(n) {
+  let s=''; n=Number(n)||1;
+  while(n>0){ n--; s=String.fromCharCode(65+(n%26))+s; n=Math.floor(n/26); }
+  return s;
+}
+function _xlsxSafeSheetName(name) {
+  let s=(name||'DuLieu').toString().replace(/[\\\/\?\*\[\]:]/g,' ').trim();
+  if(!s) s='DuLieu';
+  return s.slice(0,31);
+}
+function _xlsxCellText(cell) {
+  if (!cell) return '';
+  const clone = cell.cloneNode(true);
+  clone.querySelectorAll('button,.btn,input,select,textarea').forEach(x=>x.remove());
+  clone.querySelectorAll('br').forEach(br=>br.replaceWith(document.createTextNode('\n')));
+  clone.querySelectorAll('.dp').forEach(el=>{
+    if (el.nextSibling) el.after(document.createTextNode('\n'));
+  });
+  return (clone.textContent||'').replace(/\u00a0/g,' ').replace(/[ \t]+\n/g,'\n').replace(/\n[ \t]+/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+}
+function _xlsxHtmlToGrid(htmlTable) {
+  const host=document.createElement('div');
+  host.innerHTML=htmlTable||'';
+  let tables=Array.from(host.querySelectorAll('table'));
+  if(!tables.length){
+    const t=document.createElement('table'); t.innerHTML=htmlTable||''; host.innerHTML=''; host.appendChild(t); tables=[t];
+  }
+  const rows=[]; const merges=[]; let maxCols=1;
+  tables.forEach((table,ti)=>{
+    const trs=Array.from(table.querySelectorAll('tr'));
+    trs.forEach(tr=>{
+      const vals=[]; const meta=[]; let col=1;
+      Array.from(tr.children).filter(x=>/^(TD|TH)$/i.test(x.tagName)).forEach(cell=>{
+        while(vals[col-1]!==undefined) col++;
+        const colspan=Math.max(1,parseInt(cell.getAttribute('colspan')||'1',10)||1);
+        const rowspan=Math.max(1,parseInt(cell.getAttribute('rowspan')||'1',10)||1);
+        vals[col-1]=_xlsxCellText(cell);
+        meta[col-1]={th:cell.tagName.toUpperCase()==='TH', colspan, rowspan};
+        for(let k=1;k<colspan;k++) { vals[col-1+k]=''; meta[col-1+k]={covered:true}; }
+        if(colspan>1 || rowspan>1){
+          const r1=rows.length+1, c1=col, r2=r1+rowspan-1, c2=col+colspan-1;
+          merges.push(`${_xlsxColName(c1)}${r1}:${_xlsxColName(c2)}${r2}`);
+        }
+        col += colspan;
+      });
+      const txt=vals.filter(Boolean).join(' ').toUpperCase();
+      const onlyOne=vals.filter(v=>String(v||'').trim()).length===1;
+      const isDept=onlyOne && meta.some(m=>m && m.colspan>1);
+      const isHeader=meta.some(m=>m && m.th) && !isDept;
+      const isTotal=/\bTỔNG\b|\bTONG\b/.test(txt);
+      rows.push({vals, meta, style:isDept?2:(isHeader?1:(isTotal?3:0))});
+      maxCols=Math.max(maxCols,vals.length);
+    });
+    if(ti<tables.length-1) rows.push({vals:[],meta:[],style:0});
+  });
+  return {rows,merges,maxCols};
+}
+function _xlsxBuildSheetXml(grid) {
+  const widths=Array(grid.maxCols).fill(10);
+  const rowXml=grid.rows.map((row,ri)=>{
+    const cells=[];
+    for(let ci=0;ci<grid.maxCols;ci++){
+      const raw=(row.vals && row.vals[ci]!==undefined)?row.vals[ci]:'';
+      const txt=raw==null?'':String(raw);
+      widths[ci]=Math.min(55,Math.max(widths[ci],Math.max(...txt.split('\n').map(x=>x.length),0)+2));
+      if(txt==='') continue;
+      const ref=`${_xlsxColName(ci+1)}${ri+1}`;
+      const numeric=/^-?\d+(?:[.,]\d+)?$/.test(txt) && !/^0\d+/.test(txt);
+      const style=row.style||0;
+      if(numeric){ cells.push(`<c r="${ref}" s="${style}"><v>${_xlsxEsc(txt.replace(',','.'))}</v></c>`); }
+      else { cells.push(`<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${_xlsxEsc(txt)}</t></is></c>`); }
+    }
+    const h=(row.style===2?24:(row.style===1?30:20));
+    return `<row r="${ri+1}" ht="${h}" customHeight="1">${cells.join('')}</row>`;
+  }).join('');
+  const cols=widths.map((w,i)=>`<col min="${i+1}" max="${i+1}" width="${Math.max(8,w)}" customWidth="1"/>`).join('');
+  const mergeXml=grid.merges.length?`<mergeCells count="${grid.merges.length}">${grid.merges.map(r=>`<mergeCell ref="${r}"/>`).join('')}</mergeCells>`:'';
+  const last=`${_xlsxColName(grid.maxCols)}${Math.max(1,grid.rows.length)}`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:${last}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols>${cols}</cols><sheetData>${rowXml}</sheetData>${mergeXml}<pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/></worksheet>`;
+}
+function _xlsxStylesXml(){
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+ <fonts count="4"><font><sz val="11"/><name val="Arial"/></font><font><b/><sz val="11"/><name val="Arial"/><color rgb="FFFFFFFF"/></font><font><b/><sz val="12"/><name val="Arial"/><color rgb="FFFFFFFF"/></font><font><b/><sz val="11"/><name val="Arial"/><color rgb="FF1E3A8A"/></font></fonts>
+ <fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1E3A8A"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEBF3FF"/><bgColor indexed="64"/></patternFill></fill></fills>
+ <borders count="2"><border/><border><left style="thin"><color rgb="FFD1D5DB"/></left><right style="thin"><color rgb="FFD1D5DB"/></right><top style="thin"><color rgb="FFD1D5DB"/></top><bottom style="thin"><color rgb="FFD1D5DB"/></bottom><diagonal/></border></borders>
+ <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+ <cellXfs count="4"><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="3" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf></cellXfs>
+ <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
+</styleSheet>`;
+}
+async function downloadExcel(htmlTable, filename, worksheetName) {
+  try {
+    const JSZipCtor=await _ccEnsureJsZip();
+    const grid=_xlsxHtmlToGrid(htmlTable);
+    if(!grid.rows.length) throw new Error('Không có dữ liệu để xuất.');
+    const zip=new JSZipCtor();
+    const sheetName=_xlsxSafeSheetName(worksheetName||'DuLieu');
+    const now=new Date().toISOString();
+    zip.file('[Content_Types].xml',`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/></Types>`);
+    zip.file('_rels/.rels',`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>`);
+    zip.file('xl/workbook.xml',`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${_xlsxEsc(sheetName)}" sheetId="1" r:id="rId1"/></sheets><calcPr calcMode="auto" fullCalcOnLoad="1"/></workbook>`);
+    zip.file('xl/_rels/workbook.xml.rels',`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
+    zip.file('xl/styles.xml',_xlsxStylesXml());
+    zip.file('xl/worksheets/sheet1.xml',_xlsxBuildSheetXml(grid));
+    zip.file('docProps/core.xml',`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:creator>Quản lý chấm công</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created></cp:coreProperties>`);
+    zip.file('docProps/app.xml',`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Quản lý chấm công</Application></Properties>`);
+    const blob=await zip.generateAsync({type:'blob',compression:'DEFLATE',compressionOptions:{level:6},mimeType:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const url=URL.createObjectURL(blob); const a=document.createElement('a');
+    a.href=url; a.download=(filename||'DuLieu.xlsx').replace(/\.(xls|csv)$/i,'.xlsx');
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000);
+  } catch(e) {
+    console.error('[XLSX]',e); showAlert('app','Không tạo được file XLSX: '+(e&&e.message?e.message:e),'ae');
+  }
+}
+function _xlsxCompanyDepartmentList() {
+  return sortBoPhanNames((NV_LIST||[]).map(u => (u && u.boPhan) || '').filter(Boolean));
+}
+function _xlsxTableHasRows(tableEl) {
+  if(!tableEl) return false;
+  const rows=Array.from(tableEl.querySelectorAll('tbody tr'));
+  return rows.some(tr=>!tr.querySelector('.empty') && Array.from(tr.querySelectorAll('td')).some(td=>(td.textContent||'').trim()));
+}
+function _xlsxAddDepartmentHeader(tableEl,bp) {
+  const clone=tableEl.cloneNode(true);
+  clone.querySelectorAll('button,.btn').forEach(x=>x.remove());
+  let cols=0; const first=clone.querySelector('tr');
+  if(first) Array.from(first.children).forEach(c=>{ cols += Math.max(1,parseInt(c.getAttribute('colspan')||'1',10)||1); });
+  cols=Math.max(1,cols);
+  const tr=document.createElement('tr'); const th=document.createElement('th');
+  th.setAttribute('colspan',String(cols)); th.textContent=(bp||'CHƯA PHÂN LOẠI').toUpperCase(); tr.appendChild(th);
+  let thead=clone.querySelector('thead'); if(!thead) thead=clone.createTHead();
+  thead.insertBefore(tr,thead.firstChild);
+  return clone.outerHTML;
+}
+async function _exportTableXlsxByDepartment(opts) {
+  const {filterId,renderFn,tableId,filename,worksheetName}=opts||{};
+  const sel=filterId?document.getElementById(filterId):null;
+  const whole=!!(canFilterAcrossDepartments() && sel && !sel.value);
+  if(!whole){
+    const table=document.getElementById(tableId);
+    if(!table || !_xlsxTableHasRows(table)){ showAlert('app','Không có dữ liệu để tải!','ae'); return; }
+    await downloadExcel(table.outerHTML,filename,worksheetName); return;
+  }
+  const old=sel.value; const parts=[];
+  try {
+    for(const bp of _xlsxCompanyDepartmentList()){
+      sel.value=bp;
+      const x=renderFn && renderFn(); if(x && typeof x.then==='function') await x;
+      const table=document.getElementById(tableId);
+      if(table && _xlsxTableHasRows(table)) parts.push(_xlsxAddDepartmentHeader(table,bp));
+    }
+  } finally {
+    sel.value=old;
+    const x=renderFn && renderFn(); if(x && typeof x.then==='function') await x;
+  }
+  if(!parts.length){ showAlert('app','Không có dữ liệu để tải!','ae'); return; }
+  await downloadExcel(parts.join('<br>'),filename,worksheetName);
 }
 function renderNoCa() {
   const body = document.getElementById('no-ca-body');
@@ -5214,7 +5369,7 @@ function renderNoCa() {
  // Dùng đúng biến CU.role của hệ thống và kiểm tra an toàn
   const btnExportNoCa = document.getElementById('btn-export-no-ca');
   if (btnExportNoCa) {
-      btnExportNoCa.style.display = (CU.role === 'ld') ? 'inline-flex' : 'none';
+      btnExportNoCa.style.display = (CU.role === 'ld' || CU.admin) ? 'inline-flex' : 'none';
   }
 }
 function renderNoCaLD() {
@@ -5223,7 +5378,7 @@ function renderNoCaLD() {
   if (!card || !body) return;
 
   // Chỉ hiện với lãnh đạo
-  if (CU.role !== 'ld') { card.style.display = 'none'; return; }
+  if (CU.role !== 'ld' && !CU.admin) { card.style.display = 'none'; return; }
   card.style.display = '';
 
   // Bộ lọc bộ phận — chỉ áp dụng cho admin (thấy toàn Công ty),
@@ -5319,52 +5474,60 @@ rows.push({
   `).join('');
 }
 
-function exportNoCaLD() {
-  const table = document.getElementById('table-no-ca-ld').innerHTML;
-  downloadExcel(`<table border="1">${table}</table>`, 'Bang_No_Ca_Toan_PX.xls', 'NoCaToànPX');
+async function exportNoCaLD() {
+  await _exportTableXlsxByDepartment({filterId:'f-no-ca-ld-bp',renderFn:renderNoCaLD,tableId:'table-no-ca-ld',filename:'Bang_No_Ca_Toan_PX.xlsx',worksheetName:'NoCaToanPX'});
 }
-function exportNoCa() {
-  const table = document.getElementById('table-no-ca').innerHTML;
-  downloadExcel(`<table border="1">${table}</table>`, 'Bang_No_Ca.xls', 'NoCa');
+async function exportNoCa() {
+  const table=document.getElementById('table-no-ca');
+  if(!table || !_xlsxTableHasRows(table)){ showAlert('app','Không có dữ liệu để tải!','ae'); return; }
+  await downloadExcel(table.outerHTML,'Bang_No_Ca.xlsx','NoCa');
 }
-function exportExcel() { if (!CU || CU.role !== 'ld') return; const year = document.getElementById('f-stat-year').value; const table = document.getElementById('table-thong-ke').innerHTML; downloadExcel(table, `Thong_Ke_Doi_Ca_Nam_${year}.xls`, `ThongKe_${year}`); }
-function exportExcelDay() { if (!CU || CU.role !== 'ld') return; const label = ymExportLabel('f-day-year', 'f-day-month'); const tableEl = document.getElementById('table-day'); if(!tableEl) { showAlert('app', 'Không có dữ liệu để tải!', 'ae'); return; } downloadExcel(tableEl.innerHTML, `Lich_Doi_Ca_Chi_Tiet_${label}.xls`, `LichDoiCa`); }
-function exportExcelWarn() {
-  if (!CU || CU.role !== 'ld') return; const { yr, mo } = getYM('f-warn-year', 'f-warn-month'); if(!yr) return;
-  const mv = ymExportLabel('f-warn-year', 'f-warn-month');
-  const staffMap={}; getNVMine().forEach(u => { staffMap[u.name] = {kip: '', lech:0, hist:[]}; });
-  function ensure(name,kip){ if(!staffMap[name]) staffMap[name]={kip:kip||'',lech:0,hist:[]}; if(kip && !staffMap[name].kip) staffMap[name].kip = kip; }
-  
-  allReqs.forEach(r=>{ ensure(r.name, r.kip); ensure(r.partner, r.partnerKip||'');
-    if(r.status==='approved'){
-      const [yDoi, mDoi] = r.ngayDoi ? r.ngayDoi.toString().substring(0,10).split('-').map(Number) : [0,0]; const [yTra, mTra] = r.ngayTra ? r.ngayTra.toString().substring(0,10).split('-').map(Number) : [0,0];
-      
-     // BỘ LỌC XUẤT EXCEL (Đã thêm: Thực tế phải KHÁC lịch gốc)
-      let thucTeDoi = getCaThucTe(r.partner, r.partnerKip, r.ngayDoi);
-      let gocDoi = getCaTrucGoc(r.partner, r.partnerKip, r.ngayDoi);
-      const matchDoi = mo ? (yDoi === yr && mDoi === mo) : yDoi === yr;
-      const matchTra = mo ? (yTra === yr && mTra === mo) : yTra === yr;
-      if(matchDoi && thucTeDoi === r.caDoi && thucTeDoi !== gocDoi) { 
-        staffMap[r.partner].lech += 1; staffMap[r.partner].hist.push('Đi thay '+caLabel(r.caDoi)+' '+fmtDate(r.ngayDoi)); 
-      }
-      
-      let thucTeTra = getCaThucTe(r.name, r.kip, r.ngayTra);
-      let gocTra = getCaTrucGoc(r.name, r.kip, r.ngayTra);
-      if(matchTra && thucTeTra === r.caTra && thucTeTra !== gocTra) { 
-        staffMap[r.name].lech += 1; staffMap[r.name].hist.push('Trả ca '+caLabel(r.caTra)+' '+fmtDate(r.ngayTra)); 
-      } 
-    }
+async function exportExcel() {
+  if (!CU || (CU.role !== 'ld' && !CU.admin)) return;
+  const label=ymExportLabel('f-stat-year','f-stat-month')||document.getElementById('f-stat-year').value;
+  await _exportTableXlsxByDepartment({filterId:'f-stat-bp',renderFn:renderStaffStats,tableId:'table-thong-ke',filename:`Thong_Ke_Doi_Ca_${label}.xlsx`,worksheetName:`ThongKe_${label}`});
+}
+async function exportExcelDay() {
+  if (!CU || (CU.role !== 'ld' && !CU.admin)) return;
+  const label=ymExportLabel('f-day-year','f-day-month');
+  await _exportTableXlsxByDepartment({filterId:'f-day-bp',renderFn:renderDayTable,tableId:'table-day',filename:`Lich_Doi_Ca_Chi_Tiet_${label}.xlsx`,worksheetName:'LichDoiCa'});
+}
+function _buildWarnExportHtml(bp,yr,mo) {
+  const staffMap={};
+  const people=bp ? NV_LIST.filter(u=>(u.boPhan||'')===bp) : (canFilterAcrossDepartments()?NV_LIST:getNVMine());
+  people.forEach(u=>{ staffMap[u.name]={kip:getCurrentKip(u.name,u.kip)||u.kip||'',lech:0,hist:[]}; });
+  const ensure=(name,kip)=>{ if(!name)return; if(!staffMap[name]) staffMap[name]={kip:kip||'',lech:0,hist:[]}; if(kip&&!staffMap[name].kip)staffMap[name].kip=kip; };
+  allReqs.forEach(r=>{
+    if(r.partner==='CÔNG TÁC HC' || (r.reason&&r.reason.match(/^\[/)) || r.status!=='approved') return;
+    if(bp){ const nu=getUserInfo(r.name),pu=getUserInfo(r.partner); if((nu?.boPhan||'')!==bp && (pu?.boPhan||'')!==bp) return; }
+    else if(!canFilterAcrossDepartments() && CU.role==='ld' && !isMineName(r.name) && !isMineName(r.partner)) return;
+    ensure(r.name,r.kip); ensure(r.partner,r.partnerKip||'');
+    const [yDoi,mDoi]=r.ngayDoi?r.ngayDoi.toString().substring(0,10).split('-').map(Number):[0,0];
+    const [yTra,mTra]=r.ngayTra?r.ngayTra.toString().substring(0,10).split('-').map(Number):[0,0];
+    const matchDoi=mo?(yDoi===yr&&mDoi===mo):yDoi===yr, matchTra=mo?(yTra===yr&&mTra===mo):yTra===yr;
+    const thucTeDoi=getCaThucTe(r.partner,r.partnerKip,r.ngayDoi), gocDoi=getCaTrucGoc(r.partner,r.partnerKip,r.ngayDoi);
+    if(matchDoi&&thucTeDoi===r.caDoi&&thucTeDoi!==gocDoi&&staffMap[r.partner]){staffMap[r.partner].lech++;staffMap[r.partner].hist.push('Đi thay '+caLabel(r.caDoi)+' '+fmtDate(r.ngayDoi));}
+    const thucTeTra=getCaThucTe(r.name,r.kip,r.ngayTra), gocTra=getCaTrucGoc(r.name,r.kip,r.ngayTra);
+    if(matchTra&&thucTeTra===r.caTra&&thucTeTra!==gocTra&&staffMap[r.name]){staffMap[r.name].lech++;staffMap[r.name].hist.push('Trả ca '+caLabel(r.caTra)+' '+fmtDate(r.ngayTra));}
   });
-  const sortedWarn = Object.entries(staffMap).filter(([,v])=>v.lech > 0).sort((a,b)=>b[1].lech - a[1].lech);
-  if(sortedWarn.length === 0) { showAlert('app', 'Không có dữ liệu cảnh báo để tải!', 'ae'); return; }
-  let tableHTML = `<thead><tr><th>Họ tên</th><th>Chức danh</th><th>Kíp</th><th>Số ca lệch</th><th>Chi tiết lịch sử</th></tr></thead><tbody>`;
-sortedWarn.forEach(([n, v]) => { 
-  const chucDanh = getUserInfo(n)?.chucDanh || '';
-  let histText = v.hist.join(' | '); 
-  tableHTML += `<tr><td>${n}</td><td>${chucDanh}</td><td>${v.kip}</td><td>+${v.lech}</td><td>${histText}</td></tr>`; 
-}); 
-tableHTML += `</tbody>`;
-  downloadExcel(tableHTML, `Canh_Bao_Lech_Ca_${mv}.xls`, `CanhBao`);
+  const arr=Object.entries(staffMap).filter(([,v])=>v.lech>0).sort((a,b)=>b[1].lech-a[1].lech || a[0].localeCompare(b[0],'vi'));
+  if(!arr.length) return '';
+  const rows=arr.map(([n,v])=>`<tr><td>${escapeHTML(n)}</td><td>${escapeHTML(getUserInfo(n)?.chucDanh||'')}</td><td>${escapeHTML(v.kip)}</td><td>${v.lech}</td><td>${escapeHTML(v.hist.join(' | '))}</td></tr>`).join('');
+  return `<table><thead>${bp?`<tr><th colspan="5">${escapeHTML(bp.toUpperCase())}</th></tr>`:''}<tr><th>Họ tên</th><th>Chức danh</th><th>Kíp</th><th>Số ca lệch</th><th>Chi tiết lịch sử</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+async function exportExcelWarn() {
+  if (!CU || (CU.role !== 'ld' && !CU.admin)) return;
+  const {yr,mo}=getYM('f-warn-year','f-warn-month'); if(!yr)return;
+  const mv=ymExportLabel('f-warn-year','f-warn-month');
+  const sel=document.getElementById('f-warn-bp'); const current=(sel?.value||'');
+  let html='';
+  if(canFilterAcrossDepartments() && sel && !current){
+    html=_xlsxCompanyDepartmentList().map(bp=>_buildWarnExportHtml(bp,yr,mo)).filter(Boolean).join('<br>');
+  } else {
+    html=_buildWarnExportHtml(current||(canFilterAcrossDepartments()?'':(CU.boPhan||'')),yr,mo);
+  }
+  if(!html){showAlert('app','Không có dữ liệu cảnh báo để tải!','ae');return;}
+  await downloadExcel(html,`Canh_Bao_Lech_Ca_${mv}.xlsx`,'CanhBao');
 }
 // ===============================================================
 // HÀM VẼ BẢNG ĐI CA (ĐÃ PHÂN RÕ CẤP ĐỘ ƯU TIÊN MÀU SẮC)
@@ -5655,7 +5818,7 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
   if (CU.role === 'ld' && displayList.length > 0) {
     bodyHtml += `
       <tr style="background:#f1f5f9; font-weight:700; border-top:2px solid #cbd5e1;">
-        <td colspan="${CU.role === 'ld' ? 3 : 2}" style="text-align:right; color:#1a56a0; position:sticky; left:0; background:#f1f5f9; z-index:5;">TỔNG CỘNG TOÀN PX:</td>
+        <td colspan="${CU.role === 'ld' ? 3 : 2}" style="text-align:right; color:#1a56a0; position:sticky; left:0; background:#f1f5f9; z-index:5;">TỔNG CỘNG:</td>
         <td colspan="${daysInMonth}"></td>
         <td style="text-align:center; color:#15803d; font-size:14px;">${grandTotalK > 0 ? grandTotalK : ''}</td>
         <td style="text-align:center; color:#dc2626; font-size:14px;">${grandTotalL > 0 ? grandTotalL : ''}</td>
@@ -5942,76 +6105,89 @@ function _ccFormulaSetForRow(sheetDoc, rowEl, rowNum, codes) {
 }
 
 function _ccFillTemplateSheet(sheetDoc, drawingDoc, rows, yr, mo, tenBoPhan) {
-  const DATA_START = 8, TEMPLATE_DATA_END = 64, TEMPLATE_COUNT = 57, FOLLOW_START = 65;
-  const desiredCount = rows.length;
-  const desiredEnd = DATA_START + desiredCount - 1;
-  const delta = desiredCount - TEMPLATE_COUNT;
-  const sheetData = sheetDoc.getElementsByTagName('sheetData')[0];
-
-  const row64 = _ccGetRow(sheetDoc, TEMPLATE_DATA_END);
-  if (!row64) throw new Error('File mẫu thiếu hàng định dạng nhân sự.');
-  const styleTemplate = row64.cloneNode(true);
-
-  if (delta < 0) {
-    _ccChildren(sheetData).forEach(r => {
-      const n = Number(r.getAttribute('r') || 0);
-      if (n > desiredEnd && n <= TEMPLATE_DATA_END) sheetData.removeChild(r);
+  const DATA_START=8, TEMPLATE_DATA_END=64, TEMPLATE_COUNT=57, FOLLOW_START=65;
+  const companyMode=canFilterAcrossDepartments() && !(tenBoPhan||'').toString().trim();
+  let layout=[];
+  if(companyMode){
+    const groups=new Map();
+    rows.forEach(r=>{const bp=(r.boPhan||'').toString().trim()||'Chưa phân loại';if(!groups.has(bp))groups.set(bp,[]);groups.get(bp).push(r);});
+    const ordered=sortBoPhanNames([...groups.keys()].filter(x=>x!=='Chưa phân loại'));
+    if(groups.has('Chưa phân loại')) ordered.push('Chưa phân loại');
+    ordered.forEach(bp=>{
+      layout.push({type:'department',name:bp});
+      (groups.get(bp)||[]).forEach((r,i)=>layout.push({type:'employee',item:r,stt:i+1}));
     });
-    _ccShiftSheetRows(sheetDoc, FOLLOW_START, delta);
-    _ccShiftDrawingRows(drawingDoc, FOLLOW_START, delta);
-  } else if (delta > 0) {
-    _ccShiftSheetRows(sheetDoc, FOLLOW_START, delta);
-    _ccShiftDrawingRows(drawingDoc, FOLLOW_START, delta);
-    const totalRowAfterShift = _ccGetRow(sheetDoc, FOLLOW_START + delta);
-    for (let r=FOLLOW_START; r<=TEMPLATE_DATA_END + delta; r++) {
-      const clone = styleTemplate.cloneNode(true);
-      _ccRenumberRow(clone, r);
-      _ccBlankRowCells(clone);
-      sheetData.insertBefore(clone, totalRowAfterShift);
+  } else {
+    layout=rows.map((r,i)=>({type:'employee',item:r,stt:i+1}));
+  }
+  const desiredCount=layout.length;
+  const desiredEnd=DATA_START+desiredCount-1;
+  const delta=desiredCount-TEMPLATE_COUNT;
+  const sheetData=sheetDoc.getElementsByTagName('sheetData')[0];
+  const row64=_ccGetRow(sheetDoc,TEMPLATE_DATA_END);
+  if(!row64) throw new Error('File mẫu thiếu hàng định dạng nhân sự.');
+  const styleTemplate=row64.cloneNode(true);
+
+  if(delta<0){
+    _ccChildren(sheetData).forEach(r=>{const n=Number(r.getAttribute('r')||0);if(n>desiredEnd&&n<=TEMPLATE_DATA_END)sheetData.removeChild(r);});
+    _ccShiftSheetRows(sheetDoc,FOLLOW_START,delta); _ccShiftDrawingRows(drawingDoc,FOLLOW_START,delta);
+  } else if(delta>0){
+    _ccShiftSheetRows(sheetDoc,FOLLOW_START,delta); _ccShiftDrawingRows(drawingDoc,FOLLOW_START,delta);
+    const totalRowAfterShift=_ccGetRow(sheetDoc,FOLLOW_START+delta);
+    for(let r=FOLLOW_START;r<=TEMPLATE_DATA_END+delta;r++){
+      const clone=styleTemplate.cloneNode(true);_ccRenumberRow(clone,r);_ccBlankRowCells(clone);sheetData.insertBefore(clone,totalRowAfterShift);
     }
   }
 
-  rows.forEach((item, idx) => {
-    const rowNum = DATA_START + idx;
-    const rowEl = _ccGetRow(sheetDoc, rowNum);
-    if (!rowEl) throw new Error('Không tạo được hàng ' + rowNum + ' trong file XLSX.');
+  // Dọn merge phát sinh trong vùng dữ liệu (mẫu gốc không có, nhưng để an toàn khi tái dùng).
+  const mergeCells=sheetDoc.getElementsByTagName('mergeCells')[0];
+  if(mergeCells){
+    Array.from(mergeCells.getElementsByTagName('mergeCell')).forEach(mc=>{
+      const ref=mc.getAttribute('ref')||''; const m=ref.match(/^[A-Z]+(\d+):[A-Z]+(\d+)$/);
+      if(m && Number(m[1])>=DATA_START && Number(m[2])<=desiredEnd) mc.parentNode.removeChild(mc);
+    });
+  }
+
+  layout.forEach((rec,idx)=>{
+    const rowNum=DATA_START+idx, rowEl=_ccGetRow(sheetDoc,rowNum);
+    if(!rowEl) throw new Error('Không tạo được hàng '+rowNum+' trong file XLSX.');
     _ccBlankRowCells(rowEl);
-    _ccSetNumber(sheetDoc, _ccCell(rowEl,1), idx + 1);
-    _ccSetInline(sheetDoc, _ccCell(rowEl,2), item.name || '');
-    _ccSetInline(sheetDoc, _ccCell(rowEl,3), item.chucDanh || '');
-    for (let d=0; d<31; d++) _ccSetInline(sheetDoc, _ccCell(rowEl,4+d), item.codes?.[d] || '');
-    _ccFormulaSetForRow(sheetDoc, rowEl, rowNum, item.codes || []);
+    if(rec.type==='department'){
+      rowEl.setAttribute('ht','24'); rowEl.setAttribute('customHeight','1');
+      const c=_ccCell(rowEl,1); c.setAttribute('s','62'); _ccSetInline(sheetDoc,c,(rec.name||'').toString().toUpperCase());
+      const merges=sheetDoc.getElementsByTagName('mergeCells')[0];
+      if(merges){ const mc=sheetDoc.createElementNS(sheetDoc.documentElement.namespaceURI,'mergeCell'); mc.setAttribute('ref',`A${rowNum}:AO${rowNum}`); merges.appendChild(mc); merges.setAttribute('count',String(merges.getElementsByTagName('mergeCell').length)); }
+      return;
+    }
+    const item=rec.item;
+    _ccSetNumber(sheetDoc,_ccCell(rowEl,1),rec.stt);
+    _ccSetInline(sheetDoc,_ccCell(rowEl,2),item.name||'');
+    _ccSetInline(sheetDoc,_ccCell(rowEl,3),item.chucDanh||'');
+    for(let d=0;d<31;d++) _ccSetInline(sheetDoc,_ccCell(rowEl,4+d),item.codes?.[d]||'');
+    _ccFormulaSetForRow(sheetDoc,rowEl,rowNum,item.codes||[]);
   });
 
-  const monthText = String(mo).padStart(2,'0');
-  const bpText = (tenBoPhan || '').toString().trim().toUpperCase();
-  _ccSetInline(sheetDoc, _ccCell(_ccGetRow(sheetDoc,3),1), bpText);
-  _ccSetInline(sheetDoc, _ccCell(_ccGetRow(sheetDoc,6),4), `THÁNG ${monthText} NĂM ${yr}`);
+  const monthText=String(mo).padStart(2,'0');
+  const bpText=(tenBoPhan||'').toString().trim().toUpperCase();
+  _ccSetInline(sheetDoc,_ccCell(_ccGetRow(sheetDoc,3),1),bpText);
+  _ccSetInline(sheetDoc,_ccCell(_ccGetRow(sheetDoc,6),4),`THÁNG ${monthText} NĂM ${yr}`);
 
-  const totalRowNum = FOLLOW_START + delta;
-  const totalRow = _ccGetRow(sheetDoc, totalRowNum);
-  if (!totalRow) throw new Error('Không tìm thấy dòng tổng cộng trong file mẫu.');
-  for (let c=1; c<=34; c++) _ccClearCell(_ccCell(totalRow,c));
-  const totals = rows.reduce((a,r) => {
-    const s = r.sum || _ccCalcSummary(r.codes || []);
-    a.q += Number(s.quyDoi||0); a.c += Number(s.ngayCong||0); a.k += Number(s.k3||0);
-    a.l += Number(s.le||0); a.p += Number(s.p||0); a.vr += Number(s.vr||0);
-    return a;
-  }, {q:0,c:0,k:0,l:0,p:0,vr:0});
-  _ccSetFormula(sheetDoc, _ccCell(totalRow,35), `SUM(AI${DATA_START}:AI${desiredEnd})`, totals.q);
-  _ccSetFormula(sheetDoc, _ccCell(totalRow,36), `SUM(AJ${DATA_START}:AJ${desiredEnd})`, totals.c);
-  _ccSetFormula(sheetDoc, _ccCell(totalRow,37), `SUM(AK${DATA_START}:AK${desiredEnd})`, totals.k);
-  _ccSetFormula(sheetDoc, _ccCell(totalRow,38), `SUM(AL${DATA_START}:AL${desiredEnd})`, totals.l);
-  _ccSetFormula(sheetDoc, _ccCell(totalRow,39), `SUM(AM${DATA_START}:AM${desiredEnd})`, totals.p);
-  _ccSetFormula(sheetDoc, _ccCell(totalRow,40), `SUM(AN${DATA_START}:AN${desiredEnd})`, totals.vr);
+  const totalRowNum=FOLLOW_START+delta, totalRow=_ccGetRow(sheetDoc,totalRowNum);
+  if(!totalRow) throw new Error('Không tìm thấy dòng tổng cộng trong file mẫu.');
+  for(let c=1;c<=34;c++) _ccClearCell(_ccCell(totalRow,c));
+  const totals=rows.reduce((a,r)=>{const q=r.sum||_ccCalcSummary(r.codes||[]);a.q+=Number(q.quyDoi||0);a.c+=Number(q.ngayCong||0);a.k+=Number(q.k3||0);a.l+=Number(q.le||0);a.p+=Number(q.p||0);a.vr+=Number(q.vr||0);return a;},{q:0,c:0,k:0,l:0,p:0,vr:0});
+  _ccSetFormula(sheetDoc,_ccCell(totalRow,35),`SUM(AI${DATA_START}:AI${desiredEnd})`,totals.q);
+  _ccSetFormula(sheetDoc,_ccCell(totalRow,36),`SUM(AJ${DATA_START}:AJ${desiredEnd})`,totals.c);
+  _ccSetFormula(sheetDoc,_ccCell(totalRow,37),`SUM(AK${DATA_START}:AK${desiredEnd})`,totals.k);
+  _ccSetFormula(sheetDoc,_ccCell(totalRow,38),`SUM(AL${DATA_START}:AL${desiredEnd})`,totals.l);
+  _ccSetFormula(sheetDoc,_ccCell(totalRow,39),`SUM(AM${DATA_START}:AM${desiredEnd})`,totals.p);
+  _ccSetFormula(sheetDoc,_ccCell(totalRow,40),`SUM(AN${DATA_START}:AN${desiredEnd})`,totals.vr);
   _ccClearCell(_ccCell(totalRow,41));
 
-  const signDateRow = 73 + delta, signNameRow = 74 + delta;
-  _ccSetInline(sheetDoc, _ccCell(_ccGetRow(sheetDoc, signDateRow),1), `Thanh Hóa, ngày     tháng     năm ${yr}`);
-  _ccSetInline(sheetDoc, _ccCell(_ccGetRow(sheetDoc, signNameRow),1), bpText);
-
-  const dim = sheetDoc.getElementsByTagName('dimension')[0];
-  if (dim) dim.setAttribute('ref', `A1:AO${74 + delta}`);
+  const signDateRow=73+delta,signNameRow=74+delta;
+  _ccSetInline(sheetDoc,_ccCell(_ccGetRow(sheetDoc,signDateRow),1),`Thanh Hóa, ngày     tháng     năm ${yr}`);
+  _ccSetInline(sheetDoc,_ccCell(_ccGetRow(sheetDoc,signNameRow),1),bpText);
+  const dim=sheetDoc.getElementsByTagName('dimension')[0];if(dim)dim.setAttribute('ref',`A1:AO${74+delta}`);
 }
 
 function _ccPatchWorkbookXml(workbookDoc, mo) {
@@ -7338,13 +7514,10 @@ function renderAdminHCHist() {
   }).join('');
 }
 
-function exportExcelAdminHC() {
+async function exportExcelAdminHC() {
   if (!CU || (CU.role !== 'ld' && !CU.admin)) return;
-  const mv = ymExportLabel('f-admin-hc-year', 'f-admin-hc-month');
-  const tableEl = document.getElementById('table-admin-hc-hist');
-  if(!tableEl || tableEl.querySelector('.empty')) { showAlert('app', 'Tháng này không có dữ liệu để tải!', 'ae'); return; }
-  let html = tableEl.innerHTML;
-  downloadExcel(html, `Danh_Sach_Dieu_Dong_HC_${mv}.xls`, `DieuDongHC`);
+  const mv=ymExportLabel('f-admin-hc-year','f-admin-hc-month');
+  await _exportTableXlsxByDepartment({filterId:'f-admin-hc-bp',renderFn:renderAdminHCHist,tableId:'table-admin-hc-hist',filename:`Danh_Sach_Dieu_Dong_HC_${mv}.xlsx`,worksheetName:'DieuDongHC'});
 }
 
 async function deleteAdminHC(id, btn) {
@@ -8069,7 +8242,7 @@ function renderTransferLog() {
   const bpSel = document.getElementById('f-transfer-bophan');
   if (bpSel) {
     if (canFilterAcrossDepartments()) {
-      const bpList = [...new Set(NV_LIST.map(u => u.boPhan).filter(Boolean))];
+      const bpList = sortBoPhanNames(NV_LIST.map(u => u.boPhan).filter(Boolean));
       if (bpList.length > 0) {
         if (!bpSel.dataset.filled) {
           bpSel.innerHTML = '<option value="">Tất cả bộ phận</option>' + bpList.map(bp => `<option>${escapeHTML(bp)}</option>`).join('');
@@ -8126,9 +8299,10 @@ async function deleteTransfer(id, btn) {
   }
 }
 
-function exportExcelTransfer() {
-  const html = document.getElementById('table-transfer-log').innerHTML;
-  downloadExcel(html, `Lich_Su_Dieu_Chuyen_Kip.xls`, `DieuChuyen`);
+async function exportExcelTransfer() {
+  if (!CU || (CU.role !== 'ld' && !CU.admin)) return;
+  const label=ymExportLabel('f-transfer-year','f-transfer-month');
+  await _exportTableXlsxByDepartment({filterId:'f-transfer-bophan',renderFn:renderTransferLog,tableId:'table-transfer-log',filename:`Lich_Su_Dieu_Chuyen_Kip_${label}.xlsx`,worksheetName:'DieuChuyen'});
 }
 // ===============================================================
 // HÀM ẨN / HIỂN THỊ MẬT KHẨU
@@ -8256,83 +8430,39 @@ function validateRealtimeTra() {
     }
     updatePartnerListRealtime(); // Kích hoạt bộ lọc danh sách
 }
-function exportExcelHistory() {
+async function exportExcelHistory() {
   if (!CU || (CU.role !== 'ld' && !CU.admin)) return;
-
-  const fs = document.getElementById('f-fst').value;
-  const { yr, mo } = getYM('f-hist-year', 'f-hist-month');
-  const fkp = document.getElementById('f-fkp').value;
-  const fcd = document.getElementById('f-fcd')?.value || '';
-  const searchText = (document.getElementById('f-hist-search')?.value || '').trim().toLowerCase();
-
-  // Lọc đúng như renderHistory
-  const items = allReqs.filter(r => {
-    if (r.status === 'cancelled') return false;
-    if (r.partner === 'CÔNG TÁC HC') return false;
-    if (r.reason && r.reason.match(/^\[/)) return false;
-    if (fs && r.status !== fs) return false;
-    if (fkp && r.kip !== fkp && r.partnerKip !== fkp) return false;
-    if (fcd) {
-      const nameInfo = getUserInfo(r.name);
-      const partnerInfo = getUserInfo(r.partner);
-      if (nameInfo?.chucDanh !== fcd && partnerInfo?.chucDanh !== fcd) return false;
-    }
-    if (yr && !matchRequestYM(r, yr, mo)) return false;
-    if (searchText) {
-      if (!r.name?.toLowerCase().includes(searchText) && !r.partner?.toLowerCase().includes(searchText)) return false;
-    }
+  const fs=document.getElementById('f-fst').value;
+  const {yr,mo}=getYM('f-hist-year','f-hist-month');
+  const fkp=document.getElementById('f-fkp').value;
+  const fcd=document.getElementById('f-fcd')?.value||'';
+  const fbp=canFilterAcrossDepartments()?(document.getElementById('f-hist-bp')?.value||''):'';
+  const searchText=(document.getElementById('f-hist-search')?.value||'').trim().toLowerCase();
+  let items=allReqs.filter(r=>{
+    if(r.status==='cancelled'||r.partner==='CÔNG TÁC HC'||(r.reason&&r.reason.match(/^\[/)))return false;
+    if(fs&&r.status!==fs)return false;
+    if(fkp&&r.kip!==fkp&&r.partnerKip!==fkp)return false;
+    if(fcd){const a=getUserInfo(r.name),b=getUserInfo(r.partner);if(a?.chucDanh!==fcd&&b?.chucDanh!==fcd)return false;}
+    if(fbp){const a=getUserInfo(r.name),b=getUserInfo(r.partner);if((a?.boPhan||'')!==fbp&&(b?.boPhan||'')!==fbp)return false;}
+    if(yr&&!matchRequestYM(r,yr,mo))return false;
+    if(searchText&&!((r.name||'').toLowerCase().includes(searchText)||(r.partner||'').toLowerCase().includes(searchText)))return false;
     return true;
   });
-
-  if (!items.length) { showAlert('app', 'Không có dữ liệu để tải!', 'ae'); return; }
-
-  // Tạo bảng HTML để xuất Excel
- const rows = items.map((r, idx) => `
-    <tr>
-      <td>${idx + 1}</td>
-      <td>${escapeHTML(r.name || '')}</td>
-      <td>${escapeHTML(getUserInfo(r.name)?.chucDanh || '')}</td>
-      <td>${escapeHTML(r.kip || '')}</td>
-      <td>${escapeHTML(r.caDoi || '')}</td>
-      <td>${escapeHTML(fmtDate(r.ngayDoi))}</td>
-      <td>${escapeHTML(r.partner || '')}</td>
-      <td>${escapeHTML(getUserInfo(r.partner)?.chucDanh || '')}</td>
-      <td>${escapeHTML(getUserInfo(r.partner)?.kip || '')}</td>
-      <td>${escapeHTML(r.caTra || '')}</td>
-      <td>${escapeHTML(fmtDate(r.ngayTra))}</td>
-      <td>${r.status === 'approved' ? 'Đã duyệt' : r.status === 'pending_ld' ? 'Chờ LĐ duyệt' : r.status === 'pending_partner' ? 'Chờ xác nhận' : 'Từ chối'}</td>
-      <td>${escapeHTML(r.approvedBy || '')}</td>
-      <td>${escapeHTML(r.reason || '')}</td>
-    </tr>
-  `).join('');
-
-  const table = `
-    <table border="1">
-      <thead>
-        <tr>
-          <th>STT</th>
-          <th>Người xin đổi</th>
-          <th>Chức danh</th>
-          <th>Kíp</th>
-          <th>Ca đổi</th>
-          <th>Ngày đổi</th>
-          <th>Người đi thay</th>
-          <th>Chức danh người thay</th>
-          <th>Kíp người thay</th>
-          <th>Ca trả</th>
-          <th>Ngày trả</th>
-          <th>Trạng thái</th>
-          <th>Người duyệt</th>
-          <th>Lý do</th>
-        </tr>
-      </thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `;
-
-  const periodLabel = ymExportLabel('f-hist-year', 'f-hist-month');
-  const tenFile = `Lich_su_doi_ca${periodLabel ? '_' + periodLabel : ''}${fcd ? '_' + fcd : ''}.xls`;
-  downloadExcel(table, tenFile, 'LichSu');
+  if(!items.length){showAlert('app','Không có dữ liệu để tải!','ae');return;}
+  const head=`<tr><th>STT</th><th>Người xin đổi</th><th>Chức danh</th><th>Kíp</th><th>Ca đổi</th><th>Ngày đổi</th><th>Người đi thay</th><th>Chức danh người thay</th><th>Kíp người thay</th><th>Ca trả</th><th>Ngày trả</th><th>Trạng thái</th><th>Người duyệt</th><th>Lý do</th></tr>`;
+  const makeTable=(arr,bp)=>{
+    const rows=arr.map((r,i)=>`<tr><td>${i+1}</td><td>${escapeHTML(r.name||'')}</td><td>${escapeHTML(getUserInfo(r.name)?.chucDanh||'')}</td><td>${escapeHTML(r.kip||'')}</td><td>${escapeHTML(r.caDoi||'')}</td><td>${escapeHTML(fmtDate(r.ngayDoi))}</td><td>${escapeHTML(r.partner||'')}</td><td>${escapeHTML(getUserInfo(r.partner)?.chucDanh||'')}</td><td>${escapeHTML(getUserInfo(r.partner)?.kip||'')}</td><td>${escapeHTML(r.caTra||'')}</td><td>${escapeHTML(fmtDate(r.ngayTra))}</td><td>${r.status==='approved'?'Đã duyệt':r.status==='pending_ld'?'Chờ LĐ duyệt':r.status==='pending_partner'?'Chờ xác nhận':'Từ chối'}</td><td>${escapeHTML(r.approvedBy||'')}</td><td>${escapeHTML(r.reason||'')}</td></tr>`).join('');
+    return `<table><thead>${bp?`<tr><th colspan="14">${escapeHTML(bp.toUpperCase())}</th></tr>`:''}${head}</thead><tbody>${rows}</tbody></table>`;
+  };
+  let html='';
+  if(canFilterAcrossDepartments()&&!fbp){
+    const by=new Map(); items.forEach(r=>{const bp=(getUserInfo(r.name)?.boPhan||'Chưa phân loại');if(!by.has(bp))by.set(bp,[]);by.get(bp).push(r);});
+    html=sortBoPhanNames([...by.keys()].filter(x=>x!=='Chưa phân loại')).map(bp=>makeTable(by.get(bp)||[],bp)).join('<br>');
+    if(by.has('Chưa phân loại'))html+=(html?'<br>':'')+makeTable(by.get('Chưa phân loại'),'Chưa phân loại');
+  } else html=makeTable(items,fbp||'');
+  const periodLabel=ymExportLabel('f-hist-year','f-hist-month');
+  const tenFile=`Lich_su_doi_ca${periodLabel?'_'+periodLabel:''}${fcd?'_'+fcd:''}.xlsx`;
+  await downloadExcel(html,tenFile,'LichSu');
 }
 // ===============================================================
 // TÍNH NĂNG NGHỈ PHÉP
@@ -8982,12 +9112,14 @@ function exportExcelLeaveHistory() {
   const fst = document.getElementById('f-leave-hist-status')?.value || '';
   const fkp = document.getElementById('f-leave-hist-kip')?.value || '';
   const fcd = document.getElementById('f-leave-hist-cd')?.value || '';
+  const fbp = canFilterAcrossDepartments() ? (document.getElementById('f-leave-hist-bp')?.value || '') : '';
   const searchText = (document.getElementById('f-leave-hist-search')?.value || '').trim().toLowerCase();
   const flt = document.getElementById('f-leave-hist-type')?.value || '';
 
   let leaves = [...allLeaves];
   if (fst) leaves = leaves.filter(lv => lv.status === fst);
   if (fcd) leaves = leaves.filter(lv => lv.role === fcd);
+  if (fbp) leaves = leaves.filter(lv => ((getUserInfo(lv.name)||{}).boPhan || '') === fbp);
   if (searchText) leaves = leaves.filter(lv => (lv.name || '').toLowerCase().includes(searchText));
   if (flt) leaves = leaves.filter(lv => (lv.leaveType || 'P') === flt);
   if (yr) leaves = leaves.filter(lv => leaveMatchesYM(lv, yr, mo));
@@ -9055,10 +9187,10 @@ function exportExcelLeaveHistory() {
   `;
 
   const periodLabel = ymExportLabel('f-leave-hist-year', 'f-leave-hist-month');
-  const tenFile = `Lich_su_nghi_ca_nhan${periodLabel ? '_' + periodLabel : ''}.xls`;
+  const tenFile = `Lich_su_nghi_ca_nhan${periodLabel ? '_' + periodLabel : ''}.xlsx`;
 
-  // Admin không lọc chức danh → xuất phân theo bộ phận
-  if (CU.admin && !fcd) {
+  // Admin/LĐ Công ty để Tất cả bộ phận → xuất phân theo bộ phận, theo BO_PHAN_ORDER
+  if (canFilterAcrossDepartments() && !fbp) {
     const BO_PHAN_ORDER = sortBoPhanNames(leaves.map(lv => (getUserInfo(lv.name)||{}).boPhan || ''));
     const getUserBP = name => (getUserInfo(name)||{}).boPhan || '';
     const hdrStyle = 'background:#1e3a8a;color:#fff;font-weight:700;font-size:14px;text-align:center;padding:8px;';
@@ -9263,7 +9395,7 @@ async function renderLeaveStats() {
   // Hàng tổng cộng chỉ cho lãnh đạo
   if (isLD && targetList.length > 0) {
     rows.push(`<tr style="background:#ebf3ff; font-weight:700; color:#1a56a0; border-top:2px solid #bfdbfe;">
-      <td colspan="3" style="text-align:center;">TỔNG CỘNG TOÀN PX:</td>
+      <td colspan="3" style="text-align:center;">TỔNG CỘNG:</td>
       <td style="text-align:center; font-size:15px;">${totalAnnual}</td>
       <td style="text-align:center; font-size:15px; color:#dc2626;">${totalUsed}</td>
       <td></td>
@@ -9383,12 +9515,10 @@ async function doLeaveRecalcActionWithPin() {
   submitBtn.disabled = false; submitBtn.textContent = oldText;
 }
 
-function exportLeaveStatExcel() {
+async function exportLeaveStatExcel() {
   if (!CU || (CU.role !== 'ld' && !CU.admin)) return;
-  const label = ymExportLabel('f-leave-stat-year', 'f-leave-stat-month') || new Date().getFullYear();
-  const tableEl = document.getElementById('table-leave-stat');
-  if (!tableEl) return;
-  downloadExcel(tableEl.innerHTML, `Thong_Ke_Nghi_Phep_${label}.xls`, `NghiPhep_${label}`);
+  const label=ymExportLabel('f-leave-stat-year','f-leave-stat-month')||new Date().getFullYear();
+  await _exportTableXlsxByDepartment({filterId:'f-leave-stat-bp',renderFn:renderLeaveStats,tableId:'table-leave-stat',filename:`Thong_Ke_Nghi_Phep_${label}.xlsx`,worksheetName:`NghiPhep_${label}`});
 }
 </script>
 </body>
