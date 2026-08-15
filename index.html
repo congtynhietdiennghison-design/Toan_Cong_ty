@@ -255,7 +255,7 @@ textarea{resize:none;height:80px}
   <div class="card">
     <div class="sec-title" style="margin:0 0 10px;">Lịch trực tổng hợp</div>
     <div class="hist-filter-bar">
-      <button id="btn-export-sched" class="btn btn-success" style="display:none;" onclick="exportExcelSched()">⬇ Tải Excel</button>
+      <button id="btn-export-sched" class="btn btn-success" style="display:none;" onclick="exportExcelSched()">⬇ Bảng chấm công</button>
       <select id="f-sched-year" onchange="renderScheduleTable()" class="ym-sel-year"></select>
       <select id="f-sched-month" onchange="renderScheduleTable()" class="ym-sel-month"></select>
       <select id="f-sched-bp" onchange="renderScheduleTable()" style="display:none;"></select>
@@ -5381,6 +5381,27 @@ function renderScheduleTable() {
   return renderScheduleTableCore();
 }
 
+// ===============================================================
+// KÝ HIỆU CHẤM CÔNG NGÀY LỄ - CHỈ DÙNG Ở LỚP HIỂN THỊ/XUẤT FILE
+// QUAN TRỌNG: không thay đổi ca nghiệp vụ trả về từ getCaThucTe().
+// Backend/đổi ca/điều động/kiểm tra an toàn vẫn luôn dùng N/C/K/OFF như trước.
+// ===============================================================
+function _toChamCongDisplayCode(caRaw, isNgayLe) {
+  const ca = (caRaw == null ? '' : String(caRaw)).trim();
+  if (isNgayLe) {
+    if (ca === 'N') return 'LN';
+    if (ca === 'C') return 'LC';
+    if (ca === 'K') return 'LK';
+    // Ngày L mà theo lịch không đi làm -> chấm L.
+    // Không tự sinh NB; NB do người chấm công cân đối sau.
+    if (ca === 'OFF' || ca === 'NONE' || ca === '') return 'L';
+  }
+  if (ca === 'HC') return 'X';
+  if (ca === 'HC/2') return 'X/2';
+  if (ca === 'OFF' || ca === 'NONE') return '';
+  return ca;
+}
+
 function renderScheduleTableCore() {
   const { yr, mo } = getYM('f-sched-year', 'f-sched-month');
   if (!yr || !mo) {
@@ -5391,7 +5412,7 @@ function renderScheduleTableCore() {
   const daysInMonth = new Date(yr, mo, 0).getDate();
 
   const btnExport = document.getElementById('btn-export-sched');
-  if (btnExport) btnExport.style.display = (CU.role === 'ld') ? 'inline-flex' : 'none';
+  if (btnExport) btnExport.style.display = (CU.role === 'ld' || CU.admin) ? 'inline-flex' : 'none';
 
   // --- 1. LẤY CẤU HÌNH TỪ EXCEL ---
   const conf = APP_CONFIG.configs || {};
@@ -5551,7 +5572,11 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
       else if(ca === 'V') countV++;   // Vắng không phép không tính
       else if(ca === 'O') {}          // Không hưởng lương, không tính
       
-      let isLe = mangLe.has(dateStr);
+      // NGAY_LE có thể cấu hình theo bộ phận. Với người nào thì dùng cấu hình
+      // của đúng bộ phận người đó; không lấy cứng config chung khi xem toàn Công ty.
+      const _uBpHoliday = (u.boPhan || '').toString().trim();
+      const _uCfgHoliday = mergeConfigsForBoPhan(_uBpHoliday);
+      const isLe = getHolidaySetForBoPhan(_uBpHoliday, _uCfgHoliday).has(dateStr);
       let style = "";
       
       // ====================================================
@@ -5563,8 +5588,9 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
       } else if (ca === 'CT' || ca === 'HT' || ca === 'ĐD') {
          // 2. CÔNG TÁC / HỌC TẬP / ĐIỀU DƯỠNG (Xanh lá mạ)
          style = "color:#16a34a; font-weight:700; font-style:italic;";
-      } else if (isLe && ca !== 'OFF') {
-         // 3. ĐI LÀM NGÀY LỄ (Nền hồng, chữ đỏ)
+      } else if (isLe && ca !== 'OFF' && ca !== 'NONE') {
+         // 3. NGÀY LỄ: N/C/K sẽ hiển thị LN/LC/LK; các trạng thái làm việc khác
+         // vẫn giữ nguyên ký hiệu nghiệp vụ nhưng được đánh dấu nền ngày lễ.
          style = "background:#fecaca; color:#dc2626; font-weight:700;";
       } else if (ca === 'P') {
          // 4. NGHỈ PHÉP (Xanh lam)
@@ -5587,9 +5613,11 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
       } else if (ca === 'O') {
          // 10. KHÔNG HƯỞNG LƯƠNG (Xám nhạt)
          style = "color:#94a3b8; font-style:italic;";
-      } else if (ca === 'OFF') {
-         // 11. NGÀY NGHỈ BÌNH THƯỜNG
-         style = isLe ? "background:#fecaca; color:#cbd5e1;" : "color:#cbd5e1;";
+      } else if (ca === 'OFF' || ca === 'NONE') {
+         // 11. Ngày thường OFF để trống; nếu đúng NGAY_LE sẽ hiển thị L.
+         style = isLe
+           ? "background:#fecaca; color:#dc2626; font-weight:700;"
+           : "color:#cbd5e1;";
      } else if (isLech) {
          // 12. LỆCH CA ĐÃ DUYỆT (Màu Cam nhạt)
          style = "background:#fff7ed; color:#ea580c; font-weight:700;";
@@ -5598,8 +5626,10 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
          style = isLe ? "background:#fecaca;" : "";
       }
       
-      const caDisplay = ca === 'HC' ? 'X' : ca === 'HC/2' ? 'X/2' : ca;
-      row += `<td style="text-align:center; ${style}">${(ca === 'OFF' || ca === 'NONE') ? '' : caDisplay}</td>`;
+      // Chỉ đổi NHÃN chấm công tại đây. `ca` vẫn giữ nguyên N/C/K/OFF trong RAM
+      // để mọi logic đổi ca, điều động, kiểm lịch... tiếp tục hiểu đúng ca thật.
+      const caDisplay = _toChamCongDisplayCode(ca, isLe);
+      row += `<td data-ca-raw="${escapeHTML(ca || '')}" data-ngay-le="${isLe ? '1' : '0'}" style="text-align:center; ${style}">${escapeHTML(caDisplay)}</td>`;
     }
 
     const totalCong = (totalHours / 8).toFixed(2);
@@ -5637,65 +5667,272 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
   document.getElementById('sched-body').innerHTML = bodyHtml || '<tr><td colspan="45" class="empty">Không có dữ liệu phù hợp</td></tr>';
 }
 // ===============================================================
-// HÀM XUẤT EXCEL CHO BẢNG ĐI CA (DÀNH RIÊNG CHO LÃNH ĐẠO)
+// XUẤT BẢNG CHẤM CÔNG THEO MẪU NHÀ MÁY
+// - Chỉ lấy ký hiệu công đang HIỂN THỊ trong "Bảng đi ca".
+// - Ngày NGAY_LE: OFF/NONE -> L; N -> LN; C -> LC; K -> LK (chỉ nhãn chấm công).
+// - KHÔNG tự sinh NB. NB do người chấm công cân đối sau.
+// - LN/LC/LK/L không cộng trực tiếp vào Số ngày công làm việc; LN/LC/LK vẫn
+//   tham gia Công quy đổi nghỉ giữa ca; LK vẫn tính K3; cả 4 mã đều tính cột L.
+// - Các cột tổng hợp AI:AN tự tính đúng công thức của mẫu Nhà máy.
 // ===============================================================
+function _ccNormCode(v) {
+  return (v == null ? '' : String(v)).replace(/\s+/g, '').trim();
+}
+
+function _ccCount(codes, code) {
+  const x = _ccNormCode(code).toUpperCase();
+  return (codes || []).reduce((n, v) => n + (_ccNormCode(v).toUpperCase() === x ? 1 : 0), 0);
+}
+
+function _ccCalcSummary(codes) {
+  // Công thức lấy NGUYÊN từ file mẫu "Bảng chấm công T07. năm 2026.xlsx":
+  // AI = ((N+C+LN+LC)*0,5 + (K+LK)*0,75) / 8
+  // AJ = X + X/2/2 + N + C + K + CT + HT + NB + ĐD + AI
+  // AK = K + LK
+  // AL = L + LN + LC + LK
+  // AM = P
+  // AN = VR
+  const n  = _ccCount(codes, 'N');
+  const c  = _ccCount(codes, 'C');
+  const k  = _ccCount(codes, 'K');
+  const ln = _ccCount(codes, 'LN');
+  const lc = _ccCount(codes, 'LC');
+  const lk = _ccCount(codes, 'LK');
+  const ai = ((n + c + ln + lc) * 0.5 + (k + lk) * 0.75) / 8;
+  const aj = _ccCount(codes, 'X') + _ccCount(codes, 'X/2') / 2 +
+             n + c + k + _ccCount(codes, 'CT') + _ccCount(codes, 'HT') +
+             _ccCount(codes, 'NB') + _ccCount(codes, 'ĐD') + ai;
+  return {
+    quyDoi: ai,
+    ngayCong: aj,
+    k3: k + lk,
+    le: _ccCount(codes, 'L') + ln + lc + lk,
+    p: _ccCount(codes, 'P'),
+    vr: _ccCount(codes, 'VR')
+  };
+}
+
+function _ccGetUserInfoForExport(name) {
+  const key = (name || '').toString().trim();
+  if (!key) return {};
+  // Khi LĐ Công ty/Admin đang xem toàn Công ty, renderScheduleTable() dùng bộ dữ liệu
+  // _companySchedule tạm thời rồi khôi phục NV_LIST; vì vậy export phải tra thêm map này.
+  if (_companySchedule && _companySchedule.userByName && _companySchedule.userByName[key]) {
+    return _companySchedule.userByName[key];
+  }
+  return getUserInfo(key) || {};
+}
+
+function _ccGetBoPhanExport() {
+  const fBp = (document.getElementById('f-sched-bp')?.value || '').toString().trim();
+  // Admin/LĐ Công ty: chọn 1 bộ phận -> ghi đúng tên bộ phận đó;
+  // để "Tất cả bộ phận" -> xuất toàn Công ty và TÊN BỘ PHẬN để trống.
+  if (canFilterAcrossDepartments()) return fBp;
+  // Lãnh đạo bộ phận: dùng bộ phận của chính tài khoản đang đăng nhập.
+  const me = _ccGetUserInfoForExport(CU && CU.name ? CU.name : '');
+  return (me.boPhan || '').toString().trim();
+}
+
+function _ccRowsFromScheduleTable(yr, mo) {
+  const tableEl = document.getElementById('table-schedule');
+  if (!tableEl) return [];
+  const daysInMonth = new Date(Number(yr), Number(mo), 0).getDate();
+  const dayStart = (CU && CU.role === 'ld') ? 3 : 2; // Họ tên + (Chức danh) + Kíp
+  const expectedCols = dayStart + daysInMonth + 7;   // 7 cột tổng hợp của Bảng đi ca hiện tại
+  const rows = [];
+
+  tableEl.querySelectorAll('tbody tr').forEach(tr => {
+    const tds = Array.from(tr.querySelectorAll(':scope > td'));
+    // Loại dòng tiêu đề bộ phận, dòng tổng cộng và dòng "không có dữ liệu".
+    if (tds.length !== expectedCols) return;
+
+    const name = (tds[0].textContent || '').replace(/\s*\(Tôi\)\s*$/i, '').trim();
+    if (!name) return;
+    const info = _ccGetUserInfoForExport(name);
+    if ((info.chucDanh || '').toString().trim().toUpperCase() === 'ADMIN') return;
+
+    const codes = [];
+    for (let i = 0; i < 31; i++) {
+      if (i < daysInMonth) codes.push(_ccNormCode(tds[dayStart + i]?.textContent || ''));
+      else codes.push('');
+    }
+    rows.push({
+      name: name,
+      chucDanh: (info.chucDanh || '').toString().trim(),
+      boPhan: (info.boPhan || '').toString().trim(),
+      codes: codes,
+      sum: _ccCalcSummary(codes)
+    });
+  });
+  return rows;
+}
+
+function _ccFmt2(n) {
+  const x = Number(n || 0);
+  return (Math.round((x + Number.EPSILON) * 100) / 100).toFixed(2);
+}
+
+function _ccSafeFilename(s) {
+  return (s || '').toString().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g,'d').replace(/Đ/g,'D').replace(/[^a-zA-Z0-9_-]+/g, '_').replace(/^_+|_+$/g,'');
+}
+
+function _ccDownloadExcel(htmlBody, filename, worksheetName) {
+  // Dùng Blob thay data-URI để xuất ổn định cả khi toàn Công ty có vài trăm nhân sự.
+  const sheetName = (worksheetName || 'ChamCong').replace(/[\\\/?*\[\]:]/g, '_').substring(0,31);
+  const full = `<!DOCTYPE html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+      xmlns:x="urn:schemas-microsoft-com:office:excel"
+      xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+<meta charset="utf-8">
+<!--[if gte mso 9]><xml>
+<x:ExcelWorkbook><x:ExcelWorksheets><x:ExcelWorksheet>
+<x:Name>${escapeHTML(sheetName)}</x:Name>
+<x:WorksheetOptions>
+  <x:Selected/>
+  <x:PageSetup><x:Layout x:Orientation="Landscape"/></x:PageSetup>
+  <x:FitToPage/>
+  <x:Print><x:FitWidth>1</x:FitWidth><x:FitHeight>0</x:FitHeight><x:ValidPrinterInfo/></x:Print>
+</x:WorksheetOptions>
+</x:ExcelWorksheet></x:ExcelWorksheets></x:ExcelWorkbook>
+</xml><![endif]-->
+<style>
+  @page { size: landscape; margin: 0.35in; }
+  body { font-family: "Times New Roman", serif; font-size: 9pt; color:#000; }
+  table { border-collapse: collapse; table-layout: fixed; }
+  .cc { width:100%; }
+  .cc td, .cc th { border:1px solid #000; padding:2px 2px; text-align:center; vertical-align:middle; }
+  .cc .nb { border:none !important; }
+  .cc .left { text-align:left; }
+  .cc .bold { font-weight:700; }
+  .cc .title { font-size:15pt; font-weight:700; }
+  .cc .company { font-size:9pt; }
+  .cc .bp { font-size:9pt; font-weight:700; text-decoration:underline; }
+  .cc .hdr { font-weight:700; white-space:normal; line-height:1.05; }
+  .cc .day { width:24px; }
+  .cc .tt { width:28px; }
+  .cc .name { width:155px; text-align:left; white-space:nowrap; }
+  .cc .role { width:90px; text-align:left; white-space:normal; }
+  .cc .sumwide { width:58px; white-space:normal; }
+  .cc .sumnarrow { width:28px; }
+  .cc .note { width:55px; }
+  .cc .num2 { mso-number-format:"0.00"; }
+  .cc .num0 { mso-number-format:"0"; }
+  .notes { margin-top:8px; width:100%; font-size:8.5pt; }
+  .notes td { border:none; padding:1px 0; text-align:left; }
+  .sign { margin-top:18px; width:100%; font-size:9pt; }
+  .sign td { border:none; text-align:center; vertical-align:top; }
+</style>
+</head><body>${htmlBody}</body></html>`;
+  const blob = new Blob(['\ufeff', full], {type:'application/vnd.ms-excel;charset=utf-8'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function _ccBuildHtml(rows, yr, mo, tenBoPhan) {
+  const monthText = String(mo).padStart(2,'0');
+  const bpText = (tenBoPhan || '').toString().trim().toUpperCase();
+  const daysInMonth = new Date(Number(yr), Number(mo), 0).getDate();
+
+  let html = '<table class="cc">';
+  // Phần đầu mẫu Nhà máy: 41 cột A:AO.
+  html += `<tr>
+    <td class="nb company left" colspan="12">CÔNG TY NHIỆT ĐIỆN NGHI SƠN</td>
+    <td class="nb title" colspan="20">BẢNG CHẤM CÔNG</td>
+    <td class="nb bold" colspan="9" style="text-align:right;">HD-03-06-P1</td>
+  </tr>`;
+  html += `<tr><td class="nb bp left" colspan="12">${escapeHTML(bpText)}</td><td class="nb" colspan="29"></td></tr>`;
+  html += '<tr><td class="nb" colspan="41" style="height:12px;"></td></tr>';
+
+  html += `<tr>
+    <th class="tt hdr" rowspan="2">TT</th>
+    <th class="name hdr" rowspan="2" style="text-align:center;">Họ và Tên</th>
+    <th class="role hdr" rowspan="2" style="text-align:center;">Chức vụ</th>
+    <th class="hdr" colspan="31">THÁNG ${monthText} NĂM ${yr}</th>
+    <th class="sumwide hdr" rowspan="2">Số công<br>quy đổi<br>thời gian<br>nghỉ giữa<br>ca</th>
+    <th class="sumwide hdr" rowspan="2">Số ngày<br>công làm<br>việc</th>
+    <th class="sumnarrow hdr" rowspan="2">K3</th>
+    <th class="sumnarrow hdr" rowspan="2">L</th>
+    <th class="sumnarrow hdr" rowspan="2">P</th>
+    <th class="sumnarrow hdr" rowspan="2">VR</th>
+    <th class="note hdr" rowspan="2">Ghi chú</th>
+  </tr><tr>`;
+  for (let d=1; d<=31; d++) {
+    const invalid = d > daysInMonth;
+    html += `<th class="day hdr"${invalid ? ' style="background:#e5e7eb;color:#9ca3af;"' : ''}>${d}</th>`;
+  }
+  html += '</tr>';
+
+  let totQuyDoi=0, totNgayCong=0, totK3=0, totL=0, totP=0, totVR=0;
+  rows.forEach((r, idx) => {
+    const s = r.sum || _ccCalcSummary(r.codes || []);
+    totQuyDoi += Number(s.quyDoi || 0);
+    totNgayCong += Number(s.ngayCong || 0);
+    totK3 += Number(s.k3 || 0); totL += Number(s.le || 0);
+    totP += Number(s.p || 0); totVR += Number(s.vr || 0);
+
+    html += `<tr><td>${idx+1}</td><td class="name">${escapeHTML(r.name)}</td><td class="role">${escapeHTML(r.chucDanh || '')}</td>`;
+    for (let d=0; d<31; d++) {
+      const code = (r.codes && r.codes[d]) ? r.codes[d] : '';
+      html += `<td class="day">${escapeHTML(code)}</td>`;
+    }
+    html += `<td class="num2">${_ccFmt2(s.quyDoi)}</td>`;
+    html += `<td class="num2 bold">${_ccFmt2(s.ngayCong)}</td>`;
+    html += `<td class="num0">${Number(s.k3 || 0)}</td>`;
+    html += `<td class="num0">${Number(s.le || 0)}</td>`;
+    html += `<td class="num0">${Number(s.p || 0)}</td>`;
+    html += `<td class="num0">${Number(s.vr || 0)}</td>`;
+    html += '<td></td></tr>';
+  });
+
+  // Dòng tổng cuối bảng giống mẫu: chỉ tổng các cột AI:AN; Ghi chú để trống.
+  html += '<tr class="bold"><td colspan="34"></td>';
+  html += `<td class="num2">${_ccFmt2(totQuyDoi)}</td>`;
+  html += `<td class="num2">${_ccFmt2(totNgayCong)}</td>`;
+  html += `<td class="num0">${totK3}</td><td class="num0">${totL}</td><td class="num0">${totP}</td><td class="num0">${totVR}</td><td></td></tr>`;
+  html += '</table>';
+
+  // Lưu ý giữ đúng nội dung mẫu người dùng cung cấp.
+  html += `<table class="notes">
+    <tr><td><b><i>Lưu ý:</i></b></td></tr>
+    <tr><td>- Cột số công quy đổi thời gian nghỉ giữa ca được quy định chi tiết tại điểm 2, Mục II của Hướng dẫn.</td></tr>
+    <tr><td>- Cột số ngày công làm việc là tổng số công bao gồm: ngày công X; công đi ca N, C, K; ngày công CT; ngày công HT; ngày công NB; ngày công ĐD và Số công quy đổi thời gian nghỉ giữa ca.</td></tr>
+    <tr><td>- Cột K3: tổng số ngày công ca khuya (gồm K và LK); Cột L: tổng số ngày nghỉ L (gồm L, LN, LC, LK); Cột P: tổng số ngày nghỉ phép; Cột VR: tổng số ngày nghỉ việc riêng.</td></tr>
+    <tr><td>- Bảng chấm công tổng hợp cuối tháng gửi về phòng HCLĐ chậm nhất vào ngày 3 tháng kế tiếp.</td></tr>
+  </table>`;
+
+  html += `<table class="sign"><tr>
+    <td style="width:33%;"><i>Thanh Hóa, ngày&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; tháng&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; năm ${yr}</i><br><b>${escapeHTML(bpText)}</b></td>
+    <td style="width:34%; padding-top:18px;"><b>PHÒNG HCLĐ</b></td>
+    <td style="width:33%; padding-top:18px;"><b>LÃNH ĐẠO CÔNG TY</b></td>
+  </tr></table>`;
+  return html;
+}
+
 function exportExcelSched() {
   if (!CU || (CU.role !== 'ld' && !CU.admin)) return;
   const { yr, mo } = getYM('f-sched-year', 'f-sched-month');
-  const mv = ymExportLabel('f-sched-year', 'f-sched-month');
+  if (!yr || !mo) { showAlert('app', 'Vui lòng chọn tháng cần xuất bảng chấm công!', 'ae'); return; }
+
   const tableEl = document.getElementById('table-schedule');
-  if (!tableEl || tableEl.querySelector('.empty')) { showAlert('app', 'Không có dữ liệu để tải!', 'ae'); return; }
-
-  // LĐ Công ty xem toàn Công ty: DOM hiện tại đã có đủ block bộ phận + tổng công,
-  // nên xuất trực tiếp đúng bảng đang thấy. Quyền phê duyệt vẫn không thay đổi.
-  const fBp = document.getElementById('f-sched-bp')?.value || '';
-  if (isCompanyPermissionScope() && !fBp) {
-    downloadExcel(tableEl.innerHTML, `Bang_Di_Ca_Toan_Cong_Ty_${mv}.xls`, `BangDiCa_${mv}`);
-    return;
+  if (!tableEl || tableEl.querySelector('.empty')) {
+    showAlert('app', 'Không có dữ liệu để xuất bảng chấm công!', 'ae'); return;
   }
 
-  // Lãnh đạo bộ phận hoặc đang lọc 1 bộ phận cụ thể → xuất bảng hiện tại
-  if (!CU.admin || fBp) {
-    const tenBP = fBp || (getUserInfo(CU.name)||{}).boPhan || '';
-    const tenFile = tenBP ? `Bang_Di_Ca_${tenBP.replace(/[^a-zA-Z0-9]/g,'_')}_${mv}.xls` : `Bang_Di_Ca_${mv}.xls`;
-    downloadExcel(tableEl.innerHTML, tenFile, 'BangDiCa');
-    return;
-  }
+  const rows = _ccRowsFromScheduleTable(yr, mo);
+  if (!rows.length) { showAlert('app', 'Không có nhân sự phù hợp với bộ lọc hiện tại!', 'ae'); return; }
 
-  // Admin, không lọc → xuất toàn Công ty phân theo bộ phận
-  const BO_PHAN_ORDER = sortBoPhanNames(NV_LIST.map(u => u.boPhan));
-  const thead = tableEl.querySelector('thead')?.innerHTML || '';
-  const daysInMonth = yr && mo ? new Date(yr, mo, 0).getDate() : 31;
-  const totalCols = 3 + daysInMonth + 7;
-  const hdrStyle = 'background:#1e3a8a;color:#fff;font-weight:700;font-size:14px;text-align:center;padding:8px;';
-
-  // Index rows theo tên từ tbody hiện tại
-  const trByName = {};
-  const orderedNames = [];
-  tableEl.querySelectorAll('tbody tr').forEach(tr => {
-    const name = (tr.querySelector('td')?.textContent||'').replace('(Tôi)','').trim();
-    if (name) { trByName[name] = tr.outerHTML; orderedNames.push(name); }
-  });
-
-  let fullHtml = '';
-  const bpList = BO_PHAN_ORDER;
-  bpList.forEach((bp, i) => {
-    const bpNamesInOrder = orderedNames.filter(name => {
-      const u = getUserInfo(name);
-      return u && (u.boPhan||'')===bp && (u.chucDanh||'').trim()!=='ADMIN';
-    });
-    if (!bpNamesInOrder.length) return;
-    fullHtml += `<table border="1" style="border-collapse:collapse;width:100%;margin-bottom:20px;">`;
-    fullHtml += `<thead><tr><td colspan="${totalCols}" style="${hdrStyle}">${bp.toUpperCase()}</td></tr>${thead}</thead>`;
-    fullHtml += `<tbody>`;
-    bpNamesInOrder.forEach(name => { fullHtml += trByName[name] || ''; });
-    fullHtml += `</tbody></table>`;
-    if (i < bpList.length-1) fullHtml += '<br>';
-  });
-
-  if (!fullHtml) { showAlert('app','Không có dữ liệu!','ae'); return; }
-  downloadExcel(fullHtml, `Bang_Di_Ca_Toan_Cong_Ty_${mv}.xls`, `BangDiCa_${mv}`);
+  const tenBoPhan = _ccGetBoPhanExport();
+  const html = _ccBuildHtml(rows, yr, mo, tenBoPhan);
+  const bpFile = tenBoPhan ? '_' + _ccSafeFilename(tenBoPhan) : '_Toan_Cong_Ty';
+  const filename = `Bang_Cham_Cong${bpFile}_T${String(mo).padStart(2,'0')}_${yr}.xls`;
+  _ccDownloadExcel(html, filename, `THÁNG ${String(mo).padStart(2,'0')}`);
 }
+
 // ===============================================================
 // HỆ THỐNG ĐIỀU ĐỘNG HÀNH CHÍNH (BÁO LỖI THỜI GIAN THỰC)
 // ===============================================================
