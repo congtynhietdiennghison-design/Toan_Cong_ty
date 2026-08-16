@@ -1,4 +1,4 @@
-<!-- V13.6 - rà soát toàn diện state-machine, phân quyền, phép năm, nhắc đơn, schema -->
+<!-- V13.7.8 DIAG12 FINAL - cache Leaves theo năm + tái sử dụng users snapshot + year-scoped guard/export -->
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -270,7 +270,7 @@ textarea{resize:none;height:80px}
           <button class="btn btn-primary login-submit" onclick="doLogin()">Đăng nhập</button>
           <div class="login-security-note"><i>🛡️</i><span>Không chia sẻ mã PIN. Khi cần hỗ trợ, liên hệ quản trị hệ thống.</span></div>
         </div>
-        <div class="login-footer">Phiên bản V13.7.5 · Google Sheet / Apps Script</div>
+        <div class="login-footer">Phiên bản V13.7.8 FINAL · Google Sheet / Apps Script</div>
       </div>
     </section>
   </div>
@@ -1279,6 +1279,10 @@ let _coreBootstrapError = '';
 let _initialFullBundleReady = false;
 let _startupRequestsReady = false;
 let _startupRequestWindowStart = '';
+let _startupRequestWindowEnd = '';
+let _startupLeavesReady = false;
+let _startupLeaveWindowStart = '';
+let _startupLeaveWindowEnd = '';
 let _startupUiCacheApplied = false;
 let _registrationGuardReady = false;
 let _registrationGuardPromise = null;
@@ -2351,6 +2355,7 @@ async function loadRequests() {
     applyRequestsFromApi(d);
     _startupRequestsReady = false;
     _startupRequestWindowStart = '';
+    _startupRequestWindowEnd = '';
     return true;
   })().finally(() => { _loadRequestsPromise = null; });
   return _loadRequestsPromise;
@@ -2377,13 +2382,17 @@ async function prefetchRegistrationGuardData(force=false) {
       applyRequestsFromApi({ requests: bundle.requests || [] });
       _startupRequestsReady = bundle.requestsPartial === true;
       _startupRequestWindowStart = (bundle.requestWindowStart || '').toString().substring(0, 10);
+      _startupRequestWindowEnd = (bundle.requestWindowEnd || '').toString().substring(0, 10);
       _dataLoaded.requests = false; // chỉ là dữ liệu tác nghiệp, chưa phải toàn bộ lịch sử
 
       if (Array.isArray(bundle.leaves)) {
         allLeaves = bundle.leaves;
         rebuildLeavesIndexes();
         bumpDataRevision('leaves');
-        _dataLoaded.leaves = true;
+        _startupLeavesReady = bundle.leavesPartial === true;
+        _startupLeaveWindowStart = (bundle.leaveWindowStart || '').toString().substring(0, 10);
+        _startupLeaveWindowEnd = (bundle.leaveWindowEnd || '').toString().substring(0, 10);
+        _dataLoaded.leaves = bundle.leavesPartial !== true;
         refreshMyLeaveBalanceFromLocalLeaves();
       }
 
@@ -2406,22 +2415,28 @@ async function prefetchRegistrationGuardData(force=false) {
 }
 
 async function ensureRequestCoverageForForm(ngayDoi, ngayTra) {
-  if (_dataLoaded.requests) return true;
+  if (_dataLoaded.requests && _dataLoaded.leaves) return true;
 
-  // Shell đăng nhập không còn mang Requests để vào phần mềm nhanh. Nếu dữ liệu kiểm tra
-  // nền chưa về kịp lúc người dùng bấm Gửi, chờ đúng gói guard tại đây.
-  if (!_registrationGuardReady || !_startupRequestsReady || !_startupRequestWindowStart) {
+  // DIAG10: login chỉ tải gói guard hẹp theo năm để nhanh. Nếu người dùng bấm Gửi
+  // trước khi guard về thì chờ đúng gói này; server vẫn kiểm tra full lần cuối khi ghi.
+  if (!_registrationGuardReady || !_startupRequestsReady || !_startupRequestWindowStart || !_startupRequestWindowEnd ||
+      !_startupLeavesReady || !_startupLeaveWindowStart || !_startupLeaveWindowEnd) {
     showLocalAlert('submit-msg', '⏳ Đang hoàn tất kiểm tra lịch đổi ca/nghỉ trước khi gửi...', 'ai');
     const ok = await prefetchRegistrationGuardData(true);
     if (!ok) throw new Error('Không tải được dữ liệu kiểm tra');
   }
 
   const dates = [ngayDoi, ngayTra].filter(Boolean).map(v => v.toString().substring(0, 10));
-  const needsOlder = dates.some(d => d && d < _startupRequestWindowStart);
-  if (!needsOlder) return true;
+  const outsideRequestWindow = !_dataLoaded.requests && dates.some(d => d && (d < _startupRequestWindowStart || d > _startupRequestWindowEnd));
+  const outsideLeaveWindow = !_dataLoaded.leaves && dates.some(d => d && (d < _startupLeaveWindowStart || d > _startupLeaveWindowEnd));
 
-  showLocalAlert('submit-msg', '⏳ Ngày đã chọn nằm trước phạm vi dữ liệu nhanh. Hệ thống đang tải lịch sử để kiểm tra chính xác...', 'ai');
-  await loadRequests();
+  if (!outsideRequestWindow && !outsideLeaveWindow) return true;
+
+  showLocalAlert('submit-msg', '⏳ Ngày đã chọn nằm ngoài phạm vi dữ liệu nhanh. Hệ thống đang tải thêm dữ liệu để kiểm tra chính xác...', 'ai');
+  const tasks = [];
+  if (outsideRequestWindow) tasks.push(loadRequests());
+  if (outsideLeaveWindow) tasks.push(loadLeaves());
+  await Promise.all(tasks);
   return true;
 }
 
@@ -2458,6 +2473,9 @@ async function loadLeaves() {
     rebuildLeavesIndexes();
     bumpDataRevision('leaves');
     _dataLoaded.leaves = true;
+    _startupLeavesReady = false;
+    _startupLeaveWindowStart = '';
+    _startupLeaveWindowEnd = '';
     refreshMyLeaveBalanceFromLocalLeaves();
     return true;
   })().finally(() => { _loadLeavesPromise = null; });
@@ -2911,6 +2929,10 @@ function startInitialFullBundle(r) {
   _initialFullBundleReady = false;
   _startupRequestsReady = false;
   _startupRequestWindowStart = '';
+  _startupRequestWindowEnd = '';
+  _startupLeavesReady = false;
+  _startupLeaveWindowStart = '';
+  _startupLeaveWindowEnd = '';
   _registrationGuardReady = false;
   _registrationGuardPromise = null;
   setCoreBootstrapUiState('loading', '⏳ Đã đăng nhập — đang dựng giao diện...');
@@ -2941,6 +2963,10 @@ function startInitialFullBundle(r) {
       _initialFullBundleReady = true;
       _startupRequestsReady = false;
       _startupRequestWindowStart = '';
+      _startupRequestWindowEnd = '';
+      _startupLeavesReady = false;
+      _startupLeaveWindowStart = '';
+      _startupLeaveWindowEnd = '';
       await finalizeAuthenticatedUiAfterCore(r || {}, flags);
       if (_startupUiCacheApplied) restoreRegistrationDraft(draft);
 
@@ -2976,6 +3002,10 @@ function startInitialFullBundle(r) {
       _initialFullBundleReady = false;
       _startupRequestsReady = false;
       _startupRequestWindowStart = '';
+      _startupRequestWindowEnd = '';
+      _startupLeavesReady = false;
+      _startupLeaveWindowStart = '';
+      _startupLeaveWindowEnd = '';
       _registrationGuardReady = false;
       _startupUiCacheApplied = false;
       _coreBootstrapReady = false;
@@ -3076,6 +3106,10 @@ async function doLogin(){
     _initialFullBundleReady = false;
     _startupRequestsReady = false;
     _startupRequestWindowStart = '';
+    _startupRequestWindowEnd = '';
+    _startupLeavesReady = false;
+    _startupLeaveWindowStart = '';
+    _startupLeaveWindowEnd = '';
     _startupUiCacheApplied = false;
     _registrationGuardReady = false;
     _registrationGuardPromise = null;
@@ -3121,6 +3155,10 @@ function doLogout() {
   _initialFullBundleReady = false;
   _startupRequestsReady = false;
   _startupRequestWindowStart = '';
+  _startupRequestWindowEnd = '';
+  _startupLeavesReady = false;
+  _startupLeaveWindowStart = '';
+  _startupLeaveWindowEnd = '';
   _startupUiCacheApplied = false;
   _registrationGuardReady = false;
   _registrationGuardPromise = null;
@@ -3208,6 +3246,10 @@ async function doRefresh(btn) {
     _dataLoaded.requests = true;
     _startupRequestsReady = false;
     _startupRequestWindowStart = '';
+    _startupRequestWindowEnd = '';
+    _startupLeavesReady = false;
+    _startupLeaveWindowStart = '';
+    _startupLeaveWindowEnd = '';
     _dataLoaded.leaves = true;
     _dataLoaded.transfers = true;
     _dataLoaded.balances = !(CU && (CU.role === 'ld' || CU.admin)) || !!(bundle.balanceYear && bundle.balances);
@@ -5842,6 +5884,11 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
 
     const rowChamCongCodes = [];
     let countO = 0, countTS = 0, countV = 0;
+    // DIAG11: config/ngày lễ phụ thuộc bộ phận, không phụ thuộc từng ngày.
+    // Tính 1 lần/người thay vì gọi lại 2 helper ở mọi ô của tháng.
+    const _uBpHoliday = (u.boPhan || '').toString().trim();
+    const _uCfgHoliday = mergeConfigsForBoPhan(_uBpHoliday);
+    const _uHolidaySet = getHolidaySetForBoPhan(_uBpHoliday, _uCfgHoliday);
     for(let d=1; d<=daysInMonth; d++) {
       const dateStr = `${yr}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
       const caInfo = getCaThucTe(u.name, u.kip, dateStr, null, true);
@@ -5856,9 +5903,7 @@ headHtml += `<th style="text-align:center; width:60px; background:#ebf3ff; color
 
       // NGAY_LE có thể cấu hình theo bộ phận. Với người nào thì dùng cấu hình
       // của đúng bộ phận người đó; không lấy cứng config chung khi xem toàn Công ty.
-      const _uBpHoliday = (u.boPhan || '').toString().trim();
-      const _uCfgHoliday = mergeConfigsForBoPhan(_uBpHoliday);
-      const isLe = getHolidaySetForBoPhan(_uBpHoliday, _uCfgHoliday).has(dateStr);
+      const isLe = _uHolidaySet.has(dateStr);
       let style = "";
       
       // ====================================================
