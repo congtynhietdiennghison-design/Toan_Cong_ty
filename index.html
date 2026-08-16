@@ -384,6 +384,18 @@ textarea{resize:none;height:80px}
         <div style="font-size:12px;color:#64748b;line-height:1.65;margin-top:5px;">
           Hệ thống tự tạo và lưu dữ liệu theo năm: <b>Requests_YYYY</b>, <b>Leaves_YYYY</b>, <b>Transfers_YYYY</b>, <b>leave_history_YYYY</b>, <b>LichSuPhep_YYYY</b> và <b>login_log_YYYY</b>. Không cần Chốt sổ thủ công.
         </div>
+
+        <div id="annual-trigger-card" style="margin-top:16px;padding:13px 14px;border:1px solid #dbe5ef;border-radius:14px;background:#f8fafc;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;">
+            <div style="font-weight:800;color:#0f2747;">🗓️ Trigger khóa phép cuối năm</div>
+            <span id="annual-trigger-badge" style="font-size:11px;font-weight:800;padding:5px 9px;border-radius:999px;background:#e2e8f0;color:#475569;">CHƯA KIỂM TRA</span>
+          </div>
+          <div id="annual-trigger-detail" style="font-size:12px;color:#64748b;line-height:1.55;margin-top:8px;">Mở tab Quản trị để hệ thống tự kiểm tra trigger 00:05 ngày 01/01.</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+            <button class="btn" id="btn-check-annual-trigger" onclick="loadAnnualLeaveTriggerStatus(true)" style="padding:8px 11px;">🔎 Kiểm tra trigger</button>
+            <button class="btn btn-warn" id="btn-ensure-annual-trigger" onclick="ensureAnnualLeaveTriggerUI()" style="padding:8px 11px;">🛠 Tạo lại trigger</button>
+          </div>
+        </div>
       </div>
 
       <div class="card" id="system-diag-card" style="border-top:4px solid #2563eb; margin-top:16px;">
@@ -3431,6 +3443,66 @@ function renderSystemDiag() {
     </tr>`).join('');
 }
 
+let _annualTriggerStatusLoadedAt = 0;
+
+function renderAnnualLeaveTriggerStatus(st) {
+  const badge = document.getElementById('annual-trigger-badge');
+  const detail = document.getElementById('annual-trigger-detail');
+  if (!badge || !detail) return;
+  const state = (st && st.state) || 'UNKNOWN';
+  const map = {
+    OK: ['✅ HOẠT ĐỘNG', '#dcfce7', '#166534'],
+    MISSING: ['❌ THIẾU TRIGGER', '#fee2e2', '#b91c1c'],
+    DUPLICATE: ['⚠️ TRÙNG TRIGGER', '#fef3c7', '#92400e'],
+    LEGACY: ['⚠️ TRIGGER CŨ', '#fef3c7', '#92400e'],
+    STALE: ['⚠️ CẦN TẠO LẠI', '#fef3c7', '#92400e'],
+    UNKNOWN: ['CHƯA KIỂM TRA', '#e2e8f0', '#475569']
+  };
+  const ui = map[state] || map.UNKNOWN;
+  badge.textContent = ui[0];
+  badge.style.background = ui[1];
+  badge.style.color = ui[2];
+  const schedule = st && st.scheduledText ? st.scheduledText : '00:05 ngày 01/01';
+  const tz = st && st.projectTimeZone ? ` · Múi giờ dự án: ${escapeHTML(st.projectTimeZone)}` : '';
+  const msg = st && st.message ? escapeHTML(st.message) : 'Chưa có thông tin.';
+  detail.innerHTML = `<b>Kỳ dự kiến:</b> ${escapeHTML(schedule)}${tz}<br>${msg}`;
+}
+
+async function loadAnnualLeaveTriggerStatus(force = false) {
+  if (!CU || !CU.admin) return;
+  if (!force && _annualTriggerStatusLoadedAt && (Date.now() - _annualTriggerStatusLoadedAt) < 30000) return;
+  const btn = document.getElementById('btn-check-annual-trigger');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Đang kiểm tra...'; }
+  try {
+    const res = await api({ action: 'getAnnualLeaveTriggerStatus' });
+    if (!res || res.error) throw new Error((res && res.error) || 'Không kiểm tra được trigger.');
+    _annualTriggerStatusLoadedAt = Date.now();
+    renderAnnualLeaveTriggerStatus(res);
+  } catch (e) {
+    renderAnnualLeaveTriggerStatus({ state:'UNKNOWN', message:'Không kiểm tra được: ' + (e && e.message ? e.message : e) });
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🔎 Kiểm tra trigger'; }
+  }
+}
+
+async function ensureAnnualLeaveTriggerUI() {
+  if (!CU || !CU.admin) return;
+  if (!confirm('Tạo lại trigger khóa phép cuối năm? Hệ thống sẽ xóa trigger reset phép cũ và chỉ tạo lại 1 trigger lúc 00:05 ngày 01/01 kỳ kế tiếp.')) return;
+  const btn = document.getElementById('btn-ensure-annual-trigger');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Đang tạo...'; }
+  try {
+    const res = await api({ action: 'ensureAnnualLeaveTrigger' });
+    if (!res || res.error) throw new Error((res && res.error) || 'Không tạo lại được trigger.');
+    _annualTriggerStatusLoadedAt = Date.now();
+    renderAnnualLeaveTriggerStatus(res);
+    showAlert('app', '✅ Đã tạo lại trigger khóa phép: ' + (res.scheduledText || '00:05 ngày 01/01') + '.', 'as');
+  } catch (e) {
+    showAlert('app', '❌ ' + (e && e.message ? e.message : e), 'ae');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '🛠 Tạo lại trigger'; }
+  }
+}
+
 async function loadSystemDiag(force = false, limit = 200) {
   if (!CU || !CU.admin) return;
   if (!force && _systemDiagLoadedAt && (Date.now() - _systemDiagLoadedAt) < 30000) {
@@ -3583,6 +3655,7 @@ function switchTabRender(t){
     renderTransferLog();
   }
   if(t==='admin' && CU && CU.admin) {
+    loadAnnualLeaveTriggerStatus(false).catch(err => console.warn('AnnualLeaveTrigger:', err));
     loadSystemDiag(false).catch(err => console.warn('SystemDiag:', err));
   }
 
