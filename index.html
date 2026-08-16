@@ -143,6 +143,71 @@ textarea{resize:none;height:80px}
 @keyframes sp{to{transform:rotate(360deg)}}
 .empty{text-align:center;color:#94a3b8;font-size:14px;padding:3rem 1rem; background: #f8fafc; border-radius: 8px; border: 1px dashed #cbd5e1;}
 @media(max-width:600px){ .form-row,.sg,.form-row.three{grid-template-columns:1fr} .dt{font-size:12px} .tab{width: calc(50% - 4px); flex-grow: 0;} }
+
+
+/* ============================================================
+   LOGIN GOOGLE SHEET — 2 CỘT / 1 MÀN HÌNH, đồng bộ giao diện SQLite
+   Chỉ scope vào #overlay + #login-box để KHÔNG ảnh hưởng các modal khác.
+   ============================================================ */
+#overlay.overlay{align-items:center;justify-content:center;padding:18px;overflow:hidden;background:rgba(10,24,48,.72);backdrop-filter:blur(5px)}
+#login-box.login-shell{width:min(1160px,94vw);max-width:1160px;height:min(620px,calc(100vh - 36px));max-height:calc(100vh - 36px);min-height:0;display:grid;grid-template-columns:54% 46%;padding:0;margin:0;overflow:hidden;border-radius:26px;background:#fff;box-shadow:0 32px 90px rgba(2,32,71,.30);position:relative;border:1px solid rgba(255,255,255,.55)}
+#login-box.login-shell:before{content:"";position:absolute;left:0;right:0;top:0;height:6px;background:linear-gradient(90deg,#0c4da2 0 56%,#ef3340 56% 78%,#ffc72c 78% 100%);z-index:5}
+#login-box .login-left{position:relative;min-width:0;height:100%;padding:30px 40px 26px;display:flex;flex-direction:column;justify-content:center;overflow:hidden;color:#fff;background:radial-gradient(circle at 18% 18%,rgba(70,145,255,.34),transparent 34%),radial-gradient(circle at 86% 72%,rgba(0,45,105,.55),transparent 45%),linear-gradient(138deg,#1565bd 0%,#0c4da2 44%,#07346f 100%)}
+#login-box .login-left:before{content:"";position:absolute;inset:-10%;background:repeating-linear-gradient(120deg,rgba(255,255,255,.052) 0 1px,transparent 1px 30px);transform:skewX(-5deg);pointer-events:none;opacity:.7}
+#login-box .login-left:after{content:"";position:absolute;width:340px;height:340px;border:1px solid rgba(255,255,255,.12);border-radius:50%;right:-170px;top:96px;box-shadow:0 0 0 58px rgba(255,255,255,.025),0 0 0 118px rgba(255,255,255,.018);pointer-events:none}
+#login-box .login-left>*{position:relative;z-index:1}
+#login-box .login-brand-grid{display:flex;flex-direction:column;gap:14px}
+#login-box .login-hero-logo{width:350px;max-width:76%;padding:14px 18px;border-radius:20px;background:#fff;box-shadow:0 18px 40px rgba(0,27,67,.22);border:1px solid rgba(255,255,255,.85)}
+#login-box .login-company-logo{display:block;width:100%;max-width:300px;max-height:110px;height:auto;margin:0 auto;object-fit:contain}
+#login-box .login-kicker{margin:2px 0 4px;font-size:12px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:#bfdbfe}
+#login-box .login-headline{font-size:34px;line-height:1.08;font-weight:900;letter-spacing:-.03em;margin:0 0 7px;max-width:530px;color:#fff;text-shadow:0 3px 16px rgba(0,33,79,.18)}
+#login-box .login-description{font-size:15px;line-height:1.45;margin:0;max-width:520px;color:rgba(255,255,255,.88)}
+#login-box .login-chip-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:2px}
+#login-box .login-chip{display:inline-flex;align-items:center;gap:7px;padding:8px 11px;border-radius:12px;background:rgba(255,255,255,.11);border:1px solid rgba(255,255,255,.16);font-size:12px;font-weight:700;color:#fff;backdrop-filter:blur(6px)}
+#login-box .login-foot-note{margin-top:16px;padding-top:12px;font-size:11.5px;line-height:1.45;color:rgba(255,255,255,.68);border-top:1px solid rgba(255,255,255,.14)}
+#login-box .login-right{min-width:0;height:100%;padding:30px 38px 24px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:linear-gradient(180deg,#fff 0%,#fbfdff 100%);position:relative}
+#login-box .login-right:before{content:"";position:absolute;right:0;top:0;width:115px;height:115px;background:linear-gradient(135deg,rgba(12,77,162,.055),transparent 64%);clip-path:polygon(100% 0,100% 100%,0 0)}
+#login-box .login-form-wrap{width:100%;max-width:420px;margin:0 auto;position:relative;z-index:1}
+#login-box .login-form-badge{display:inline-flex;align-items:center;gap:8px;padding:7px 11px;border-radius:999px;background:#edf5ff;color:#0c4da2;border:1px solid #d8e9ff;font-size:11px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;margin-bottom:10px}
+#login-box .login-form-title{font-size:30px;line-height:1.12;font-weight:900;color:#0f2747;margin-bottom:5px;letter-spacing:-.025em}
+#login-box .login-form-sub{margin-bottom:14px;font-size:14px;line-height:1.5;color:#64748b}
+#login-box .login-form-card{border:1px solid #dce6f1;border-radius:18px;padding:17px 18px 16px;background:#fff;box-shadow:0 12px 32px rgba(15,55,95,.075)}
+#login-box .pfield{margin-bottom:13px}
+#login-box .login-form-card label{display:block;font-size:12.5px;font-weight:700;color:#334155;margin-bottom:7px}
+#login-box .login-form-card input{width:100%;padding:12px 13px;border:1px solid #cbd5e1;border-radius:11px;font-size:14px;outline:none;transition:border-color .18s,box-shadow .18s,background .18s;background:#fbfdff;color:#0f172a}
+#login-box .login-form-card input::placeholder{color:#9aa9ba}
+#login-box .login-form-card input:focus{border-color:#2c6fc2;box-shadow:0 0 0 4px rgba(44,111,194,.11);background:#fff}
+#login-box .login-help-row{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:0 0 9px}
+#login-box .login-help-row a{font-size:12.5px;color:#0c4da2;text-decoration:none;font-weight:700;white-space:nowrap}
+#login-box .login-help-row a:hover{text-decoration:underline}
+#login-box .perr{margin-bottom:8px;min-height:16px}
+#login-box .login-submit{width:100%;padding:12px 15px;font-size:15px;border-radius:11px;background:linear-gradient(180deg,#286bb8,#1557a6);border-color:#1557a6;box-shadow:0 10px 20px rgba(21,87,166,.20);font-weight:800;letter-spacing:.01em}
+#login-box .login-security-note{display:flex;align-items:flex-start;gap:10px;font-size:11.5px;line-height:1.55;color:#64748b;background:#f8fafc;border:1px solid #e5ebf2;border-radius:12px;padding:10px 11px;margin-top:10px}
+#login-box .login-security-note i{font-style:normal;font-size:15px;line-height:1.1;margin-top:1px}
+#login-box .login-footer{font-size:11.5px;line-height:1.6;color:#94a3b8;text-align:center;margin-top:9px}
+@media(max-width:980px){
+  #overlay.overlay{align-items:flex-start;padding:12px 10px;overflow-y:auto}
+  #login-box.login-shell{grid-template-columns:1fr;height:auto;max-height:none;max-width:720px;border-radius:20px}
+  #login-box .login-left{height:auto;padding:28px 24px 22px}
+  #login-box .login-right{height:auto;padding:24px 18px 20px}
+  #login-box .login-hero-logo{max-width:70%}
+  #login-box .login-headline{font-size:29px}
+  #login-box .login-description{font-size:14px}
+  #login-box .login-foot-note{margin-top:10px}
+}
+@media(max-width:600px){
+  #login-box.login-shell{width:100%;border-radius:18px}
+  #login-box .login-left{padding:20px 16px 17px}
+  #login-box .login-right{padding:18px 13px 16px}
+  #login-box .login-hero-logo{width:250px;max-width:78%;padding:10px 13px}
+  #login-box .login-company-logo{max-height:88px}
+  #login-box .login-headline{font-size:25px}
+  #login-box .login-description{font-size:13px}
+  #login-box .login-chip{font-size:11px;padding:7px 9px}
+  #login-box .login-foot-note{display:none}
+  #login-box .login-form-title{font-size:25px}
+  #login-box .login-form-card{padding:15px 13px}
+}
 </style>
 </head>
 <body>
@@ -157,32 +222,57 @@ textarea{resize:none;height:80px}
     <div class="spin" style="margin-bottom:12px;" id="spin-icon"></div>
     <div id="loading-text" style="font-weight:500;">Đang tải dữ liệu...</div>
   </div>
-  <div class="pbox" id="login-box" style="display:none">
-   <img src="./logocongty.png" style="max-width:220px;max-height:120px;width:auto;height:auto;display:block;margin:0 auto;object-fit:contain;" alt="Logo công ty">
-    <div class="plogo" style="text-align: center">Hệ thống chấm công</div>
-    <div class="plogo" style="text-align: center">Công ty Nhiệt điện Nghi Sơn</div>
-    <div style="font-size:18px; font-weight:600; color:#64748b; margin-bottom:4px;">🔑 Đăng nhập</div>
-    <div class="psub">Nhập số điện thoại và mã PIN cá nhân</div>
-    <div class="pfield">
-      <label>Số điện thoại</label>
-      <input type="tel" id="f-login-name" placeholder="Nhập số điện thoại..." maxlength="15" onkeydown="if(event.key==='Enter')document.getElementById('pin-inp').focus()" style="width:100%; padding:10px 12px; border:1px solid #e2e8f0; border-radius:8px; font-size:14px;">
-    </div>
-    <div class="pfield">
-      <label>Mật khẩu (4-12 ký tự)</label>
-      <div style="position: relative;">
-        <input type="password" id="pin-inp" minlength="4" maxlength="12" placeholder="••••" onkeydown="if(event.key==='Enter')doLogin()" style="padding-right: 40px;">
-        <span id="toggle-eye" onclick="togglePasswordVisibility('pin-inp', 'toggle-eye')" style="position: absolute; right: 12px; top: 50%; transform: translateY(-50%); cursor: pointer; color: #64748b; display: flex; align-items: center; justify-content: center;">
-          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-        </span>
+  <div class="pbox login-shell" id="login-box" style="display:none">
+    <section class="login-left">
+      <div class="login-brand-grid">
+        <div class="login-hero-logo">
+          <img class="login-company-logo" src="./logocongty.png" alt="Logo Công ty Nhiệt điện Nghi Sơn">
+        </div>
+        <div>
+          <div class="login-kicker">CÔNG TY NHIỆT ĐIỆN NGHI SƠN</div>
+          <div class="login-headline">HỆ THỐNG QUẢN LÝ CHẤM CÔNG</div>
+          <div class="login-description">Đổi ca · Nghỉ cá nhân · Lịch trực · Bảng chấm công</div>
+        </div>
+        <div class="login-chip-row">
+          <span class="login-chip">⇄ Đổi ca</span>
+          <span class="login-chip">☂ Nghỉ cá nhân</span>
+          <span class="login-chip">▦ Lịch trực</span>
+          <span class="login-chip">↓ Bảng chấm công</span>
+        </div>
       </div>
-    </div>
-    
-    <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-top: 4px;">
-      <a href="javascript:void(0)" onclick="doForgotPin()" style="font-size: 13px; color: #1a56a0; text-decoration: none; font-weight: 500;">Quên mã PIN?</a>
-    </div>
-    
-    <div class="perr" id="pin-err"></div>
-    <button class="btn btn-primary" style="width:100%; padding: 12px;" onclick="doLogin()">Đăng nhập</button>
+      <div class="login-foot-note">Hệ thống nội bộ · Dữ liệu được quản lý trên Google Workspace của Công ty.</div>
+    </section>
+
+    <section class="login-right">
+      <div class="login-form-wrap">
+        <div class="login-form-badge">🔐 Đăng nhập an toàn</div>
+        <div class="login-form-title">Đăng nhập hệ thống</div>
+        <div class="login-form-sub">Sử dụng tài khoản nội bộ để truy cập hệ thống.</div>
+        <div class="login-form-card">
+          <div class="pfield">
+            <label>Số điện thoại</label>
+            <input type="tel" id="f-login-name" placeholder="Nhập số điện thoại..." maxlength="15" onkeydown="if(event.key==='Enter')document.getElementById('pin-inp').focus()">
+          </div>
+          <div class="pfield" style="margin-bottom:12px">
+            <label>Mật khẩu / PIN (4-12 ký tự)</label>
+            <div style="position:relative;">
+              <input type="password" id="pin-inp" minlength="4" maxlength="12" placeholder="••••" onkeydown="if(event.key==='Enter')doLogin()" style="padding-right:44px;">
+              <span id="toggle-eye" onclick="togglePasswordVisibility('pin-inp','toggle-eye')" style="position:absolute;right:14px;top:50%;transform:translateY(-50%);cursor:pointer;color:#64748b;display:flex;align-items:center;justify-content:center;">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+              </span>
+            </div>
+          </div>
+          <div class="login-help-row">
+            <span style="font-size:13px;color:#64748b">Tài khoản đã được cấp</span>
+            <a href="javascript:void(0)" onclick="doForgotPin()">Quên mã PIN?</a>
+          </div>
+          <div class="perr" id="pin-err"></div>
+          <button class="btn btn-primary login-submit" onclick="doLogin()">Đăng nhập</button>
+          <div class="login-security-note"><i>🛡️</i><span>Không chia sẻ mã PIN. Khi cần hỗ trợ, liên hệ quản trị hệ thống.</span></div>
+        </div>
+        <div class="login-footer">Phiên bản V13.7.5 · Google Sheet / Apps Script</div>
+      </div>
+    </section>
   </div>
 </div>
 
@@ -1803,15 +1893,20 @@ async function prefetchAllTabData() {
 
 function scheduleTabPrefetch() {
   if (_tabPrefetchTimer) clearTimeout(_tabPrefetchTimer);
-  _tabPrefetchTimer = setTimeout(() => {
+  _tabPrefetchTimer = setTimeout(async () => {
     _tabPrefetchTimer = null;
-    // Không chạy song song: Core đã xong -> Transfers -> Requests -> Leaves/Balance.
-    prefetchPrimaryTabData()
-      .catch(() => false)
-      .finally(() => {
-        if (CU && _coreBootstrapReady) prefetchSecondaryTabData().catch(() => false);
-      });
-  }, 20);
+    // DIAG6: ưu tiên GUARD trước. Bản cũ cho full Requests chạy gần như đồng thời
+    // với getRegistrationGuardBundle nên khi cache vừa hết hạn có thể xuất hiện HAI
+    // execution cùng đọc Requests từ Google Sheet. Guard đọc trước sẽ làm nóng cache;
+    // full history chạy sau nên không tranh I/O với bước cần cho màn Đăng ký.
+    try { await prefetchRegistrationGuardData(false); } catch (_) {}
+    if (!CU || !_coreBootstrapReady) return;
+    await sleep(500);
+    try { await prefetchPrimaryTabData(); } catch (_) {}
+    if (CU && _coreBootstrapReady) {
+      try { await prefetchSecondaryTabData(); } catch (_) {}
+    }
+  }, 160);
 }
 
 function renderScheduleTableDebounced() {
@@ -2195,7 +2290,7 @@ window.onload = () => {
   const loadingText = document.getElementById('loading-text');
   if (loadingText) loadingText.innerHTML = "Sẵn sàng đăng nhập";
   document.getElementById('login-loading').style.display = 'none';
-  document.getElementById('login-box').style.display = 'block';
+  document.getElementById('login-box').style.display = 'grid';
 };
 
 async function applyRequestsFromApi(d) {
@@ -2954,6 +3049,15 @@ async function doLogin(){
     CU = r.user;
     _myLeaveBalanceCache = null;
     _myLeaveBalanceSource = '';
+    // DIAG6: backend đã có sẵn số phép của chính tài khoản trong row đăng nhập.
+    // Dùng ngay để tab Nghỉ cá nhân không phải gọi thêm users chỉ để hiện 2 con số.
+    if (CU && CU.remainingLeave !== null && CU.remainingLeave !== undefined) {
+      const annualNow = Number(CU.annualLeave || 0) + Number(CU.prevYearLeave || 0);
+      const remainingNow = Number(CU.remainingLeave);
+      if (Number.isFinite(annualNow) && Number.isFinite(remainingNow)) {
+        applyMyLeaveBalance({ annual: annualNow, remaining: remainingNow }, 'server');
+      }
+    }
     _coreBootstrapReady = false;
     _coreBootstrapPromise = null;
     _coreBootstrapError = '';
@@ -3022,7 +3126,7 @@ function doLogout() {
   _myLeaveBalanceCache = null;
   _myLeaveBalanceSource = '';
   resetDataLoadedFlags();
-  document.getElementById('overlay').style.display = 'flex'; document.getElementById('app').style.display = 'none'; document.getElementById('login-box').style.display = 'block'; document.getElementById('login-loading').style.display = 'none';
+  document.getElementById('overlay').style.display = 'flex'; document.getElementById('app').style.display = 'none'; document.getElementById('login-box').style.display = 'grid'; document.getElementById('login-loading').style.display = 'none';
   document.getElementById('f-login-name').value = ''; document.getElementById('pin-inp').value = ''; document.getElementById('pin-err').textContent = ''; document.getElementById('f-name').value = '';
 } 
 async function doRefresh(btn) {
