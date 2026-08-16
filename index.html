@@ -379,21 +379,10 @@ textarea{resize:none;height:80px}
         <button class="btn btn-warn" id="btn-reset-pin" style="width:100%; margin-top:8px" onclick="doResetPin()">Reset PIN</button>
         <div id="admin-msg" class="alert"></div>
         
-        <hr style="margin: 20px 0; border: none; border-top: 1px dashed #cbd5e1;">
-        <div class="sec-title" style="color:#991b1b">Chốt sổ dữ liệu năm</div>
-        <div style="font-size:12px;color:#64748b;margin:5px 0 10px">Đơn đổi ca được lưu tự động theo sheet <b>Requests_YYYY</b>, không cần chốt sổ.</div>
-        <div class="form-row" style="grid-template-columns:minmax(120px,.8fr) minmax(210px,1.4fr) minmax(120px,.7fr); align-items:end;">
-          <div><label>Năm cần chốt</label><input type="number" id="f-archive-year" placeholder="VD: 2023" style="border-color:#fca5a5;"></div>
-          <div><label>Tác vụ cần chốt</label><select id="f-archive-type" style="border-color:#fca5a5;">
-            <option value="all">Tất cả dữ liệu cần chốt</option>
-            <option value="leaves">Đơn nghỉ cá nhân (Leaves)</option>
-            <option value="login_log">Nhật ký đăng nhập (login_log)</option>
-            <option value="leave_history">Lịch sử nghỉ cá nhân (leave_history)</option>
-          </select></div>
-          <div><label>&nbsp;</label><button class="btn btn-danger" id="btn-archive" style="width:100%" onclick="doArchive()">Chốt sổ</button></div>
-        </div>
-        <div style="font-size:12px;color:#64748b;line-height:1.6;margin-top:-4px;">
-          Phần mềm tải cửa sổ ±2 năm quanh năm hiện tại. Chỉ được chốt các năm cũ hơn 2 năm lùi (VD năm 2026: chốt 2023 trở về trước). Dữ liệu không tự xóa; Transfers không chốt/xóa để giữ mốc điều chuyển kíp.
+        <hr style="margin:20px 0;border:none;border-top:1px dashed #cbd5e1;">
+        <div class="sec-title">Kho dữ liệu tự động theo năm</div>
+        <div style="font-size:12px;color:#64748b;line-height:1.65;margin-top:5px;">
+          Hệ thống tự tạo và lưu dữ liệu theo năm: <b>Requests_YYYY</b>, <b>Leaves_YYYY</b>, <b>Transfers_YYYY</b>, <b>leave_history_YYYY</b>, <b>LichSuPhep_YYYY</b> và <b>login_log_YYYY</b>. Không cần Chốt sổ thủ công.
         </div>
       </div>
 
@@ -455,8 +444,8 @@ textarea{resize:none;height:80px}
         <div style="display:flex; gap:8px; align-items:center;">
           <button class="btn btn-success" style="height:38px; font-size:13px;" onclick="exportExcelTransfer()">⬇ Tải Excel</button>
           <div class="ym-filter-wrap card-toolbar">
-            <select id="f-transfer-year" onchange="renderTransferLog()" class="ym-sel-year"></select>
-            <select id="f-transfer-month" onchange="renderTransferLog()" class="ym-sel-month"></select>
+            <select id="f-transfer-year" onchange="onTransferHistoryFilterChange()" class="ym-sel-year"></select>
+            <select id="f-transfer-month" onchange="onTransferHistoryFilterChange()" class="ym-sel-month"></select>
             <select id="f-transfer-bophan" onchange="renderTransferLog()" style="display:none;"></select>
           </div>
         </div>
@@ -1101,6 +1090,7 @@ function isMineName(name) {
 let allReqs=[]; let reqsByName = {}; let reqsByNameDate = {};
 let allLeaves=[]; let leavesByName = {}; let approvedLeaveByNameDate = {};
 let allTransfers = []; let transfersByName = {};
+let transferHistoryRows = []; let transferHistoryYearLoaded = null; let _loadTransferHistoryPromise = null;
 
 // Dữ liệu RIÊNG cho Bảng đi ca toàn Công ty của tài khoản CONG_TY.
 // Không ghi đè dữ liệu nghiệp vụ thường trực, nên quyền phê duyệt/lịch sử vẫn giữ nguyên.
@@ -2041,6 +2031,16 @@ function mergeLocalTransfers(items) {
     map.set((x.id || '').toString(), x);
   });
   allTransfers = Array.from(map.values());
+  if (transferHistoryYearLoaded) {
+    const hm = new Map((transferHistoryRows || []).map(t => [(t.id || '').toString(), t]));
+    items.forEach(t => {
+      if (!t || t.id == null) return;
+      const d=(t.date||'').toString().substring(0,10);
+      if (Number(d.substring(0,4)) !== Number(transferHistoryYearLoaded)) return;
+      const x=Object.assign({},t,{_date:d}); hm.set((x.id||'').toString(),x);
+    });
+    transferHistoryRows = Array.from(hm.values());
+  }
   rebuildTransfersByName();
   bumpDataRevision('transfers');
   _dataLoaded.transfers = true;
@@ -2639,7 +2639,7 @@ function showAuthenticatedShellImmediately() {
   MAU_LICH = {};
   allReqs = []; reqsByName = {}; reqsByNameDate = {};
   allLeaves = []; leavesByName = {}; approvedLeaveByNameDate = {};
-  allTransfers = []; transfersByName = {};
+  allTransfers = []; transfersByName = {}; transferHistoryRows = []; transferHistoryYearLoaded = null; _loadTransferHistoryPromise = null;
   try { initSS(); } catch (_) {}
   // Xóa các lựa chọn động của form đăng ký cho tới khi settings/users mới về.
   ['f-kip','f-partner-kip','f-partner-role','f-ca-doi','f-ca-tra'].forEach(id => {
@@ -3120,7 +3120,7 @@ function doLogout() {
   
   CU = null; allReqs = []; reqsByName = {}; reqsByNameDate = {};
   allLeaves = []; leavesByName = {}; approvedLeaveByNameDate = {};
-  allTransfers = []; transfersByName = {};
+  allTransfers = []; transfersByName = {}; transferHistoryRows = []; transferHistoryYearLoaded = null; _loadTransferHistoryPromise = null;
   invalidateCompanyScheduleData();
   _caGocCache.clear(); _caThucTeCache.clear();
   _myLeaveBalanceCache = null;
@@ -3305,55 +3305,6 @@ function showLocalAlert(elId, msg, cl) {
   }
   setTimeout(() => el.style.display = 'none', 4000);
 }
-async function doArchive() {
-  const yr = document.getElementById('f-archive-year').value;
-  const typeEl = document.getElementById('f-archive-type');
-  const archiveType = typeEl ? typeEl.value : 'all';
-  const btn = document.getElementById('btn-archive');
-  const currentYear = new Date().getFullYear();
-  const minActiveYear = currentYear - 2;
-  const yNum = parseInt(yr, 10);
-  if(!yNum || yNum < 2000 || yNum >= minActiveYear) {
-    showAlert('app', `Chỉ được chốt năm ${minActiveYear - 1} trở về trước. Các năm ${minActiveYear}-${currentYear + 2} đang nằm trong cửa sổ dữ liệu hoạt động.`, 'ae');
-    return;
-  }
-
-  const labels = {
-    all: 'TẤT CẢ dữ liệu cần chốt',
-    leaves: 'ĐƠN NGHỈ CÁ NHÂN (Leaves)',
-    login_log: 'NHẬT KÝ ĐĂNG NHẬP (login_log)',
-    leave_history: 'LỊCH SỬ NGHỈ CÁ NHÂN (leave_history)'
-  };
-  const selectedLabel = labels[archiveType] || labels.all;
-
-  const detailText = `Requests đã được lưu riêng theo từng năm (Requests_YYYY) nên không cần chốt sổ nữa.\nChức năng này chỉ chuyển dữ liệu phụ trợ như nghỉ cá nhân/nhật ký của năm ${yr} sang sheet lưu trữ.`;
-
-  if(!confirm(`CẢNH BÁO:\nBạn đang chọn: ${selectedLabel}\nNăm chốt: ${yr}\n\n${detailText}\nTransfers sẽ KHÔNG bị xóa.\n\nTiếp tục?`)) return;
-  const xacNhanPin = prompt(`BẢO MẬT KÉP:\nNhập mã PIN của ${CU.name} để xác nhận chốt sổ ${selectedLabel}:`);
-  if(!xacNhanPin) { showAlert('app','Đã hủy thao tác chốt sổ.','ae'); return; }
-
-  if (btn) { btn.disabled = true; btn.textContent = '⏳ Đang chốt...'; }
-  showAlert('app','Đang xác thực và chốt sổ dữ liệu đã chọn...','ai');
-  try {
-    const r = await api({action: 'archive', year: yr, archiveType, name: CU.name, pin: xacNhanPin});
-    if(r.error) {
-      showAlert('app', r.error, 'ae');
-    } else {
-      showAlert('app', r.message || 'Đã chốt sổ thành công.', 'as');
-      // Giữ lại năm và lựa chọn tác vụ để Admin có thể chốt tiếp tác vụ khác ngay sau đó.
-      await loadAll(true);
-      if (archiveType === 'leaves') switchTab('lich-su-np');
-      else if (archiveType === 'all') switchTab('lich-su-np');
-    }
-  } catch(ex) {
-    showAlert('app','Lỗi kết nối. Vui lòng thử lại.','ae');
-  } finally {
-    // Dù lỗi/timeout vẫn luôn mở lại nút để có thể bấm tiếp.
-    if (btn) { btn.disabled = false; btn.textContent = 'Chốt sổ'; }
-  }
-}
-
-
 function _diagResultBadge(v) {
   const x = (v || '').toString().toUpperCase();
   const map = {
@@ -8051,7 +8002,7 @@ function initTransferForm() {
   document.getElementById('f-transfer-month').value = String(now.getMonth() + 1);
   
   filterTCUsers();
-  renderTransferLog();
+  loadTransferHistoryYear(now.getFullYear(), true).then(renderTransferLog).catch(() => renderTransferLog());
 }
 
 
@@ -8304,8 +8255,8 @@ async function submitTransfer() {
     filterTCUsers();
 
     refreshTransfersInBackground(() => {
+      if (transferHistoryYearLoaded) loadTransferHistoryYear(transferHistoryYearLoaded, true).then(() => { if (document.getElementById('tab-admin-hc')?.classList.contains('active')) renderTransferLog(); }).catch(()=>{});
       if (document.getElementById('tab-admin-hc')?.classList.contains('active')) {
-        renderTransferLog();
         renderScheduleTable();
       }
     });
@@ -8337,9 +8288,59 @@ async function loadTransfers() {
 
 
 
+async function loadTransferHistoryYear(year, force) {
+  const y = Number(year);
+  if (!Number.isInteger(y) || y < 2000 || y > 2100) {
+    transferHistoryRows = [];
+    transferHistoryYearLoaded = null;
+    return [];
+  }
+  if (!force && transferHistoryYearLoaded === y) return transferHistoryRows;
+  if (_loadTransferHistoryPromise && _loadTransferHistoryPromise.year === y) return _loadTransferHistoryPromise.promise;
+  const sessionKey = (typeof CU !== 'undefined' && CU) ? `${CU.name || ''}|${CU.token || ''}` : '';
+  const promise = (async () => {
+    const res = await api(force ? { action: 'getTransfers', year: y, _refresh: Date.now() } : { action: 'getTransfers', year: y });
+    if (!Array.isArray(res)) throw new Error((res && res.error) || 'Không tải được lịch sử điều chuyển năm ' + y + '.');
+    const rows = res.map(t => {
+      const x = Object.assign({}, t);
+      x._date = (x.date || '').toString().substring(0, 10);
+      return x;
+    });
+    const nowSessionKey = (typeof CU !== 'undefined' && CU) ? `${CU.name || ''}|${CU.token || ''}` : '';
+    if (nowSessionKey !== sessionKey) return []; // không để response của phiên cũ ghi đè dữ liệu phiên mới
+    transferHistoryRows = rows;
+    transferHistoryYearLoaded = y;
+    return rows;
+  })().finally(() => {
+    if (_loadTransferHistoryPromise && _loadTransferHistoryPromise.promise === promise) _loadTransferHistoryPromise = null;
+  });
+  _loadTransferHistoryPromise = { year: y, promise };
+  return promise;
+}
+
+async function onTransferHistoryFilterChange() {
+  const { yr } = getYM('f-transfer-year', 'f-transfer-month');
+  if (!yr) return renderTransferLog();
+  if (transferHistoryYearLoaded !== Number(yr)) {
+    const tbody = document.getElementById('transfer-log-body');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="empty">⏳ Đang tải dữ liệu điều chuyển năm ' + escapeHTML(yr) + '...</td></tr>';
+    try { await loadTransferHistoryYear(Number(yr), true); }
+    catch (e) {
+      if (tbody) tbody.innerHTML = '<tr><td colspan="5" class="empty">Không tải được dữ liệu điều chuyển.</td></tr>';
+      return;
+    }
+  }
+  renderTransferLog();
+}
+
+
 function renderTransferLog() {
   const { yr, mo } = getYM('f-transfer-year', 'f-transfer-month');
   if (!yr) return;
+  if (transferHistoryYearLoaded !== Number(yr)) {
+    onTransferHistoryFilterChange();
+    return;
+  }
 
   const bpSel = document.getElementById('f-transfer-bophan');
   if (bpSel) {
@@ -8358,7 +8359,7 @@ function renderTransferLog() {
   }
   const bpFilter = (bpSel && bpSel.style.display !== 'none') ? bpSel.value : '';
 
-  let filtered = allTransfers.filter(t => transferMatchesYM(t, yr, mo)).sort((a,b) => b.date.localeCompare(a.date));
+  let filtered = transferHistoryRows.filter(t => transferMatchesYM(t, yr, mo)).sort((a,b) => b.date.localeCompare(a.date));
   if (!CU.admin && !isCompanyPermissionScope()) {
     filtered = filtered.filter(t => sameBoPhan(getUserInfo(t.name) || {}, CU));
   } else if (bpFilter) {
@@ -8390,7 +8391,8 @@ async function deleteTransfer(id, btn) {
   try {
     const res = await api({ action: "deleteTransfer", id });
     if (res && res.error) { showAlert('app', res.error, 'ae'); return; }
-    await loadTransfers();
+    transferHistoryRows = (transferHistoryRows || []).filter(t => (t.id || '').toString() !== (id || '').toString());
+    await Promise.all([loadTransfers(), transferHistoryYearLoaded ? loadTransferHistoryYear(transferHistoryYearLoaded, true) : Promise.resolve([])]);
     renderTransferLog();
     renderScheduleTable();
     showAlert('app','Đã xóa!','as');
@@ -8403,6 +8405,8 @@ async function deleteTransfer(id, btn) {
 
 async function exportExcelTransfer() {
   if (!CU || (CU.role !== 'ld' && !CU.admin)) return;
+  const { yr } = getYM('f-transfer-year','f-transfer-month');
+  if (yr && transferHistoryYearLoaded !== Number(yr)) await loadTransferHistoryYear(Number(yr), true);
   const label=ymExportLabel('f-transfer-year','f-transfer-month');
   await _exportTableXlsxByDepartment({filterId:'f-transfer-bophan',renderFn:renderTransferLog,tableId:'table-transfer-log',filename:`Lich_Su_Dieu_Chuyen_Kip_${label}.xlsx`,worksheetName:'DieuChuyen'});
 }
@@ -9527,7 +9531,7 @@ const LEAVE_RECALC_NOTES = {
   },
   updateOld: {
     title: '🗓️ Cập nhật lại phép năm cũ',
-    note: 'Tính lại và <b>sửa lại số đã chốt sổ của 1 năm cũ</b> trong <b>LichSuPhep</b> (không đụng đến phép năm hiện tại).<br><br>Dùng khi: có đơn phép của năm cũ nhưng bị duyệt <b>trễ</b> — tức là duyệt SAU khi hệ thống đã tự động chốt sổ đầu năm mới (0h ngày 1/1), khiến số đã chốt bị thiếu, chưa trừ đơn đó.<br><br>⚠️ Ghi đè lại dòng đã chốt của năm cũ trong LichSuPhep, không thể hoàn tác.'
+    note: 'Tính lại và <b>sửa lại số đã khóa của 1 năm cũ</b> trong <b>LichSuPhep_YYYY</b> (không đụng đến phép năm hiện tại).<br><br>Dùng khi: có đơn phép của năm cũ nhưng bị duyệt <b>trễ</b> — tức là duyệt SAU khi hệ thống đã tự động khóa số phép cuối năm khi sang năm mới, khiến số đã khóa bị thiếu, chưa trừ đơn đó.<br><br>⚠️ Ghi đè lại dòng số phép đã khóa của năm cũ trong LichSuPhep_YYYY, không thể hoàn tác.'
   }
 };
 
@@ -9597,7 +9601,7 @@ async function doLeaveRecalcActionWithPin() {
         delete _leaveBalancesLoadedYears[res.year];
         const { yr } = getYM('f-leave-stat-year', 'f-leave-stat-month');
         if (yr === res.year) await renderLeaveStats();
-        // Cảnh báo RÕ TÊN những người chưa có dòng chốt sổ gốc cho năm này — số phép của
+        // Cảnh báo RÕ TÊN những người chưa có dòng số phép gốc đã khóa cho năm này — số phép của
         // họ đang lấy tạm từ users tại thời điểm bấm nút, có thể sai nếu users đã đổi
         // sang số năm mới. Cần admin kiểm tra lại thủ công đúng những người này.
         // Đợi 1 nhịp trước khi hiện cảnh báo thứ 2, vì cả 2 thông báo dùng chung 1 khung
@@ -9605,7 +9609,7 @@ async function doLeaveRecalcActionWithPin() {
         // trước khi kịp hiển thị.
         if (res.fallbackNames && res.fallbackNames.length > 0) {
           setTimeout(() => {
-            showAlert('app', `⚠️ ${res.fallbackNames.length} người sau đây CHƯA CÓ dữ liệu chốt sổ gốc cho năm ${res.year}, số phép đang lấy TẠM từ dữ liệu hiện tại — cần kiểm tra lại thủ công:\n\n${res.fallbackNames.join(', ')}`, 'ae');
+            showAlert('app', `⚠️ ${res.fallbackNames.length} người sau đây CHƯA CÓ dữ liệu số phép gốc đã khóa cho năm ${res.year}, số phép đang lấy TẠM từ dữ liệu hiện tại — cần kiểm tra lại thủ công:\n\n${res.fallbackNames.join(', ')}`, 'ae');
           }, 4200);
         }
       }
