@@ -381,11 +381,11 @@ textarea{resize:none;height:80px}
         
         <hr style="margin: 20px 0; border: none; border-top: 1px dashed #cbd5e1;">
         <div class="sec-title" style="color:#991b1b">Chốt sổ dữ liệu năm</div>
+        <div style="font-size:12px;color:#64748b;margin:5px 0 10px">Đơn đổi ca được lưu tự động theo sheet <b>Requests_YYYY</b>, không cần chốt sổ.</div>
         <div class="form-row" style="grid-template-columns:minmax(120px,.8fr) minmax(210px,1.4fr) minmax(120px,.7fr); align-items:end;">
           <div><label>Năm cần chốt</label><input type="number" id="f-archive-year" placeholder="VD: 2023" style="border-color:#fca5a5;"></div>
           <div><label>Tác vụ cần chốt</label><select id="f-archive-type" style="border-color:#fca5a5;">
             <option value="all">Tất cả dữ liệu cần chốt</option>
-            <option value="requests">Đơn đổi ca (Requests)</option>
             <option value="leaves">Đơn nghỉ cá nhân (Leaves)</option>
             <option value="login_log">Nhật ký đăng nhập (login_log)</option>
             <option value="leave_history">Lịch sử nghỉ cá nhân (leave_history)</option>
@@ -3320,14 +3320,13 @@ async function doArchive() {
 
   const labels = {
     all: 'TẤT CẢ dữ liệu cần chốt',
-    requests: 'ĐƠN ĐỔI CA (Requests)',
     leaves: 'ĐƠN NGHỈ CÁ NHÂN (Leaves)',
     login_log: 'NHẬT KÝ ĐĂNG NHẬP (login_log)',
     leave_history: 'LỊCH SỬ NGHỈ CÁ NHÂN (leave_history)'
   };
   const selectedLabel = labels[archiveType] || labels.all;
 
-  const detailText = `Chỉ khi bạn xác nhận, dữ liệu đúng năm ${yr} của tác vụ đã chọn mới được chuyển sang sheet lưu trữ và xóa khỏi sheet đang hoạt động.\nNếu không chốt sổ, dữ liệu cũ vẫn giữ nguyên trong Google Sheets và phần mềm không tự xóa.`;
+  const detailText = `Requests đã được lưu riêng theo từng năm (Requests_YYYY) nên không cần chốt sổ nữa.\nChức năng này chỉ chuyển dữ liệu phụ trợ như nghỉ cá nhân/nhật ký của năm ${yr} sang sheet lưu trữ.`;
 
   if(!confirm(`CẢNH BÁO:\nBạn đang chọn: ${selectedLabel}\nNăm chốt: ${yr}\n\n${detailText}\nTransfers sẽ KHÔNG bị xóa.\n\nTiếp tục?`)) return;
   const xacNhanPin = prompt(`BẢO MẬT KÉP:\nNhập mã PIN của ${CU.name} để xác nhận chốt sổ ${selectedLabel}:`);
@@ -3343,9 +3342,8 @@ async function doArchive() {
       showAlert('app', r.message || 'Đã chốt sổ thành công.', 'as');
       // Giữ lại năm và lựa chọn tác vụ để Admin có thể chốt tiếp tác vụ khác ngay sau đó.
       await loadAll(true);
-      if (archiveType === 'requests') switchTab('lich-su');
-      else if (archiveType === 'leaves') switchTab('lich-su-np');
-      else if (archiveType === 'all') switchTab('lich-su');
+      if (archiveType === 'leaves') switchTab('lich-su-np');
+      else if (archiveType === 'all') switchTab('lich-su-np');
     }
   } catch(ex) {
     showAlert('app','Lỗi kết nối. Vui lòng thử lại.','ae');
