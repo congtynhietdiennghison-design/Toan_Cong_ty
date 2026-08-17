@@ -226,10 +226,10 @@ textarea{resize:none;height:80px}
     <section class="login-left">
       <div class="login-brand-grid">
         <div class="login-hero-logo">
-          <img class="login-company-logo" src="./logocongty.png" alt="Logo Công ty Nhiệt điện Nghi Sơn">
+          <img class="login-company-logo" src="./logocongty.png" alt="Logo Công ty">
         </div>
         <div>
-          <div class="login-kicker">CÔNG TY NHIỆT ĐIỆN NGHI SƠN</div>
+          <div class="login-kicker" id="login-company-name">CÔNG TY</div>
           <div class="login-headline">HỆ THỐNG QUẢN LÝ CHẤM CÔNG</div>
           <div class="login-description">Đổi ca · Nghỉ cá nhân · Lịch trực · Bảng chấm công</div>
         </div>
@@ -1013,7 +1013,7 @@ textarea{resize:none;height:80px}
 // KHAI BÁO BIẾN TOÀN CỤC
 // =============================================
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw7fHZBn_Bzfma2td2PoP72JhrfasO1h_BYn_mF5o87Vx7Af85DgmCh3Tivaypc-L9yxA/exec";
-let APP_CONFIG = { tenPX: "Phân xưởng", lechMax: 10 };
+let APP_CONFIG = { tenCongTy: "Công ty", lechMax: 10 };
 let NV_LIST=[]; let CA = {}; let CU=null;
 let userByName = {};
 let _mergedConfigCache = {};
@@ -2276,9 +2276,55 @@ function getLechWarnByName(name) {
   return getLechWarn((getUserInfo(name) || {}).boPhan || '');
 }
 
+const PUBLIC_BRANDING_CACHE_KEY = 'CHAMCONG_PUBLIC_BRANDING_V1';
+const PUBLIC_BRANDING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+function applyCompanyBranding(tenCongTy) {
+  const name = (tenCongTy || '').toString().trim() || 'Công ty';
+  APP_CONFIG.tenCongTy = name;
+  const loginNameEl = document.getElementById('login-company-name');
+  if (loginNameEl) loginNameEl.textContent = name.toUpperCase();
+  const titleEl = document.getElementById('page-title');
+  if (titleEl && (!CU || !CU.token)) titleEl.textContent = 'Quản lý chấm công – ' + name;
+}
+
+function saveCompanyBrandingCache(tenCongTy) {
+  try {
+    const name = (tenCongTy || '').toString().trim();
+    if (name) localStorage.setItem(PUBLIC_BRANDING_CACHE_KEY, JSON.stringify({ name, at: Date.now() }));
+  } catch (_) {}
+}
+
+async function loadPublicBranding() {
+  let cacheFresh = false;
+  try {
+    const raw = localStorage.getItem(PUBLIC_BRANDING_CACHE_KEY);
+    if (raw) {
+      const cached = JSON.parse(raw);
+      if (cached && cached.name) {
+        applyCompanyBranding(cached.name);
+        cacheFresh = cached.at && (Date.now() - Number(cached.at) < PUBLIC_BRANDING_CACHE_TTL_MS);
+      }
+    }
+  } catch (_) {}
+  // Tránh tạo thêm execution mỗi lần mở trang: chỉ hỏi server khi chưa có cache hoặc cache quá 24 giờ.
+  if (cacheFresh) return;
+  try {
+    const branding = await apiSharedRead({ action: 'getPublicBranding' }, 5 * 60 * 1000);
+    if (branding && !branding.error && branding.tenCongTy) {
+      applyCompanyBranding(branding.tenCongTy);
+      saveCompanyBrandingCache(branding.tenCongTy);
+    }
+  } catch (e) {
+    console.warn('[PUBLIC BRANDING] Không tải được tên Công ty:', e);
+  }
+}
+
 function setupDynamicFields(settings) {
   if(settings.configs) {
-    APP_CONFIG.tenPX = settings.configs.TEN_PHAN_XUONG || "Phân xưởng"; 
+    APP_CONFIG.tenCongTy = settings.configs.TEN_CONG_TY || "Công ty"; 
+    applyCompanyBranding(APP_CONFIG.tenCongTy);
+    saveCompanyBrandingCache(APP_CONFIG.tenCongTy);
     APP_CONFIG.lechMax = parseInt(settings.configs.SO_CA_LECH_MAX) || 10;
     APP_CONFIG.lechWarn = parseInt(settings.configs.SO_CA_LECH_CANH_BAO) || (APP_CONFIG.lechMax - 2); 
     APP_CONFIG.configs = settings.configs;
@@ -2289,8 +2335,8 @@ function setupDynamicFields(settings) {
     APP_CONFIG.kipList = settings.kips;
     APP_CONFIG.priorityOrder = settings.chucDanhs;
     buildLechLimitsByBoPhan();
-    document.getElementById('page-title').textContent = "Quản lý chấm công – " + APP_CONFIG.tenPX; 
-    document.getElementById('tb-ten-px').textContent = APP_CONFIG.tenPX;
+    document.getElementById('page-title').textContent = "Quản lý chấm công – " + APP_CONFIG.tenCongTy; 
+    document.getElementById('tb-ten-px').textContent = APP_CONFIG.tenCongTy;
   }
   let kipHtml = '<option value="">-- Kíp --</option>' + settings.kips.map(k => `<option>${escapeHTML(k)}</option>`).join('');
   document.getElementById('f-kip').innerHTML = kipHtml; document.getElementById('f-partner-kip').innerHTML = kipHtml; document.getElementById('f-fkp').innerHTML = '<option value="">Tất cả kíp</option>' + settings.kips.map(k => `<option>${escapeHTML(k)}</option>`).join('');
@@ -2307,6 +2353,9 @@ window.onload = () => {
   if (loadingText) loadingText.innerHTML = "Sẵn sàng đăng nhập";
   document.getElementById('login-loading').style.display = 'none';
   document.getElementById('login-box').style.display = 'grid';
+  // Tên Công ty trên màn hình đăng nhập lấy động từ settings.TEN_CONG_TY.
+  // Lỗi mạng không chặn đăng nhập; khi đó giữ nhãn chung "CÔNG TY".
+  loadPublicBranding();
 };
 
 async function applyRequestsFromApi(d) {
@@ -2777,10 +2826,10 @@ async function finalizeAuthenticatedUiAfterCore(r, flags) {
     document.getElementById('overlay').style.display='none'; document.getElementById('app').style.display='block'; 
     document.getElementById('ub-name').textContent=CU.name; 
     const myInfo = getUserInfo(CU.name); 
-    // Tiêu đề "Quản lý chấm công" — dùng tên chung TEN_PHAN_XUONG (cấu hình ở Settings).
+    // Tiêu đề "Quản lý chấm công" — dùng tên chung TEN_CONG_TY (cấu hình ở Settings).
     const _tbTitleEl = document.getElementById('tb-title');
     if (_tbTitleEl) {
-      _tbTitleEl.textContent = 'Quản lý chấm công' + (APP_CONFIG.tenPX ? ' - ' + APP_CONFIG.tenPX : '');
+      _tbTitleEl.textContent = 'Quản lý chấm công' + (APP_CONFIG.tenCongTy ? ' - ' + APP_CONFIG.tenCongTy : '');
     }
     // Dòng phụ dưới tiêu đề — chỉ hiện khi tài khoản có gán bộ phận cụ thể.
     // Admin/tài khoản chưa gán bộ phận (giám sát toàn Công ty) thì ẩn hẳn dòng này,
