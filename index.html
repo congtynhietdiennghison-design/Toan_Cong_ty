@@ -405,7 +405,7 @@ textarea{resize:none;height:80px}
         </div>
 
         <div style="font-size:13px;color:#475569;line-height:1.6;margin-bottom:12px;">
-          <b>Production:</b> chỉ ghi lỗi, thao tác trùng và thao tác chậm để không làm nặng hệ thống.
+          <b>Production:</b> chỉ ghi chi tiết lỗi, thao tác trùng và thao tác chậm để không làm nặng hệ thống; bộ đếm tổng vẫn thống kê tỷ lệ OK/SLOW/ERROR.
           <b>Debug:</b> ghi mọi API trong thời gian kiểm tra. Không ghi PIN, token hay secret.
         </div>
 
@@ -3501,13 +3501,28 @@ function renderSystemDiag() {
   rows.forEach(r => { const k=(r.result||'').toString().toUpperCase(); if (counts[k] !== undefined) counts[k]++; });
   const summary = document.getElementById('diag-summary');
   if (summary) {
-    const chip = (label,n,bg,fg) => `<span style="padding:5px 9px;border-radius:8px;background:${bg};color:${fg};font-size:12px;font-weight:800">${label}: ${n}</span>`;
-    summary.innerHTML =
-      chip('Đang hiển thị', rows.length, '#eff6ff','#1d4ed8') +
+    const chip = (label,n,bg,fg,extra='') => `<span style="padding:5px 9px;border-radius:8px;background:${bg};color:${fg};font-size:12px;font-weight:800">${label}: ${n}${extra}</span>`;
+    const c = (st && st.counters) || {};
+    const total = Number(c.total) || 0;
+    const pct = n => total > 0 ? ` (${(100 * (Number(n)||0) / total).toFixed(1)}%)` : '';
+    const since = c.since ? _diagFmtTime(c.since) : 'chưa có mốc';
+    const approx = st && st.countersApproximate ? ' · số tổng mang tính thống kê vận hành' : '';
+    const overall = total > 0
+      ? `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;width:100%">` +
+          chip('Tổng API', total, '#e0e7ff','#3730a3') +
+          chip('OK', Number(c.OK)||0, '#dcfce7','#166534', pct(c.OK)) +
+          chip('SLOW', Number(c.SLOW)||0, '#ffedd5','#9a3412', pct(c.SLOW)) +
+          chip('ERROR', Number(c.ERROR)||0, '#fee2e2','#991b1b', pct(c.ERROR)) +
+          chip('DUPLICATE', Number(c.DUPLICATE)||0, '#fef3c7','#92400e', pct(c.DUPLICATE)) +
+        `</div><div style="width:100%;font-size:11.5px;color:#64748b;margin-top:2px">Tính từ ${escapeHTML(since)}${escapeHTML(approx)}. Production không ghi từng dòng OK vào bảng log.</div>`
+      : `<div style="width:100%;font-size:12px;color:#64748b">Bộ đếm tổng chưa có dữ liệu. Sau khi triển khai, nên bấm <b>Xóa log</b> một lần để bắt đầu mốc đo mới.</div>`;
+    const filtered = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;width:100%;margin-top:4px">` +
+      chip('Log đang hiển thị', rows.length, '#eff6ff','#1d4ed8') +
       chip('ERROR', counts.ERROR, '#fee2e2','#991b1b') +
       chip('DUPLICATE', counts.DUPLICATE, '#fef3c7','#92400e') +
       chip('SLOW', counts.SLOW, '#ffedd5','#9a3412') +
-      chip('OK', counts.OK, '#dcfce7','#166534');
+      chip('OK', counts.OK, '#dcfce7','#166534') + `</div>`;
+    summary.innerHTML = overall + filtered;
   }
 
   if (!rows.length) {
@@ -3641,7 +3656,7 @@ async function toggleSystemDiagMode(cb) {
 
 async function clearSystemDiagLogsUI() {
   if (!CU || !CU.admin) return;
-  if (!confirm('Xóa toàn bộ log chẩn đoán hiện có? Thao tác này không ảnh hưởng dữ liệu nghiệp vụ.')) return;
+  if (!confirm('Xóa toàn bộ log chẩn đoán và reset bộ đếm tỷ lệ từ đầu? Thao tác này không ảnh hưởng dữ liệu nghiệp vụ.')) return;
   try {
     const res = await api({ action: 'clearSystemDiagLogs' });
     if (!res || res.error) throw new Error((res && res.error) || 'Không xóa được log.');
@@ -3649,7 +3664,7 @@ async function clearSystemDiagLogsUI() {
     _systemDiagStatus = res.status || _systemDiagStatus;
     _systemDiagLoadedAt = Date.now();
     renderSystemDiag();
-    showAlert('app', 'Đã xóa log chẩn đoán.', 'as');
+    showAlert('app', 'Đã xóa log chẩn đoán và reset bộ đếm tổng.', 'as');
   } catch (e) {
     showAlert('app', '❌ ' + (e && e.message ? e.message : e), 'ae');
   }
@@ -3666,10 +3681,42 @@ async function exportSystemDiagCsv() {
     const res = await api({ action: 'getSystemDiag', limit: 1000 });
     if (!res || res.error) throw new Error((res && res.error) || 'Không tải được log để xuất.');
     const logs = Array.isArray(res.logs) ? res.logs : [];
-    if (!logs.length) { showAlert('app','Không có log để xuất!','ae'); return; }
-    const headers=['Thời gian','Mức','API','Người dùng','Thời lượng ms','Lock wait ms','Chi tiết'];
-    const body=logs.map(r=>`<tr><td>${escapeHTML(r.createdAt||r.time||'')}</td><td>${escapeHTML(r.level||'')}</td><td>${escapeHTML(r.action||r.api||'')}</td><td>${escapeHTML(r.user||r.userName||'')}</td><td>${escapeHTML(r.durationMs??r.duration??'')}</td><td>${escapeHTML(r.lockWaitMs??'')}</td><td>${escapeHTML(r.detail||r.message||'')}</td></tr>`).join('');
-    const html=`<table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
+    const st = res.status || {};
+    const c = st.counters || {};
+    if (!logs.length && !(Number(c.total) > 0)) { showAlert('app','Không có dữ liệu chẩn đoán để xuất!','ae'); return; }
+
+    // DIAG13: xuất ĐÚNG schema backend. Bản cũ dùng r.level/r.durationMs nên cột Mức/Thời lượng bị trống.
+    const headers = [
+      'Thời gian','Kết quả','API','Người dùng','Bộ phận','Tổng ms','Xác thực ms',
+      'Chờ khóa ms','Ghi dữ liệu ms','Thông báo ms','Khác ms','Bước chậm nhất',
+      'Chi tiết','Request ID','Trùng','Lỗi','Phiên bản','Chế độ'
+    ];
+    const body = logs.map(r => `<tr>` + [
+      r.time, r.result, r.action, r.user, r.boPhan, r.totalMs, r.authMs, r.lockWaitMs,
+      r.writeMs, r.notifyMs, r.otherMs, r.slowestStep, r.detail, r.clientRequestId,
+      r.duplicate, r.error, r.version, r.mode
+    ].map(v => `<td>${escapeHTML(v == null ? '' : v)}</td>`).join('') + `</tr>`).join('');
+
+    const total = Number(c.total) || 0;
+    const pct = n => total > 0 ? (100 * (Number(n)||0) / total).toFixed(2) + '%' : '';
+    const summaryRows = [
+      ['Mốc bắt đầu bộ đếm', c.since || ''],
+      ['Tổng API', total],
+      ['OK', Number(c.OK)||0, pct(c.OK)],
+      ['SLOW', Number(c.SLOW)||0, pct(c.SLOW)],
+      ['ERROR', Number(c.ERROR)||0, pct(c.ERROR)],
+      ['DUPLICATE', Number(c.DUPLICATE)||0, pct(c.DUPLICATE)],
+      ['Ngưỡng SLOW (ms)', st.slowMs || ''],
+      ['Ngưỡng Lock chậm (ms)', st.lockSlowMs || ''],
+      ['Chế độ', st.debug ? 'DEBUG' : 'PRODUCTION'],
+      ['Phiên bản chẩn đoán', st.version || ''],
+      ['Ghi chú', 'Production chỉ lưu chi tiết ERROR/SLOW/DUPLICATE; OK chỉ được tính trong bộ đếm tổng.']
+    ];
+    const summaryHtml = `<table><thead><tr><th>THỐNG KÊ TỔNG QUAN</th><th>Giá trị</th><th>Tỷ lệ</th></tr></thead><tbody>` +
+      summaryRows.map(a => `<tr><td>${escapeHTML(a[0]||'')}</td><td>${escapeHTML(a[1] == null ? '' : a[1])}</td><td>${escapeHTML(a[2]||'')}</td></tr>`).join('') +
+      `</tbody></table><br>`;
+    const logHtml = `<table><thead><tr>${headers.map(x=>`<th>${escapeHTML(x)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>`;
+    const html = summaryHtml + logHtml;
     const stamp=new Date().toISOString().replace(/[:.]/g,'-').slice(0,19);
     await downloadExcel(html,`system_diag_${stamp}.xlsx`,'SystemDiag');
   } catch(e) { showAlert('app','Không xuất được log: '+(e&&e.message?e.message:e),'ae'); }
