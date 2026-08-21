@@ -270,7 +270,7 @@ textarea{resize:none;height:80px}
           <button class="btn btn-primary login-submit" onclick="doLogin()">Đăng nhập</button>
           <div class="login-security-note"><i>🛡️</i><span>Không chia sẻ mã PIN. Khi cần hỗ trợ, liên hệ quản trị hệ thống.</span></div>
         </div>
-        <div class="login-footer">Phiên bản V13.7.8 FINAL · Google Sheet / Apps Script</div>
+        <div class="login-footer">Phiên bản V13.7.8 DIAG13-STABLE+ R2 · Google Sheet / Apps Script</div>
       </div>
     </section>
   </div>
@@ -1017,7 +1017,7 @@ textarea{resize:none;height:80px}
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw7fHZBn_Bzfma2td2PoP72JhrfasO1h_BYn_mF5o87Vx7Af85DgmCh3Tivaypc-L9yxA/exec";
 let APP_CONFIG = { tenCongTy: "Công ty", lechMax: 10 };
 let NV_LIST=[]; let CA = {}; let CU=null;
-// DIAG14: khi phát hiện hết phiên, dừng các prefetch còn xếp hàng và đưa về đăng nhập một lần.
+// STABLE+ R2: phát hiện hết phiên thì dừng prefetch còn xếp hàng và quay về đăng nhập đúng 1 lần.
 let _sessionExpiredHandling = false;
 let userByName = {};
 let _mergedConfigCache = {};
@@ -1385,13 +1385,6 @@ async function ensureDataForTab(tab) {
   }
   if (needsSecondary && _secondaryPrefetchPromise) {
     try { await _secondaryPrefetchPromise; } catch (_) {}
-  }
-
-  // DIAG15: nếu gói guard của màn Đăng ký đang đọc Requests/Leaves thì đợi nó xong
-  // trước khi mở thêm getTabBundle. Tránh 2 execution cùng lúc cache miss rồi cùng
-  // đọc một sheet Google Sheets (cache stampede) — đúng mẫu SLOW log 14:27/14:29.
-  if (_registrationGuardPromise && (keys.includes('requests') || keys.includes('leaves'))) {
-    try { await _registrationGuardPromise; } catch (_) {}
   }
 
   const opts = {};
@@ -1953,183 +1946,16 @@ function isBusyError(msg) {
   return s.includes('Hệ thống đang bận') || s.includes('Hệ thống bận');
 }
 
-// DIAG15.1 — phân biệt lỗi mạng nội bộ với lỗi đường truyền tới Google Apps Script.
-// Trước đây mọi exception đều hiện "Lỗi kết nối mạng", khiến người dùng dễ hiểu nhầm.
-const CLIENT_TRANSPORT_QUEUE_KEY = 'QLCC_CLIENT_TRANSPORT_DIAG_V1';
-const CLIENT_TRANSPORT_MAX_QUEUE = 20;
-let _clientTransportMemoryQueue = [];
-let _clientTransportFlushPromise = null;
-let _clientTransportQueueKnownNonEmpty = null;
-
-function makeTransportError(code, message, status) {
-  const e = new Error(message || code || 'Lỗi kết nối');
-  e.transportCode = code || 'TRANSPORT';
-  if (status) e.httpStatus = Number(status) || 0;
-  return e;
-}
-
-function classifyClientTransportError(err) {
-  const raw = (err && err.message) ? String(err.message) : String(err || 'Lỗi kết nối không xác định');
-  const status = Number(err && err.httpStatus) || 0;
-  let code = (err && err.transportCode) ? String(err.transportCode) : '';
-
-  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-    code = 'OFFLINE';
-  } else if (!code && status) {
-    code = status === 429 ? 'HTTP_429' : (status >= 500 ? 'HTTP_5XX' : 'HTTP_4XX');
-  } else if (!code && /\b429\b/.test(raw)) {
-    code = 'HTTP_429';
-  } else if (!code && /\b(?:500|502|503|504)\b/.test(raw)) {
-    code = 'HTTP_5XX';
-  } else if (!code && /quá thời gian|timeout|timed out/i.test(raw)) {
-    code = 'TIMEOUT';
-  } else if (!code && /Failed to fetch|NetworkError|Load failed|fetch/i.test(raw)) {
-    code = 'FETCH_FAILED';
-  } else if (!code && /JSON|Unexpected token|không hợp lệ/i.test(raw)) {
-    code = 'INVALID_RESPONSE';
-  } else if (!code) {
-    code = 'GAS_OR_TRANSPORT';
-  }
-
-  const retryable = code !== 'OFFLINE' && code !== 'HTTP_4XX';
-  return { code, raw, status, retryable };
-}
-
-function getTransportUserMessage(err) {
-  const x = classifyClientTransportError(err);
-  if (x.code === 'OFFLINE') {
-    return 'Thiết bị đang mất kết nối mạng. Vui lòng kiểm tra Wi‑Fi/LAN rồi thử lại.';
-  }
-  if (x.code === 'HTTP_429') {
-    return 'Máy chủ Google Apps Script đang giới hạn lượt truy cập (HTTP 429). Vui lòng thử lại sau ít giây.';
-  }
-  if (x.code === 'HTTP_5XX') {
-    return 'Máy chủ Google Apps Script đang phản hồi lỗi' + (x.status ? ' HTTP ' + x.status : '') + '. Đây không nhất thiết là lỗi mạng nội bộ.';
-  }
-  if (x.code === 'TIMEOUT') {
-    return 'Máy chủ Google Apps Script phản hồi quá chậm (quá 90 giây). Mạng nội bộ có thể vẫn bình thường.';
-  }
-  if (x.code === 'INVALID_RESPONSE') {
-    return 'Máy chủ Google Apps Script trả phản hồi không hợp lệ. Vui lòng thử lại.';
-  }
-  if (x.code === 'HTTP_4XX') {
-    return 'Không truy cập được API Google Apps Script' + (x.status ? ' (HTTP ' + x.status + ')' : '') + '. Vui lòng kiểm tra bản triển khai/đường dẫn API.';
-  }
-  if (x.code === 'FETCH_FAILED') {
-    return 'Không kết nối được tới Google Apps Script. Mạng hệ thống có thể vẫn bình thường; vui lòng thử lại.';
-  }
-  return 'Không nhận được phản hồi hợp lệ từ Google Apps Script: ' + x.raw;
-}
-
-function _loadClientTransportQueue_() {
-  try {
-    const raw = localStorage.getItem(CLIENT_TRANSPORT_QUEUE_KEY);
-    const arr = raw ? JSON.parse(raw) : [];
-    const safe = Array.isArray(arr) ? arr : [];
-    _clientTransportQueueKnownNonEmpty = safe.length > 0;
-    return safe;
-  } catch (_) {
-    const safe = _clientTransportMemoryQueue.slice();
-    _clientTransportQueueKnownNonEmpty = safe.length > 0;
-    return safe;
-  }
-}
-
-function _saveClientTransportQueue_(arr) {
-  const safe = Array.isArray(arr) ? arr.slice(-CLIENT_TRANSPORT_MAX_QUEUE) : [];
-  _clientTransportMemoryQueue = safe.slice();
-  _clientTransportQueueKnownNonEmpty = safe.length > 0;
-  try { localStorage.setItem(CLIENT_TRANSPORT_QUEUE_KEY, JSON.stringify(safe)); } catch (_) {}
-}
-
-function hasClientTransportDiagQueued() {
-  if (_clientTransportQueueKnownNonEmpty === null) _loadClientTransportQueue_();
-  return !!_clientTransportQueueKnownNonEmpty;
-}
-
-function queueClientTransportDiag(action, err, meta) {
-  try {
-    const x = classifyClientTransportError(err);
-    const m = meta || {};
-    const arr = _loadClientTransportQueue_();
-    arr.push({
-      eventId: makeClientRequestId(),
-      failedAction: String(action || 'unknown').slice(0, 60),
-      transportClass: x.code,
-      transportMessage: x.raw.slice(0, 500),
-      elapsedMs: Math.max(0, Number(m.elapsedMs) || 0),
-      attempt: Math.max(1, Number(m.attempt) || 1),
-      online: (typeof navigator !== 'undefined') ? !!navigator.onLine : null,
-      route: m.route || ((typeof google !== 'undefined' && google.script && google.script.run) ? 'google.script.run' : 'GAS_POST'),
-      clientAt: new Date().toISOString(),
-      failedClientRequestId: String(m.clientRequestId || '').slice(0, 180)
-    });
-    _saveClientTransportQueue_(arr);
-  } catch (_) {}
-}
-
-function flushClientTransportDiagQueue() {
-  if (_clientTransportFlushPromise) return _clientTransportFlushPromise;
-  if (!hasClientTransportDiagQueued()) return Promise.resolve(true);
-  if (typeof CU === 'undefined' || !CU || !CU.name || !CU.token) return Promise.resolve(false);
-
-  _clientTransportFlushPromise = (async () => {
-    let arr = _loadClientTransportQueue_();
-    if (!arr.length) return true;
-
-    // Mỗi nhịp chỉ gửi tối đa 5 sự cố để không biến chức năng chẩn đoán thành tải nền nặng.
-    let sent = 0;
-    while (arr.length && sent < 5 && CU && CU.name && CU.token) {
-      const item = arr[0];
-      const payload = Object.assign({
-        action: 'clientTransportDiag',
-        reqName: CU.name,
-        reqToken: CU.token,
-        clientRequestId: 'flush_' + String(item.eventId || makeClientRequestId())
-      }, item);
-      try {
-        const res = await apiOnce(payload);
-        if (!res || res.error || res.success !== true) break;
-        arr.shift();
-        _saveClientTransportQueue_(arr);
-        sent++;
-      } catch (_) {
-        break;
-      }
-    }
-    return sent > 0;
-  })().finally(() => {
-    _clientTransportFlushPromise = null;
-  });
-  return _clientTransportFlushPromise;
-}
-
 function apiOnce(p) {
   return new Promise((resolve, reject) => {
-    let done = false;
-    const finishOk = (res) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timeout);
-      resolve(res);
-    };
-    const finishErr = (err) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timeout);
-      reject(err);
-    };
     const timeout = setTimeout(() => {
-      finishErr(makeTransportError('TIMEOUT', 'Yêu cầu quá thời gian (90s) khi kết nối Google Apps Script.'));
+      reject(new Error("Yêu cầu quá thời gian (90s). Vui lòng kiểm tra mạng hoặc Apps Script!"));
     }, 90000);
 
     if (typeof google !== 'undefined' && google.script && google.script.run) {
       google.script.run
-        .withSuccessHandler(finishOk)
-        .withFailureHandler(err => {
-          const msg = (err && err.message) ? err.message : String(err || 'Google Apps Script không phản hồi');
-          finishErr(makeTransportError('GAS_RUNTIME', msg));
-        })
+        .withSuccessHandler(res => { clearTimeout(timeout); resolve(res); })
+        .withFailureHandler(err => { clearTimeout(timeout); reject(err); })
         .apiRun(p);
     } else {
       fetch(SCRIPT_URL, {
@@ -2137,29 +1963,12 @@ function apiOnce(p) {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams(p).toString()
       })
-        .then(async r => {
-          const status = Number(r.status) || 0;
-          let raw = '';
-          try { raw = await r.text(); } catch (_) { raw = ''; }
-          if (!r.ok) {
-            throw makeTransportError(
-              status === 429 ? 'HTTP_429' : (status >= 500 ? 'HTTP_5XX' : 'HTTP_4XX'),
-              'Google Apps Script trả HTTP ' + status,
-              status
-            );
-          }
-          if (!raw) throw makeTransportError('INVALID_RESPONSE', 'Google Apps Script trả phản hồi rỗng.', status);
-          try { return JSON.parse(raw); }
-          catch (_) { throw makeTransportError('INVALID_RESPONSE', 'Google Apps Script trả dữ liệu không phải JSON.', status); }
+        .then(r => {
+          if (!r.ok) throw new Error("Mã lỗi HTTP: " + r.status);
+          return r.json();
         })
-        .then(finishOk)
-        .catch(err => {
-          if (err && err.transportCode) finishErr(err);
-          else {
-            const msg = (err && err.message) ? err.message : String(err || 'Failed to fetch');
-            finishErr(makeTransportError('FETCH_FAILED', msg));
-          }
-        });
+        .then(res => { clearTimeout(timeout); resolve(res); })
+        .catch(err => { clearTimeout(timeout); reject(err); });
     }
   });
 }
@@ -2269,15 +2078,6 @@ let _loadRequestsPromise = null;
 let _loadLeavesPromise = null;
 let _loadTransfersPromise = null;
 
-// DIAG15 — COALESCE getTabBundle:
-// nhiều thao tác/tab có thể xin các nhóm khác nhau gần như cùng lúc. Bản trước chỉ
-// chống trùng khi payload GIỐNG HỆT, nên requests+transfers và leaves+balances vẫn
-// tạo nhiều execution Apps Script song song. Giờ gom các cờ trong một nhịp ngắn và
-// tuyệt đối chỉ cho 1 getTabBundle chạy tại một thời điểm trên cùng client.
-const TAB_BUNDLE_COALESCE_MS = 90;
-let _tabBundlePending = null; // { opts, waiters, timer, sessionKey }
-let _tabBundleInFlight = null; // { opts, promise, sessionKey }
-
 function _sharedReadKey(p) {
   const session = (typeof CU !== 'undefined' && CU) ? `${CU.name || ''}|${CU.token || ''}` : '';
   const clean = {};
@@ -2288,114 +2088,11 @@ function _sharedReadKey(p) {
   return session + '|' + JSON.stringify(clean);
 }
 
-function _tabBundleSessionKey_() {
-  return (typeof CU !== 'undefined' && CU) ? `${CU.name || ''}|${CU.token || ''}` : '';
-}
-function _tabBundleFlags_(p) {
-  return {
-    action: 'getTabBundle',
-    requests: !!(p && p.requests),
-    leaves: !!(p && p.leaves),
-    transfers: !!(p && p.transfers),
-    balances: !!(p && p.balances),
-    myBalance: !!(p && p.myBalance)
-  };
-}
-function _mergeTabBundleFlags_(a, b) {
-  ['requests','leaves','transfers','balances','myBalance'].forEach(k => { a[k] = !!(a[k] || b[k]); });
-  return a;
-}
-function _tabBundleCovers_(have, need) {
-  return ['requests','leaves','transfers','balances','myBalance'].every(k => !need[k] || !!have[k]);
-}
-function _cancelPendingTabBundle_(reason) {
-  if (_tabBundlePending && _tabBundlePending.timer) clearTimeout(_tabBundlePending.timer);
-  const pending = _tabBundlePending;
-  _tabBundlePending = null;
-  if (pending && Array.isArray(pending.waiters)) {
-    pending.waiters.forEach(w => { try { w.resolve({ error: reason || 'Đã hủy tải dữ liệu cũ.' }); } catch (_) {} });
-  }
-}
-function resetTabBundleBatcher() {
-  _cancelPendingTabBundle_('Phiên tải dữ liệu đã được làm mới.');
-  // Không thể hủy request đã gửi; kết quả cũ sẽ không được tái dùng vì key có session token.
-  _tabBundleInFlight = null;
-}
-
-function _scheduleTabBundleFlush_() {
-  if (!_tabBundlePending || _tabBundlePending.timer || _tabBundleInFlight) return;
-  _tabBundlePending.timer = setTimeout(_flushTabBundlePending_, TAB_BUNDLE_COALESCE_MS);
-}
-function _flushTabBundlePending_() {
-  if (_tabBundleInFlight || !_tabBundlePending) return;
-  const batch = _tabBundlePending;
-  _tabBundlePending = null;
-  if (batch.timer) clearTimeout(batch.timer);
-  batch.timer = null;
-
-  const currentSession = _tabBundleSessionKey_();
-  if (!currentSession || currentSession !== batch.sessionKey) {
-    batch.waiters.forEach(w => w.resolve({ error: 'Phiên làm việc đã thay đổi.' }));
-    return;
-  }
-
-  const sendOpts = Object.assign({}, batch.opts);
-  const promise = api(sendOpts).then(res => {
-    const now = Date.now();
-    batch.waiters.forEach(w => {
-      if (res && !res.error && w.ttlMs > 0) _sharedReadCache.set(w.key, { at: now, value: res });
-      w.resolve(res);
-    });
-    return res;
-  }).catch(err => {
-    batch.waiters.forEach(w => w.reject(err));
-    // Waiter promises đã nhận lỗi; không rethrow trên promise nội bộ để tránh
-    // unhandled rejection khi không có caller dùng trực tiếp _tabBundleInFlight.promise.
-    return null;
-  }).finally(() => {
-    if (_tabBundleInFlight && _tabBundleInFlight.promise === promise) _tabBundleInFlight = null;
-    if (_tabBundlePending) _scheduleTabBundleFlush_();
-  });
-  _tabBundleInFlight = { opts: sendOpts, promise, sessionKey: batch.sessionKey };
-}
-
-function _apiSharedTabBundle_(p, ttlMs) {
-  const key = _sharedReadKey(p);
-  const now = Date.now();
-  const cached = _sharedReadCache.get(key);
-  if (cached && ttlMs > 0 && (now - cached.at) <= ttlMs) return Promise.resolve(cached.value);
-
-  const need = _tabBundleFlags_(p);
-  const sessionKey = _tabBundleSessionKey_();
-
-  // Nếu request đang chạy đã chứa đủ dữ liệu cần, dùng chung đúng execution đó.
-  if (_tabBundleInFlight && _tabBundleInFlight.sessionKey === sessionKey && _tabBundleCovers_(_tabBundleInFlight.opts, need)) {
-    return _tabBundleInFlight.promise.then(res => {
-      if (res && !res.error && ttlMs > 0) _sharedReadCache.set(key, { at: Date.now(), value: res });
-      return res;
-    });
-  }
-
-  return new Promise((resolve, reject) => {
-    if (!_tabBundlePending || _tabBundlePending.sessionKey !== sessionKey) {
-      if (_tabBundlePending) _cancelPendingTabBundle_('Phiên tải dữ liệu đã thay đổi.');
-      _tabBundlePending = { opts: _tabBundleFlags_(p), waiters: [], timer: null, sessionKey };
-    } else {
-      _mergeTabBundleFlags_(_tabBundlePending.opts, need);
-    }
-    _tabBundlePending.waiters.push({ key, ttlMs, resolve, reject });
-    _scheduleTabBundleFlush_();
-  });
-}
-
 function clearSharedReadCache() {
   _sharedReadCache.clear();
-  resetTabBundleBatcher();
 }
 
 async function apiSharedRead(p, ttlMs = SHARED_READ_CACHE_TTL_MS) {
-  if (p && p.action === 'getTabBundle') return _apiSharedTabBundle_(p, ttlMs);
-
   const key = _sharedReadKey(p);
   const now = Date.now();
   const cached = _sharedReadCache.get(key);
@@ -2443,7 +2140,6 @@ async function api(p) {
 
   const busyDelays = [2000, 4000];
   for (let attempt = 0; attempt <= busyDelays.length; attempt++) {
-    const attemptT0 = Date.now();
     try {
       const res = await apiOnce(p);
       if (res && res.error && isBusyError(res.error) && attempt < busyDelays.length) {
@@ -2452,25 +2148,12 @@ async function api(p) {
       }
       if (res && res.error && isSessionExpiredBackendError(res.error)) forceSessionExpiredLogout(res.error);
       if (writeActions.includes(p.action) && res && !res.error) clearSharedReadCache();
-
-      // Sau khi đường truyền đã phục hồi, gửi bù tối đa vài log CLIENT_TRANSPORT đã lưu cục bộ.
-      if (res && !res.error && p.action !== 'clientTransportDiag' && typeof CU !== 'undefined' && CU && CU.token && hasClientTransportDiagQueued()) {
-        setTimeout(() => { flushClientTransportDiagQueue().catch(() => {}); }, 0);
-      }
       return res;
     } catch (err) {
       const msg = (err && err.message) ? err.message : String(err);
       if (isBusyError(msg) && attempt < busyDelays.length) {
         await sleep(busyDelays[attempt]);
         continue;
-      }
-      // Chỉ ghi client-transport khi request thực sự bị throw. Lỗi nghiệp vụ r.error đã được server log riêng.
-      if (!isBusyError(msg)) {
-        queueClientTransportDiag(p && p.action, err, {
-          elapsedMs: Date.now() - attemptT0,
-          attempt: attempt + 1,
-          clientRequestId: p && p.clientRequestId
-        });
       }
       throw err;
     }
@@ -3472,30 +3155,7 @@ async function doLogin(){
   resetLoginPerfDiag();
   const _diagLoginT0 = beginLoginPerfStep('login');
   try {
-    // DIAG15.1: login là READ/AUTH an toàn để thử lại đúng 1 lần nếu lỗi transport.
-    // Sai PIN / tài khoản khóa trả về r.error nên KHÔNG đi vào nhánh retry này.
-    const loginPayload = {action:'login', name:n, pin:p};
-    let r = null;
-    let lastTransportErr = null;
-    for (let loginAttempt = 1; loginAttempt <= 2; loginAttempt++) {
-      try {
-        r = await api(loginPayload);
-        lastTransportErr = null;
-        break;
-      } catch (ex) {
-        lastTransportErr = ex;
-        const tx = classifyClientTransportError(ex);
-        if (loginAttempt === 1 && tx.retryable) {
-          e.style.color='#b45309';
-          e.textContent='Kết nối tới Google Apps Script gián đoạn — đang tự thử lại 1 lần...';
-          await sleep(1200);
-          continue;
-        }
-        throw ex;
-      }
-    }
-    if (!r && lastTransportErr) throw lastTransportErr;
-
+    const r = await api({action:'login', name:n, pin:p});
     if (r.error) {
       endLoginPerfStep('login', _diagLoginT0, r.error);
       e.style.color='#dc2626'; e.textContent=r.error; return;
@@ -3529,9 +3189,6 @@ async function doLogin(){
     _registrationGuardReady = false;
     _registrationGuardPromise = null;
 
-    // Nếu trước đó có lỗi Failed to fetch/HTTP/timeout, session giờ đã hợp lệ nên gửi bù log.
-    flushClientTransportDiagQueue().catch(() => {});
-
     if (r.forcePinChange) {
       document.getElementById('overlay').style.display='none';
       document.getElementById('app').style.display='block';
@@ -3540,7 +3197,7 @@ async function doLogin(){
       return;
     }
 
-    // Response xác thực xong là HIỆN GIAO DIỆN NGAY.
+    // Điểm khác biệt chính: response xác thực xong là HIỆN GIAO DIỆN NGAY.
     // users/settings/MauLich/quyền được tải ở request nền riêng, không còn nằm trong chữ “Đang vào…”.
     resetEarlyBackgroundFetches();
     showAuthenticatedShellImmediately();
@@ -3552,13 +3209,9 @@ async function doLogin(){
 
     startInitialFullBundle(r).catch(() => {});
   } catch(ex) {
-    const detail = getTransportUserMessage(ex);
-    endLoginPerfStep('login', _diagLoginT0, (ex && ex.message) ? ex.message : detail);
+    endLoginPerfStep('login', _diagLoginT0, (ex && ex.message) ? ex.message : 'Lỗi kết nối mạng');
     e.style.color='#dc2626';
-    e.textContent=detail;
-    // Giữ lỗi thô ở tooltip/console để chẩn đoán nhưng không làm người dùng hiểu nhầm là LAN/Internet chắc chắn hỏng.
-    e.title=(ex && ex.message) ? ex.message : String(ex || '');
-    console.warn('[LOGIN TRANSPORT]', ex);
+    e.textContent='Lỗi kết nối mạng';
   }
 }
 
@@ -4384,7 +4037,7 @@ async function partnerOk(id, btn){
       }
     });
   }catch(e){ 
-    showAlert('app', getTransportUserMessage(e), 'ae');
+    showAlert('app', 'Lỗi mạng!', 'ae');
   } finally {
     endWebAction(actionKey);
     if(btn && document.body.contains(btn)){ 
@@ -4428,7 +4081,7 @@ async function partnerNo(id, btn){
       }
     });
   }catch(e){ 
-    showAlert('app', getTransportUserMessage(e), 'ae');
+    showAlert('app', 'Lỗi mạng!', 'ae');
   } finally {
     endWebAction(actionKey);
     if(btn && document.body.contains(btn)){ 
@@ -4557,7 +4210,7 @@ async function doApproveNoImage() {
       }
     });
   } catch(e) {
-    showAlert('app', getTransportUserMessage(e), 'ae');
+    showAlert('app', 'Lỗi mạng!', 'ae');
   } finally {
     endWebAction(actionKey);
     if (btn && document.body.contains(btn)) {
@@ -4724,7 +4377,7 @@ async function ldNo(id, btn){
     });
 
   }catch(e){ 
-    showAlert('app', getTransportUserMessage(e), 'ae');
+    showAlert('app', 'Lỗi mạng!', 'ae');
   } finally {
     endWebAction(actionKey);
     if(btn && document.body.contains(btn)){ 
@@ -5433,7 +5086,7 @@ async function deleteReq(id, btn){
     renderHistory(); renderSummary();
     showAlert('app', 'Đã hủy đơn thành công!', 'as');
   }catch(e){
-    showAlert('app', getTransportUserMessage(e), 'ae');
+    showAlert('app', 'Lỗi kết nối mạng!', 'ae');
   } finally {
     if(btn){ btn.disabled=false; btn.textContent='🗑️ Hủy & Rút đơn'; }
   }
@@ -8174,7 +7827,7 @@ async function deleteAdminHC(id, btn) {
     if (res && res.error) { showAlert('app', res.error, 'ae'); return; }
     await loadRequests(); renderAdminHCHist(); renderScheduleTable(); showAlert('app', 'Đã thu hồi thành công!', 'as');
   } catch(e) {
-    showAlert('app', getTransportUserMessage(e), 'ae');
+    showAlert('app', 'Lỗi kết nối mạng!', 'ae');
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Thu hồi'; }
   }
@@ -8534,7 +8187,7 @@ async function submitBatchHC() {
     refreshRequestsInBackground(() => { renderAdminHCHist(); renderScheduleTable(); });
     const msg = (e && e.message && e.message.includes('quá thời gian'))
       ? '⚠️ Máy chủ xử lý lâu quá (timeout), lệnh có thể đã được lưu. Hệ thống đang tự đồng bộ lại.'
-      : getTransportUserMessage(e);
+      : 'Lỗi mạng hoặc máy chủ: ' + (e && e.message ? e.message : e);
     showLocalAlert('batchhc-msg', msg, 'ae');
   } finally {
     endWebAction(actionKey);
