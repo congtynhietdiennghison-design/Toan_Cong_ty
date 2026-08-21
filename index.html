@@ -405,7 +405,8 @@ textarea{resize:none;height:80px}
         </div>
 
         <div style="font-size:13px;color:#475569;line-height:1.6;margin-bottom:12px;">
-          <b>Production:</b> chỉ ghi chi tiết lỗi, thao tác trùng và thao tác chậm để không làm nặng hệ thống; bộ đếm tổng vẫn thống kê tỷ lệ OK/SLOW/ERROR.
+          <b>Production:</b> chỉ ghi chi tiết lỗi kỹ thuật, thao tác trùng và thao tác chậm để không làm nặng hệ thống; bộ đếm tổng vẫn thống kê tỷ lệ OK/SLOW/ERROR/EXPECTED.
+          <b>EXPECTED:</b> các tình huống dự kiến như hết phiên hoặc nhập sai PIN; không tính là lỗi phần mềm và không ghi từng dòng ở Production.
           <b>Debug:</b> ghi mọi API trong thời gian kiểm tra. Không ghi PIN, token hay secret.
         </div>
 
@@ -426,6 +427,7 @@ textarea{resize:none;height:80px}
           <div><label>Kết quả</label><select id="diag-filter-result" onchange="renderSystemDiag()">
             <option value="">Tất cả</option>
             <option value="ERROR">ERROR</option>
+            <option value="EXPECTED">EXPECTED</option>
             <option value="DUPLICATE">DUPLICATE</option>
             <option value="SLOW">SLOW</option>
             <option value="OK">OK</option>
@@ -1015,6 +1017,8 @@ textarea{resize:none;height:80px}
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw7fHZBn_Bzfma2td2PoP72JhrfasO1h_BYn_mF5o87Vx7Af85DgmCh3Tivaypc-L9yxA/exec";
 let APP_CONFIG = { tenCongTy: "Công ty", lechMax: 10 };
 let NV_LIST=[]; let CA = {}; let CU=null;
+// DIAG14: khi phát hiện hết phiên, dừng các prefetch còn xếp hàng và đưa về đăng nhập một lần.
+let _sessionExpiredHandling = false;
 let userByName = {};
 let _mergedConfigCache = {};
 let _holidaySetCache = {};
@@ -2105,8 +2109,28 @@ async function apiSharedRead(p, ttlMs = SHARED_READ_CACHE_TTL_MS) {
   return promise;
 }
 
+function isSessionExpiredBackendError(msg) {
+  return /Xác thực thất bại hoặc Hết phiên làm việc/i.test((msg || '').toString());
+}
+
+function forceSessionExpiredLogout(message) {
+  if (_sessionExpiredHandling) return;
+  _sessionExpiredHandling = true;
+  setTimeout(() => {
+    doLogout(true);
+    const err = document.getElementById('pin-err');
+    if (err) {
+      err.style.color = '#dc2626';
+      err.textContent = 'Phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.';
+    }
+  }, 0);
+}
+
 async function api(p) {
   const writeActions = ['add','updateStatus','addDispatchBatch','addTransfer','addTransferBatch','submitLeave','cancelLeave','approveLeaveWeb','rejectLeaveWeb','resetPin'];
+  if (_sessionExpiredHandling && p && p.action !== 'login' && p.action !== 'getPublicBranding') {
+    return { error: 'Phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.', sessionExpired: true };
+  }
   // Mọi API đều có Request ID để đối chiếu log; backend chỉ dùng idempotency cho writeActions.
   if (!p.clientRequestId) p.clientRequestId = makeClientRequestId();
   if (typeof CU !== 'undefined' && CU && CU.token) {
@@ -2122,6 +2146,7 @@ async function api(p) {
         await sleep(busyDelays[attempt]);
         continue;
       }
+      if (res && res.error && isSessionExpiredBackendError(res.error)) forceSessionExpiredLogout(res.error);
       if (writeActions.includes(p.action) && res && !res.error) clearSharedReadCache();
       return res;
     } catch (err) {
@@ -3137,6 +3162,7 @@ async function doLogin(){
     }
     endLoginPerfStep('login', _diagLoginT0, '', 'xác thực OK');
 
+    _sessionExpiredHandling = false;
     CU = r.user;
     _myLeaveBalanceCache = null;
     _myLeaveBalanceSource = '';
@@ -3189,11 +3215,11 @@ async function doLogin(){
   }
 }
 
-function doLogout() {
+function doLogout(skipServer = false) {
   hideLoginPerfDiag();
-  // GỬI LỆNH TIÊU DIỆT TOKEN LÊN MÁY CHỦ
-  if (CU && CU.name) {
-    api({action: "logout", name: CU.name}); 
+  // Logout thủ công mới gọi server. Khi phiên đã hết chỉ dọn client để không sinh thêm API lỗi.
+  if (!skipServer && CU && CU.name) {
+    api({action: "logout", name: CU.name}).catch(() => {});
   }
   if (_tabPrefetchTimer) { clearTimeout(_tabPrefetchTimer); _tabPrefetchTimer = null; }
   _tabPrefetchPromise = null;
@@ -3227,6 +3253,7 @@ function doLogout() {
   resetDataLoadedFlags();
   document.getElementById('overlay').style.display = 'flex'; document.getElementById('app').style.display = 'none'; document.getElementById('login-box').style.display = 'grid'; document.getElementById('login-loading').style.display = 'none';
   document.getElementById('f-login-name').value = ''; document.getElementById('pin-inp').value = ''; document.getElementById('pin-err').textContent = ''; document.getElementById('f-name').value = '';
+  if (!skipServer) _sessionExpiredHandling = false;
 } 
 async function doRefresh(btn) {
   const oldText = btn.textContent;
@@ -3412,6 +3439,7 @@ function _diagResultBadge(v) {
   const x = (v || '').toString().toUpperCase();
   const map = {
     ERROR: ['#fee2e2','#991b1b'],
+    EXPECTED: ['#e0f2fe','#075985'],
     DUPLICATE: ['#fef3c7','#92400e'],
     SLOW: ['#ffedd5','#9a3412'],
     OK: ['#dcfce7','#166534']
@@ -3497,7 +3525,7 @@ function renderSystemDiag() {
   }
 
   const rows = _diagFilteredRows();
-  const counts = { ERROR:0, DUPLICATE:0, SLOW:0, OK:0 };
+  const counts = { ERROR:0, EXPECTED:0, DUPLICATE:0, SLOW:0, OK:0 };
   rows.forEach(r => { const k=(r.result||'').toString().toUpperCase(); if (counts[k] !== undefined) counts[k]++; });
   const summary = document.getElementById('diag-summary');
   if (summary) {
@@ -3513,12 +3541,14 @@ function renderSystemDiag() {
           chip('OK', Number(c.OK)||0, '#dcfce7','#166534', pct(c.OK)) +
           chip('SLOW', Number(c.SLOW)||0, '#ffedd5','#9a3412', pct(c.SLOW)) +
           chip('ERROR', Number(c.ERROR)||0, '#fee2e2','#991b1b', pct(c.ERROR)) +
+          chip('EXPECTED', Number(c.EXPECTED)||0, '#e0f2fe','#075985', pct(c.EXPECTED)) +
           chip('DUPLICATE', Number(c.DUPLICATE)||0, '#fef3c7','#92400e', pct(c.DUPLICATE)) +
-        `</div><div style="width:100%;font-size:11.5px;color:#64748b;margin-top:2px">Tính từ ${escapeHTML(since)}${escapeHTML(approx)}. Production không ghi từng dòng OK vào bảng log.</div>`
+        `</div><div style="width:100%;font-size:11.5px;color:#64748b;margin-top:2px">Tính từ ${escapeHTML(since)}${escapeHTML(approx)}. EXPECTED = hết phiên/sai PIN dự kiến; Production không ghi từng dòng OK/EXPECTED vào bảng log.</div>`
       : `<div style="width:100%;font-size:12px;color:#64748b">Bộ đếm tổng chưa có dữ liệu. Sau khi triển khai, nên bấm <b>Xóa log</b> một lần để bắt đầu mốc đo mới.</div>`;
     const filtered = `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;width:100%;margin-top:4px">` +
       chip('Log đang hiển thị', rows.length, '#eff6ff','#1d4ed8') +
       chip('ERROR', counts.ERROR, '#fee2e2','#991b1b') +
+      chip('EXPECTED', counts.EXPECTED, '#e0f2fe','#075985') +
       chip('DUPLICATE', counts.DUPLICATE, '#fef3c7','#92400e') +
       chip('SLOW', counts.SLOW, '#ffedd5','#9a3412') +
       chip('OK', counts.OK, '#dcfce7','#166534') + `</div>`;
@@ -3705,12 +3735,13 @@ async function exportSystemDiagCsv() {
       ['OK', Number(c.OK)||0, pct(c.OK)],
       ['SLOW', Number(c.SLOW)||0, pct(c.SLOW)],
       ['ERROR', Number(c.ERROR)||0, pct(c.ERROR)],
+      ['EXPECTED', Number(c.EXPECTED)||0, pct(c.EXPECTED)],
       ['DUPLICATE', Number(c.DUPLICATE)||0, pct(c.DUPLICATE)],
       ['Ngưỡng SLOW (ms)', st.slowMs || ''],
       ['Ngưỡng Lock chậm (ms)', st.lockSlowMs || ''],
       ['Chế độ', st.debug ? 'DEBUG' : 'PRODUCTION'],
       ['Phiên bản chẩn đoán', st.version || ''],
-      ['Ghi chú', 'Production chỉ lưu chi tiết ERROR/SLOW/DUPLICATE; OK chỉ được tính trong bộ đếm tổng.']
+      ['Ghi chú', 'Production chỉ lưu chi tiết ERROR/SLOW/DUPLICATE; OK và EXPECTED chỉ được tính trong bộ đếm tổng. EXPECTED là hết phiên/sai PIN dự kiến, không phải lỗi kỹ thuật.']
     ];
     const summaryHtml = `<table><thead><tr><th>THỐNG KÊ TỔNG QUAN</th><th>Giá trị</th><th>Tỷ lệ</th></tr></thead><tbody>` +
       summaryRows.map(a => `<tr><td>${escapeHTML(a[0]||'')}</td><td>${escapeHTML(a[1] == null ? '' : a[1])}</td><td>${escapeHTML(a[2]||'')}</td></tr>`).join('') +
