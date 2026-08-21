@@ -8314,11 +8314,20 @@ function _captureTCVisibleState_() {
   });
 }
 
-function filterTCUsers() {
+function _clearTCTransferSelection_() {
+  // DIAG14.2 — xóa sạch lựa chọn sau khi điều chuyển thành công.
+  // Cần bỏ checked trên DOM trước, vì filterTCUsers() bình thường sẽ chụp lại trạng thái đang hiển thị.
+  document.querySelectorAll('.tc-user-val').forEach(cb => { cb.checked = false; });
+  window._tcCheckedState = {}; // tương thích bản cũ
+  window._tcTransferState = {};
+}
+
+function filterTCUsers(skipCapture = false) {
   // Luôn chụp lại TOÀN BỘ giá trị đang hiển thị trước khi render lại.
   // Vì ô tìm kiếm gọi filterTCUsers() theo từng ký tự, đây là điểm quan trọng để
   // kíp/ngày/mẫu/mốc của người vừa chọn không bị trả về kíp hiện tại.
-  _captureTCVisibleState_();
+  // Riêng sau khi reset thành công thì bỏ qua capture để checkbox cũ không sống lại.
+  if (!skipCapture) _captureTCVisibleState_();
   const tcState = _getTCTransferState_();
 
   const r = document.getElementById('tc-role').value;
@@ -8342,15 +8351,21 @@ function filterTCUsers() {
   let list = r ? baseList.filter(u => u.chucDanh === r) : baseList;
   if (searchText) list = list.filter(u => u.name.toLowerCase().includes(searchText));
 
-  // Header "Chọn tất cả" — chế độ multi không có "chọn tất cả" để tránh nhầm kíp
+  // Header Chọn tất cả. Ở chế độ nhiều kíp, nút này chỉ tác động các nhân viên
+  // ĐANG HIỂN THỊ theo bộ lọc/tìm kiếm; bỏ tích sẽ bỏ nhanh toàn bộ nhóm đang hiển thị.
   let html = '';
+  const allVisibleChecked = list.length > 0 && list.every(u => !!(tcState[u.name] && tcState[u.name].checked));
   if (!isMulti) {
     html = `<label style="display:flex; align-items:center; font-weight:700; color:#ea580c; margin-bottom:10px; border-bottom:2px solid #fdba74; padding-bottom:8px; cursor:pointer;">
-              <input type="checkbox" onchange="toggleAllTC(this)" style="width:18px; height:18px; margin-right:8px; appearance:auto; -webkit-appearance:auto; cursor:pointer;"> CHỌN TẤT CẢ (${list.length})
+              <input type="checkbox" ${allVisibleChecked ? 'checked' : ''} onchange="toggleAllTC(this, false)" style="width:18px; height:18px; margin-right:8px; appearance:auto; -webkit-appearance:auto; cursor:pointer;"> CHỌN TẤT CẢ (${list.length})
             </label>`;
   } else {
-    html = `<div style="font-size:12px; color:#9a3412; background:#fff7ed; border:1px solid #fdba74; border-radius:6px; padding:6px 10px; margin-bottom:10px;">
-              ⚠️ Chế độ nhiều kíp: tích chọn từng người và chọn <b>kíp mới</b> riêng cho họ ở cột bên phải.
+    html = `<div style="font-size:12px; color:#9a3412; background:#fff7ed; border:1px solid #fdba74; border-radius:6px; padding:6px 10px; margin-bottom:10px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+              <label style="display:flex; align-items:center; gap:7px; margin:0; cursor:pointer; font-weight:800; color:#ea580c; white-space:nowrap;">
+                <input type="checkbox" id="tc-multi-select-all" ${allVisibleChecked ? 'checked' : ''} onchange="toggleAllTC(this, true)" style="width:18px; height:18px; appearance:auto; -webkit-appearance:auto; cursor:pointer;">
+                CHỌN TẤT CẢ (${list.length})
+              </label>
+              <span>⚠️ Chế độ nhiều kíp: chọn từng người và đặt <b>kíp mới</b> riêng. Nút Chọn tất cả áp dụng cho danh sách đang hiển thị.</span>
             </div>`;
   }
 
@@ -8426,9 +8441,29 @@ function filterTCUsers() {
   document.getElementById('tc-user-list').innerHTML = html;
 }
 
-// Hàm bổ trợ: Bấm 1 phát chọn hết toàn bộ danh sách (chế độ thường)
-function toggleAllTC(masterCheckbox) {
-  document.querySelectorAll('.tc-user-val').forEach(cb => cb.checked = masterCheckbox.checked);
+// DIAG14.2 — Chọn/Bỏ chọn tất cả các nhân viên đang hiển thị, dùng được cả chế độ nhiều kíp.
+// Đồng thời cập nhật state bền vững để tìm kiếm/render lại không làm sống lại lựa chọn cũ.
+function toggleAllTC(masterCheckbox, isMulti = false) {
+  _captureTCVisibleState_();
+  const state = _getTCTransferState_();
+  const checked = !!masterCheckbox.checked;
+
+  document.querySelectorAll('.tc-user-val').forEach(cb => {
+    cb.checked = checked;
+    const name = cb.value;
+    if (name) {
+      const prev = state[name] && typeof state[name] === 'object' ? state[name] : {};
+      state[name] = Object.assign({}, prev, { checked });
+    }
+
+    if (isMulti && cb.dataset.safeId) {
+      const w = document.getElementById(`tc-kip-wrap-${cb.dataset.safeId}`);
+      if (w) {
+        w.style.opacity = checked ? '1' : '0.4';
+        w.style.pointerEvents = checked ? '' : 'none';
+      }
+    }
+  });
 }
 
 async function submitTransfer() {
@@ -8533,9 +8568,9 @@ async function submitTransfer() {
       document.getElementById('tc-common-kip-wrap').style.display = '';
       document.getElementById('tc-date-wrap').style.display = '';
     }
-    window._tcCheckedState = {}; // tương thích bản cũ
-    window._tcTransferState = {};
-    filterTCUsers();
+    // Điều chuyển xong phải trở về trạng thái sạch để tạo đợt tiếp theo ngay.
+    _clearTCTransferSelection_();
+    filterTCUsers(true);
 
     refreshTransfersInBackground(() => {
       if (transferHistoryYearLoaded) loadTransferHistoryYear(transferHistoryYearLoaded, true).then(() => { if (document.getElementById('tab-admin-hc')?.classList.contains('active')) renderTransferLog(); }).catch(()=>{});
