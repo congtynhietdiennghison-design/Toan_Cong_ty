@@ -8273,12 +8273,53 @@ function _getCurrentKipOfUser(name, defaultKip, selectedDate) {
   return defaultKip;
 }
 
-function filterTCUsers() {
-  // Lưu lại trạng thái đã tích trước khi render lại (tránh mất khi gõ tìm kiếm)
-  if (!window._tcCheckedState) window._tcCheckedState = {};
+// DIAG14.1 — giữ đầy đủ lựa chọn điều chuyển nhiều kíp khi tìm kiếm/render lại danh sách.
+// Trước đây chỉ nhớ trạng thái checkbox; kíp/ngày/mẫu/mốc bị render lại về giá trị mặc định.
+function _getTCTransferState_() {
+  if (!window._tcTransferState || typeof window._tcTransferState !== 'object') window._tcTransferState = {};
+  return window._tcTransferState;
+}
+
+function _captureTCVisibleState_() {
+  const state = _getTCTransferState_();
   document.querySelectorAll('.tc-user-val').forEach(cb => {
-    window._tcCheckedState[cb.value] = cb.checked;
+    const name = cb.value;
+    if (!name) return;
+    const prev = state[name] && typeof state[name] === 'object' ? state[name] : {};
+    const safeId = cb.dataset.safeId || '';
+
+    // Ở chế độ thường không có các control riêng theo từng người: chỉ cập nhật checked,
+    // giữ nguyên dữ liệu multi đã chọn trước đó để nếu quay lại chế độ multi không bị mất.
+    if (!safeId) {
+      state[name] = Object.assign({}, prev, { checked: !!cb.checked });
+      return;
+    }
+
+    const wrap = document.getElementById(`tc-kip-wrap-${safeId}`);
+    const dateSel = wrap ? wrap.querySelector('.tc-user-date') : null;
+    const kipSel = wrap ? wrap.querySelector('.tc-user-newkip') : null;
+    const vitriToggle = wrap ? wrap.querySelector('.tc-vitri-toggle') : null;
+    const vitriWrap = document.getElementById(`tc-vitri-wrap-${safeId}`);
+    const patternSel = vitriWrap ? vitriWrap.querySelector('.tc-user-pattern') : null;
+    const vitriSel = vitriWrap ? vitriWrap.querySelector('.tc-user-vitri') : null;
+
+    state[name] = {
+      checked: !!cb.checked,
+      date: dateSel ? dateSel.value : (prev.date || ''),
+      newKip: kipSel ? kipSel.value : (Object.prototype.hasOwnProperty.call(prev, 'newKip') ? prev.newKip : ''),
+      changePattern: !!(vitriToggle && vitriToggle.checked),
+      newPattern: patternSel ? patternSel.value : (prev.newPattern || ''),
+      newViTriMoc: vitriSel ? (vitriSel.value || '0') : (prev.newViTriMoc || '0')
+    };
   });
+}
+
+function filterTCUsers() {
+  // Luôn chụp lại TOÀN BỘ giá trị đang hiển thị trước khi render lại.
+  // Vì ô tìm kiếm gọi filterTCUsers() theo từng ký tự, đây là điểm quan trọng để
+  // kíp/ngày/mẫu/mốc của người vừa chọn không bị trả về kíp hiện tại.
+  _captureTCVisibleState_();
+  const tcState = _getTCTransferState_();
 
   const r = document.getElementById('tc-role').value;
   const searchText = document.getElementById('tc-user-search').value.trim().toLowerCase();
@@ -8316,57 +8357,65 @@ function filterTCUsers() {
   html += list.map(u => {
     const currentKip = _getCurrentKipOfUser(u.name, u.kip, selectedDate);
     const safeId = u.name.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '');
+    const saved = tcState[u.name] && typeof tcState[u.name] === 'object' ? tcState[u.name] : null;
+    const savedChecked = !!(saved && saved.checked);
 
     if (!isMulti) {
       // Chế độ thường: checkbox + tên + kíp hiện tại
       return `
       <label style="display:flex; align-items:center; margin-bottom:6px; cursor:pointer; padding:4px 6px; border-radius:6px;" onmouseover="this.style.background='#fff7ed'" onmouseout="this.style.background=''">
-        <input type="checkbox" class="tc-user-val" value="${escapeAttr(u.name)}" style="width:18px; height:18px; margin-right:8px; appearance:auto; -webkit-appearance:auto; cursor:pointer; flex-shrink:0;">
+        <input type="checkbox" class="tc-user-val" value="${escapeAttr(u.name)}" ${savedChecked ? 'checked' : ''} style="width:18px; height:18px; margin-right:8px; appearance:auto; -webkit-appearance:auto; cursor:pointer; flex-shrink:0;">
         <span style="flex:1;">${escapeHTML(u.name)}</span>
         <span style="color:#94a3b8; font-size:12px; margin-left:5px; white-space:nowrap;">${escapeHTML(currentKip)}</span>
       </label>`;
     } else {
-      // Chế độ nhiều kíp: mỗi người có ngày riêng + kíp riêng
+      // Chế độ nhiều kíp: mỗi người có ngày/kíp/mẫu/mốc riêng và đều lấy lại từ state đã lưu.
+      const rowDate = (saved && saved.date) ? saved.date : selectedDate;
+      const hasSavedKip = !!(saved && Object.prototype.hasOwnProperty.call(saved, 'newKip'));
+      const rowKip = hasSavedKip ? (saved.newKip || '') : currentKip;
+      const rowChangePattern = !!(saved && saved.changePattern);
+      const rowPattern = saved ? (saved.newPattern || '') : '';
+      const rowVitri = saved ? (saved.newViTriMoc || '0') : '0';
       const kipOptions = kips.map(k =>
-        `<option value="${escapeAttr(k)}" ${k === currentKip ? 'selected' : ''}>${escapeHTML(k)}</option>`
+        `<option value="${escapeAttr(k)}" ${k === rowKip ? 'selected' : ''}>${escapeHTML(k)}</option>`
       ).join('');
       return `
       <div style="margin-bottom:6px; border:1px solid #e2e8f0; border-radius:8px; background:#fff; overflow:hidden;" id="tc-row-${safeId}">
         <div style="display:flex; align-items:center; gap:8px; padding:6px 10px; background:#fafafa; border-bottom:1px solid #f1f5f9;">
-          <input type="checkbox" class="tc-user-val" value="${escapeAttr(u.name)}" data-safe-id="${safeId}"
+          <input type="checkbox" class="tc-user-val" value="${escapeAttr(u.name)}" data-safe-id="${safeId}" ${savedChecked ? 'checked' : ''}
             onchange="var w=document.getElementById('tc-kip-wrap-${safeId}'); w.style.opacity=this.checked?'1':'0.4'; w.style.pointerEvents=this.checked?'':'none';"
             style="width:18px; height:18px; appearance:auto; -webkit-appearance:auto; cursor:pointer; flex-shrink:0;">
           <span style="flex:1; font-size:14px; font-weight:600;">${escapeHTML(u.name)}</span>
           <span style="font-size:11px; background:#e2e8f0; color:#64748b; border-radius:4px; padding:2px 7px; white-space:nowrap;">Hiện: ${escapeHTML(currentKip)}</span>
         </div>
-        <div id="tc-kip-wrap-${safeId}" style="display:flex; align-items:center; gap:8px; padding:6px 10px; opacity:0.4; pointer-events:none; transition:opacity 0.15s; flex-wrap:wrap;">
+        <div id="tc-kip-wrap-${safeId}" style="display:flex; align-items:center; gap:8px; padding:6px 10px; opacity:${savedChecked ? '1' : '0.4'}; pointer-events:${savedChecked ? '' : 'none'}; transition:opacity 0.15s; flex-wrap:wrap;">
           <span style="font-size:12px; color:#64748b; white-space:nowrap;">Ngày áp dụng:</span>
           <input type="date" class="tc-user-date" data-user="${escapeAttr(u.name)}"
-            value="${selectedDate}"
+            value="${escapeAttr(rowDate)}"
             style="padding:4px 8px; border:1.5px solid #94a3b8; border-radius:6px; font-size:13px; flex-shrink:0;">
           <span style="color:#94a3b8; font-size:13px;">&#8594; Kíp mới:</span>
           <select class="tc-user-newkip" data-user="${escapeAttr(u.name)}"
             style="padding:5px 8px; border:1.5px solid #f97316; border-radius:6px; font-size:13px; font-weight:700; color:#ea580c; background:#fff7ed; min-width:90px;">
-            <option value="">-- Chọn kíp --</option>
+            <option value="" ${rowKip === '' ? 'selected' : ''}>-- Chọn kíp --</option>
             ${kipOptions}
           </select>
           <label title="Chỉ cần nhập nếu đổi sang lịch ca hệ mới (offset mẫu)" style="display:flex; align-items:center; gap:4px; font-size:11px; color:#64748b; cursor:pointer; white-space:nowrap; margin-left:4px;">
-            <input type="checkbox" class="tc-vitri-toggle"
+            <input type="checkbox" class="tc-vitri-toggle" ${rowChangePattern ? 'checked' : ''}
               onchange="var w=document.getElementById('tc-vitri-wrap-${safeId}'); w.style.display=this.checked?'flex':'none';"
               style="width:14px; height:14px; appearance:auto; -webkit-appearance:auto; cursor:pointer;">
             Đổi mẫu/mốc?
           </label>
-          <div id="tc-vitri-wrap-${safeId}" style="display:none; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px; width:100%; padding:6px 8px; background:#f8fafc; border:1px dashed #cbd5e1; border-radius:6px;">
+          <div id="tc-vitri-wrap-${safeId}" style="display:${rowChangePattern ? 'flex' : 'none'}; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px; width:100%; padding:6px 8px; background:#f8fafc; border:1px dashed #cbd5e1; border-radius:6px;">
             <span style="font-size:12px; color:#64748b; white-space:nowrap;">Mẫu lịch:</span>
             <select class="tc-user-pattern" data-user="${escapeAttr(u.name)}"
               style="padding:4px 8px; border:1.5px solid #94a3b8; border-radius:6px; font-size:13px; flex:1; min-width:120px;"
               onchange="document.getElementById('tc-vitri-wrap-${safeId}').querySelector('.tc-user-vitri').value=0;">
-              <option value="">-- Giữ nguyên mẫu --</option>
-              ${Object.keys(MAU_LICH||{}).map(p=>`<option value="${escapeAttr(p)}">${escapeHTML(p)}</option>`).join('')}
+              <option value="" ${rowPattern === '' ? 'selected' : ''}>-- Giữ nguyên mẫu --</option>
+              ${Object.keys(MAU_LICH||{}).map(p=>`<option value="${escapeAttr(p)}" ${p === rowPattern ? 'selected' : ''}>${escapeHTML(p)}</option>`).join('')}
             </select>
             <span style="font-size:12px; color:#64748b; white-space:nowrap;">Vị trí mốc:</span>
             <input type="number" class="tc-user-vitri" data-user="${escapeAttr(u.name)}"
-              value="0" min="0"
+              value="${escapeAttr(rowVitri)}" min="0"
               style="width:60px; padding:4px 6px; border:1.5px solid #94a3b8; border-radius:6px; font-size:13px; text-align:center;">
           </div>
         </div>
@@ -8375,18 +8424,6 @@ function filterTCUsers() {
   }).join('');
 
   document.getElementById('tc-user-list').innerHTML = html;
-
-  // Khôi phục trạng thái tích đã lưu
-  document.querySelectorAll('.tc-user-val').forEach(cb => {
-    if (window._tcCheckedState[cb.value]) {
-      cb.checked = true;
-      // Nếu đang ở chế độ nhiều kíp, mở luôn khung kíp/ngày tương ứng
-      if (cb.dataset.safeId) {
-        const w = document.getElementById(`tc-kip-wrap-${cb.dataset.safeId}`);
-        if (w) { w.style.opacity = '1'; w.style.pointerEvents = ''; }
-      }
-    }
-  });
 }
 
 // Hàm bổ trợ: Bấm 1 phát chọn hết toàn bộ danh sách (chế độ thường)
@@ -8398,6 +8435,10 @@ async function submitTransfer() {
   const date = document.getElementById('tc-date').value;
   const pin = document.getElementById('tc-pin').value;
   const isMulti = document.getElementById('tc-multi-kip-mode') && document.getElementById('tc-multi-kip-mode').checked;
+
+  // Chụp lần cuối các control đang nhìn thấy. Sau đó chế độ multi lấy dữ liệu từ state
+  // của TOÀN BỘ người đã tích, kể cả những người đang bị ẩn bởi ô tìm kiếm.
+  _captureTCVisibleState_();
 
   // Chế độ nhiều kíp: ngày riêng từng người → không bắt buộc ô ngày chung
   if (!date && !isMulti) { showLocalAlert('transfer-msg', 'Vui lòng chọn ngày áp dụng!', 'ae'); return; }
@@ -8413,26 +8454,22 @@ async function submitTransfer() {
     const newKip      = document.getElementById('tc-newkip').value;
     const newPattern  = document.getElementById('tc-newpattern').value;
     const newViTriMoc = document.getElementById('tc-newvitri').value;
-    const users = Array.from(document.querySelectorAll('.tc-user-val:checked')).map(cb => cb.value);
+    const state = _getTCTransferState_();
+    const users = Object.keys(state).filter(name => state[name] && state[name].checked);
     if (users.length === 0) { showLocalAlert('transfer-msg', 'Vui lòng chọn ít nhất 1 nhân viên!', 'ae'); return; }
     tasks = users.map(name => ({ name, newKip, newPattern, newViTriMoc }));
   } else {
-    // ── Chế độ nhiều kíp: mỗi người lấy kíp riêng ──
-    const checkedBoxes = Array.from(document.querySelectorAll('.tc-user-val:checked'));
-    if (checkedBoxes.length === 0) { showLocalAlert('transfer-msg', 'Vui lòng tích chọn ít nhất 1 nhân viên!', 'ae'); return; }
+    // ── Chế độ nhiều kíp: lấy từ state bền vững thay vì chỉ đọc các dropdown đang hiện ──
+    const state = _getTCTransferState_();
+    const selectedNames = Object.keys(state).filter(name => state[name] && state[name].checked);
+    if (selectedNames.length === 0) { showLocalAlert('transfer-msg', 'Vui lòng tích chọn ít nhất 1 nhân viên!', 'ae'); return; }
 
-    for (const cb of checkedBoxes) {
-      const name = cb.value;
-      const safeId = cb.dataset.safeId;
-      const kipSel  = document.querySelector(`#tc-kip-wrap-${safeId} .tc-user-newkip`);
-      const dateSel = document.querySelector(`#tc-kip-wrap-${safeId} .tc-user-date`);
-      const newKip   = kipSel  ? kipSel.value  : '';
-      const userDate = dateSel ? dateSel.value : date;
-      const vitriSel    = document.querySelector(`#tc-vitri-wrap-${safeId} .tc-user-vitri`);
-      const patternSel   = document.querySelector(`#tc-vitri-wrap-${safeId} .tc-user-pattern`);
-      const vitriToggle  = document.querySelector(`#tc-kip-wrap-${safeId} .tc-vitri-toggle`);
-      const userVitri    = (vitriToggle && vitriToggle.checked && vitriSel)   ? (vitriSel.value   || '0') : '0';
-      const userPattern  = (vitriToggle && vitriToggle.checked && patternSel) ? (patternSel.value || '')  : '';
+    for (const name of selectedNames) {
+      const s = state[name] || {};
+      const newKip = (s.newKip || '').toString().trim();
+      const userDate = (s.date || date || '').toString().trim();
+      const userVitri = s.changePattern ? ((s.newViTriMoc || '0').toString()) : '0';
+      const userPattern = s.changePattern ? ((s.newPattern || '').toString()) : '';
       if (!newKip) {
         showLocalAlert('transfer-msg', `⚠️ Chưa chọn kíp mới cho: ${name}`, 'ae');
         return;
@@ -8451,7 +8488,7 @@ async function submitTransfer() {
     return;
   }
 
-  // Tóm tắt xác nhận
+  // Tóm tắt xác nhận: chính dữ liệu này cũng là dữ liệu sẽ gửi backend.
   const summary = tasks.map(t => `• ${t.name}  →  ${t.newKip || '(giữ nguyên)'}  (từ ${fmtDate(t.date || date)})`).join('\n');
   if (!confirm(`Xác nhận điều chuyển ${tasks.length} người?\n\n${summary}`)) return;
 
@@ -8496,7 +8533,8 @@ async function submitTransfer() {
       document.getElementById('tc-common-kip-wrap').style.display = '';
       document.getElementById('tc-date-wrap').style.display = '';
     }
-    window._tcCheckedState = {};
+    window._tcCheckedState = {}; // tương thích bản cũ
+    window._tcTransferState = {};
     filterTCUsers();
 
     refreshTransfersInBackground(() => {
