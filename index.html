@@ -1387,6 +1387,13 @@ async function ensureDataForTab(tab) {
     try { await _secondaryPrefetchPromise; } catch (_) {}
   }
 
+  // DIAG15: nếu gói guard của màn Đăng ký đang đọc Requests/Leaves thì đợi nó xong
+  // trước khi mở thêm getTabBundle. Tránh 2 execution cùng lúc cache miss rồi cùng
+  // đọc một sheet Google Sheets (cache stampede) — đúng mẫu SLOW log 14:27/14:29.
+  if (_registrationGuardPromise && (keys.includes('requests') || keys.includes('leaves'))) {
+    try { await _registrationGuardPromise; } catch (_) {}
+  }
+
   const opts = {};
   if (keys.includes('requests') && !_dataLoaded.requests) opts.requests = true;
   if (keys.includes('leaves') && !_dataLoaded.leaves) opts.leaves = true;
@@ -2078,6 +2085,15 @@ let _loadRequestsPromise = null;
 let _loadLeavesPromise = null;
 let _loadTransfersPromise = null;
 
+// DIAG15 — COALESCE getTabBundle:
+// nhiều thao tác/tab có thể xin các nhóm khác nhau gần như cùng lúc. Bản trước chỉ
+// chống trùng khi payload GIỐNG HỆT, nên requests+transfers và leaves+balances vẫn
+// tạo nhiều execution Apps Script song song. Giờ gom các cờ trong một nhịp ngắn và
+// tuyệt đối chỉ cho 1 getTabBundle chạy tại một thời điểm trên cùng client.
+const TAB_BUNDLE_COALESCE_MS = 90;
+let _tabBundlePending = null; // { opts, waiters, timer, sessionKey }
+let _tabBundleInFlight = null; // { opts, promise, sessionKey }
+
 function _sharedReadKey(p) {
   const session = (typeof CU !== 'undefined' && CU) ? `${CU.name || ''}|${CU.token || ''}` : '';
   const clean = {};
@@ -2088,11 +2104,114 @@ function _sharedReadKey(p) {
   return session + '|' + JSON.stringify(clean);
 }
 
+function _tabBundleSessionKey_() {
+  return (typeof CU !== 'undefined' && CU) ? `${CU.name || ''}|${CU.token || ''}` : '';
+}
+function _tabBundleFlags_(p) {
+  return {
+    action: 'getTabBundle',
+    requests: !!(p && p.requests),
+    leaves: !!(p && p.leaves),
+    transfers: !!(p && p.transfers),
+    balances: !!(p && p.balances),
+    myBalance: !!(p && p.myBalance)
+  };
+}
+function _mergeTabBundleFlags_(a, b) {
+  ['requests','leaves','transfers','balances','myBalance'].forEach(k => { a[k] = !!(a[k] || b[k]); });
+  return a;
+}
+function _tabBundleCovers_(have, need) {
+  return ['requests','leaves','transfers','balances','myBalance'].every(k => !need[k] || !!have[k]);
+}
+function _cancelPendingTabBundle_(reason) {
+  if (_tabBundlePending && _tabBundlePending.timer) clearTimeout(_tabBundlePending.timer);
+  const pending = _tabBundlePending;
+  _tabBundlePending = null;
+  if (pending && Array.isArray(pending.waiters)) {
+    pending.waiters.forEach(w => { try { w.resolve({ error: reason || 'Đã hủy tải dữ liệu cũ.' }); } catch (_) {} });
+  }
+}
+function resetTabBundleBatcher() {
+  _cancelPendingTabBundle_('Phiên tải dữ liệu đã được làm mới.');
+  // Không thể hủy request đã gửi; kết quả cũ sẽ không được tái dùng vì key có session token.
+  _tabBundleInFlight = null;
+}
+
+function _scheduleTabBundleFlush_() {
+  if (!_tabBundlePending || _tabBundlePending.timer || _tabBundleInFlight) return;
+  _tabBundlePending.timer = setTimeout(_flushTabBundlePending_, TAB_BUNDLE_COALESCE_MS);
+}
+function _flushTabBundlePending_() {
+  if (_tabBundleInFlight || !_tabBundlePending) return;
+  const batch = _tabBundlePending;
+  _tabBundlePending = null;
+  if (batch.timer) clearTimeout(batch.timer);
+  batch.timer = null;
+
+  const currentSession = _tabBundleSessionKey_();
+  if (!currentSession || currentSession !== batch.sessionKey) {
+    batch.waiters.forEach(w => w.resolve({ error: 'Phiên làm việc đã thay đổi.' }));
+    return;
+  }
+
+  const sendOpts = Object.assign({}, batch.opts);
+  const promise = api(sendOpts).then(res => {
+    const now = Date.now();
+    batch.waiters.forEach(w => {
+      if (res && !res.error && w.ttlMs > 0) _sharedReadCache.set(w.key, { at: now, value: res });
+      w.resolve(res);
+    });
+    return res;
+  }).catch(err => {
+    batch.waiters.forEach(w => w.reject(err));
+    // Waiter promises đã nhận lỗi; không rethrow trên promise nội bộ để tránh
+    // unhandled rejection khi không có caller dùng trực tiếp _tabBundleInFlight.promise.
+    return null;
+  }).finally(() => {
+    if (_tabBundleInFlight && _tabBundleInFlight.promise === promise) _tabBundleInFlight = null;
+    if (_tabBundlePending) _scheduleTabBundleFlush_();
+  });
+  _tabBundleInFlight = { opts: sendOpts, promise, sessionKey: batch.sessionKey };
+}
+
+function _apiSharedTabBundle_(p, ttlMs) {
+  const key = _sharedReadKey(p);
+  const now = Date.now();
+  const cached = _sharedReadCache.get(key);
+  if (cached && ttlMs > 0 && (now - cached.at) <= ttlMs) return Promise.resolve(cached.value);
+
+  const need = _tabBundleFlags_(p);
+  const sessionKey = _tabBundleSessionKey_();
+
+  // Nếu request đang chạy đã chứa đủ dữ liệu cần, dùng chung đúng execution đó.
+  if (_tabBundleInFlight && _tabBundleInFlight.sessionKey === sessionKey && _tabBundleCovers_(_tabBundleInFlight.opts, need)) {
+    return _tabBundleInFlight.promise.then(res => {
+      if (res && !res.error && ttlMs > 0) _sharedReadCache.set(key, { at: Date.now(), value: res });
+      return res;
+    });
+  }
+
+  return new Promise((resolve, reject) => {
+    if (!_tabBundlePending || _tabBundlePending.sessionKey !== sessionKey) {
+      if (_tabBundlePending) _cancelPendingTabBundle_('Phiên tải dữ liệu đã thay đổi.');
+      _tabBundlePending = { opts: _tabBundleFlags_(p), waiters: [], timer: null, sessionKey };
+    } else {
+      _mergeTabBundleFlags_(_tabBundlePending.opts, need);
+    }
+    _tabBundlePending.waiters.push({ key, ttlMs, resolve, reject });
+    _scheduleTabBundleFlush_();
+  });
+}
+
 function clearSharedReadCache() {
   _sharedReadCache.clear();
+  resetTabBundleBatcher();
 }
 
 async function apiSharedRead(p, ttlMs = SHARED_READ_CACHE_TTL_MS) {
+  if (p && p.action === 'getTabBundle') return _apiSharedTabBundle_(p, ttlMs);
+
   const key = _sharedReadKey(p);
   const now = Date.now();
   const cached = _sharedReadCache.get(key);
