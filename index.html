@@ -270,7 +270,7 @@ textarea{resize:none;height:80px}
           <button class="btn btn-primary login-submit" onclick="doLogin()">Đăng nhập</button>
           <div class="login-security-note"><i>🛡️</i><span>Không chia sẻ mã PIN. Khi cần hỗ trợ, liên hệ quản trị hệ thống.</span></div>
         </div>
-        <div class="login-footer">Phiên bản V13.7.8 DIAG13-STABLE+ R2.1 CLEAN · Google Sheet / Apps Script</div>
+        <div class="login-footer">Phiên bản V13.7.8 DIAG13-STABLE+ R2.3 HARD SESSION LOCK · Google Sheet / Apps Script</div>
       </div>
     </section>
   </div>
@@ -2113,18 +2113,109 @@ function isSessionExpiredBackendError(msg) {
   return /Xác thực thất bại hoặc Hết phiên làm việc/i.test((msg || '').toString());
 }
 
+// R2.3 HARD SESSION LOCK: ngay khi server xác nhận token cũ không còn hợp lệ,
+// khóa giao diện ĐỒNG BỘ trước khi bất kỳ handler phía client nào có thể tiếp tục.
+// Không thêm polling; chỉ siết chặt thời điểm đã phát hiện mất phiên.
+function hardLockExpiredSessionUi_() {
+  const app = document.getElementById('app');
+  if (app) {
+    try { app.inert = true; } catch (_) {}
+    app.style.pointerEvents = 'none';
+    app.style.userSelect = 'none';
+    app.setAttribute('aria-hidden', 'true');
+  }
+  // Modal đổi PIN bắt buộc nằm ngoài #app; khóa luôn để không còn điểm tương tác nào.
+  const forcedPinModal = document.getElementById('forced-pin-modal');
+  if (forcedPinModal) forcedPinModal.style.pointerEvents = 'none';
+  const leaveConfirmModal = document.getElementById('leave-confirm-modal');
+  if (leaveConfirmModal) leaveConfirmModal.style.pointerEvents = 'none';
+  try {
+    const ae = document.activeElement;
+    if (ae && typeof ae.blur === 'function') ae.blur();
+  } catch (_) {}
+}
+
+function clearHardSessionUiLock_() {
+  const app = document.getElementById('app');
+  if (app) {
+    try { app.inert = false; } catch (_) {}
+    app.style.pointerEvents = '';
+    app.style.userSelect = '';
+    app.removeAttribute('aria-hidden');
+  }
+  const forcedPinModal = document.getElementById('forced-pin-modal');
+  if (forcedPinModal) forcedPinModal.style.pointerEvents = '';
+  const leaveConfirmModal = document.getElementById('leave-confirm-modal');
+  if (leaveConfirmModal) leaveConfirmModal.style.pointerEvents = '';
+}
+
 function forceSessionExpiredLogout(message) {
   if (_sessionExpiredHandling) return;
   _sessionExpiredHandling = true;
-  setTimeout(() => {
-    doLogout(true);
-    const err = document.getElementById('pin-err');
-    if (err) {
-      err.style.color = '#dc2626';
-      err.textContent = 'Phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.';
-    }
-  }, 0);
+
+  // Khóa NGAY trong cùng call stack, rồi dọn phiên client và chuyển về đăng nhập.
+  // Không dùng setTimeout: tránh khoảng hở nhỏ để handler thuần client tiếp tục chạy.
+  hardLockExpiredSessionUi_();
+  doLogout(true);
+
+  const err = document.getElementById('pin-err');
+  if (err) {
+    err.style.color = '#dc2626';
+    err.textContent = 'Phiên đã hết hoặc tài khoản đã đăng nhập ở thiết bị khác. Vui lòng đăng nhập lại.';
+  }
 }
+
+// R2.3 HARD SESSION LOCK: các nghiệp vụ server vốn đã bị khóa ngay khi token bị thay.
+// Bổ sung kiểm tra phiên cho thao tác thuần client (như tạo XLSX từ dữ liệu đã tải)
+// và khi người dùng quay lại cửa sổ. Không polling liên tục để tránh tăng tải Apps Script.
+let _sessionCheckPromise = null;
+let _lastSessionCheckAt = 0;
+let _sessionReturnCheckTimer = null;
+const SESSION_CHECK_REUSE_MS = 15000;
+
+async function ensureCurrentSession(opts = {}) {
+  if (!CU || !CU.name || !CU.token || _sessionExpiredHandling) return false;
+  const force = !!opts.force;
+  const failClosed = !!opts.failClosed;
+  const now = Date.now();
+  if (!force && _lastSessionCheckAt && (now - _lastSessionCheckAt) < SESSION_CHECK_REUSE_MS) return true;
+  if (_sessionCheckPromise) return _sessionCheckPromise;
+
+  _sessionCheckPromise = (async () => {
+    try {
+      const res = await api({ action: 'checkSession' });
+      if (!res || res.error || !res.success) {
+        if (failClosed && !_sessionExpiredHandling && (!res || !isSessionExpiredBackendError(res.error || ''))) {
+          showAlert('app', 'Không xác minh được phiên làm việc. Đã chặn thao tác để bảo vệ dữ liệu.', 'ae');
+        }
+        return false;
+      }
+      _lastSessionCheckAt = Date.now();
+      return true;
+    } catch (err) {
+      if (failClosed && !_sessionExpiredHandling) {
+        showAlert('app', 'Không xác minh được phiên làm việc. Đã chặn thao tác để bảo vệ dữ liệu.', 'ae');
+      }
+      return false;
+    } finally {
+      _sessionCheckPromise = null;
+    }
+  })();
+  return _sessionCheckPromise;
+}
+
+function scheduleSessionCheckOnReturn() {
+  if (!CU || _sessionExpiredHandling || document.visibilityState !== 'visible') return;
+  if (_sessionReturnCheckTimer) clearTimeout(_sessionReturnCheckTimer);
+  _sessionReturnCheckTimer = setTimeout(() => {
+    _sessionReturnCheckTimer = null;
+    ensureCurrentSession({ force: true }).catch(() => false);
+  }, 180);
+}
+window.addEventListener('focus', scheduleSessionCheckOnReturn);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') scheduleSessionCheckOnReturn();
+});
 
 async function api(p) {
   const writeActions = ['add','updateStatus','addDispatchBatch','addTransfer','addTransferBatch','submitLeave','cancelLeave','approveLeaveWeb','rejectLeaveWeb','resetPin'];
@@ -3163,6 +3254,8 @@ async function doLogin(){
     endLoginPerfStep('login', _diagLoginT0, '', 'xác thực OK');
 
     _sessionExpiredHandling = false;
+    clearHardSessionUiLock_();
+    _lastSessionCheckAt = Date.now();
     CU = r.user;
     _myLeaveBalanceCache = null;
     _myLeaveBalanceSource = '';
@@ -3238,9 +3331,19 @@ function doLogout(skipServer = false) {
   _registrationGuardReady = false;
   _registrationGuardPromise = null;
   resetEarlyBackgroundFetches();
+  _lastSessionCheckAt = 0;
+  _sessionCheckPromise = null;
+  if (_sessionReturnCheckTimer) { clearTimeout(_sessionReturnCheckTimer); _sessionReturnCheckTimer = null; }
   const _coreBar = document.getElementById('core-sync-banner');
   if (_coreBar) _coreBar.style.display = 'none';
   document.querySelectorAll('.tab').forEach(el => { el.style.pointerEvents=''; el.style.opacity=''; });
+  const _forcedPinModal = document.getElementById('forced-pin-modal');
+  if (_forcedPinModal) _forcedPinModal.style.display = 'none';
+  const _leaveConfirmModal = document.getElementById('leave-confirm-modal');
+  if (_leaveConfirmModal) _leaveConfirmModal.style.display = 'none';
+  // Logout thủ công thì có thể bỏ khóa UI ngay; logout do mất phiên giữ khóa #app
+  // cho tới lần đăng nhập thành công kế tiếp. Overlay đăng nhập nằm ngoài #app.
+  if (!skipServer) clearHardSessionUiLock_();
   // Promise mạng đã chạy không hủy được, nhưng prefetch có kiểm tra session trước khi áp dụng kết quả.
   
   CU = null; allReqs = []; reqsByName = {}; reqsByNameDate = {};
@@ -5518,6 +5621,9 @@ function _xlsxStylesXml(){
 }
 async function downloadExcel(htmlTable, filename, worksheetName) {
   try {
+    // R2.2 SESSION LOCK: tuyệt đối không cho xuất dữ liệu đã cache nếu token hiện tại
+    // đã bị máy đăng nhập sau thay thế. Fail-closed nếu không xác minh được phiên.
+    if (!(await ensureCurrentSession({ force: true, failClosed: true }))) return false;
     const JSZipCtor=await _ccEnsureJsZip();
     const grid=_xlsxHtmlToGrid(htmlTable);
     if(!grid.rows.length) throw new Error('Không có dữ liệu để xuất.');
@@ -6517,6 +6623,9 @@ function _ccRemoveCalcChain(zip, relsDoc, typesDoc) {
 }
 
 async function _ccDownloadXlsxFromTemplate(rows, yr, mo, tenBoPhan, filename) {
+  // R2.2 SESSION LOCK: đường xuất bảng chấm công dùng template riêng nên phải
+  // kiểm tra phiên tại đây, không được bỏ qua guard chung của downloadExcel().
+  if (!(await ensureCurrentSession({ force: true, failClosed: true }))) return false;
   const JSZipCtor = await _ccEnsureJsZip();
   const zip = await JSZipCtor.loadAsync(_ccB64ToU8(_CC_TEMPLATE_XLSX_BASE64));
 
