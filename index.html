@@ -270,7 +270,7 @@ textarea{resize:none;height:80px}
           <button class="btn btn-primary login-submit" onclick="doLogin()">Đăng nhập</button>
           <div class="login-security-note"><i>🛡️</i><span>Không chia sẻ mã PIN. Khi cần hỗ trợ, liên hệ quản trị hệ thống.</span></div>
         </div>
-        <div class="login-footer">Phiên bản V13.7.8 DIAG13-STABLE+ R2.3 HARD SESSION LOCK · Google Sheet / Apps Script</div>
+        <div class="login-footer">Phiên bản V13.7.8 DIAG13-STABLE+ R2.4 IDLE · AUDIT · HEALTH · Google Sheet / Apps Script</div>
       </div>
     </section>
   </div>
@@ -382,7 +382,7 @@ textarea{resize:none;height:80px}
         <hr style="margin:20px 0;border:none;border-top:1px dashed #cbd5e1;">
         <div class="sec-title">Kho dữ liệu tự động theo năm</div>
         <div style="font-size:12px;color:#64748b;line-height:1.65;margin-top:5px;">
-          Hệ thống tự tạo và lưu dữ liệu theo năm: <b>Requests_YYYY</b>, <b>Leaves_YYYY</b>, <b>Transfers_YYYY</b>, <b>leave_history_YYYY</b>, <b>LichSuPhep_YYYY</b> và <b>login_log_YYYY</b>. Không cần Chốt sổ thủ công.
+          Hệ thống tự tạo và lưu dữ liệu theo năm: <b>Requests_YYYY</b>, <b>Leaves_YYYY</b>, <b>Transfers_YYYY</b>, <b>leave_history_YYYY</b>, <b>LichSuPhep_YYYY</b>, <b>login_log_YYYY</b> và <b>audit_log_YYYY</b>. Không cần Chốt sổ thủ công.
         </div>
 
         <div id="annual-trigger-card" style="margin-top:16px;padding:13px 14px;border:1px solid #dbe5ef;border-radius:14px;background:#f8fafc;">
@@ -395,6 +395,44 @@ textarea{resize:none;height:80px}
             <button class="btn" id="btn-check-annual-trigger" onclick="loadAnnualLeaveTriggerStatus(true)" style="padding:8px 11px;">🔎 Kiểm tra trigger</button>
             <button class="btn btn-warn" id="btn-ensure-annual-trigger" onclick="ensureAnnualLeaveTriggerUI()" style="padding:8px 11px;">🛠 Tạo lại trigger</button>
           </div>
+        </div>
+      </div>
+
+
+      <div class="card" id="system-health-card" style="border-top:4px solid #16a34a; margin-top:16px;">
+        <div class="sec-title" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+          <span>🩺 Sức khỏe hệ thống</span>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <span id="health-overall-badge" style="font-size:12px;font-weight:800;padding:5px 10px;border-radius:999px;background:#e2e8f0;color:#475569;">CHƯA KIỂM TRA</span>
+            <button class="btn" onclick="loadSystemHealth(true)" style="padding:8px 12px;">🔄 Kiểm tra ngay</button>
+          </div>
+        </div>
+        <div id="health-summary" style="font-size:13px;color:#475569;line-height:1.65;margin-bottom:10px;">Đang chờ kiểm tra.</div>
+        <div id="health-grid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;"></div>
+        <div id="health-issues" style="margin-top:10px;font-size:12px;line-height:1.6;color:#92400e;"></div>
+      </div>
+
+      <div class="card" id="audit-log-card" style="border-top:4px solid #7c3aed; margin-top:16px;">
+        <div class="sec-title" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+          <span>📋 Nhật ký thao tác</span>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <select id="audit-year" onchange="loadAuditLogs(true)" class="ym-sel-year"></select>
+            <button class="btn" onclick="loadAuditLogs(true)" style="padding:8px 12px;">🔄 Làm mới</button>
+            <button class="btn btn-success" onclick="exportAuditLogs()" style="padding:8px 12px;">⬇ Xuất XLSX</button>
+          </div>
+        </div>
+        <div style="font-size:12.5px;color:#64748b;line-height:1.6;margin-bottom:10px;">Ghi các thao tác quan trọng: tạo/duyệt/hủy đơn, điều chuyển, nghỉ cá nhân, reset/đổi PIN, đối soát phép, phê duyệt Telegram và xuất XLSX. Không ghi PIN, token hoặc secret.</div>
+        <div class="form-row three" style="margin-bottom:10px;">
+          <div><label>Người dùng</label><input id="audit-filter-user" type="text" placeholder="Tìm theo tên..." oninput="renderAuditLogs()"></div>
+          <div><label>Thao tác</label><select id="audit-filter-action" onchange="renderAuditLogs()"><option value="">Tất cả thao tác</option></select></div>
+          <div><label>Kết quả</label><select id="audit-filter-result" onchange="renderAuditLogs()"><option value="">Tất cả</option><option value="OK">OK</option><option value="ERROR">ERROR</option></select></div>
+        </div>
+        <div id="audit-summary" style="font-size:12px;color:#64748b;margin:6px 0 10px;"></div>
+        <div class="table-wrapper" style="max-height:360px;">
+          <table class="dt" id="table-audit-log" style="min-width:1450px;">
+            <thead style="position:sticky;top:0;z-index:2;background:#f8fafc;"><tr><th>Thời gian</th><th>Người dùng</th><th>Bộ phận</th><th>Kênh</th><th>Thao tác</th><th>Đối tượng</th><th>Chi tiết</th><th>Kết quả</th><th>Request ID</th></tr></thead>
+            <tbody id="audit-log-body"><tr><td colspan="9" class="empty">Chưa tải nhật ký</td></tr></tbody>
+          </table>
         </div>
       </div>
 
@@ -1019,6 +1057,12 @@ let APP_CONFIG = { tenCongTy: "Công ty", lechMax: 10 };
 let NV_LIST=[]; let CA = {}; let CU=null;
 // STABLE+ R2: phát hiện hết phiên thì dừng prefetch còn xếp hàng và quay về đăng nhập đúng 1 lần.
 let _sessionExpiredHandling = false;
+// R2.4: tự đăng xuất cục bộ khi không có hoạt động. Mặc định 60 phút; có thể cấu hình
+// settings.configKey=AUTO_LOGOUT_IDLE_MINUTES (0=tắt, 5..480 phút). Không polling server.
+let _idleLogoutTimer = null;
+let _idleLastActivityAt = Date.now();
+let _idleActivityBound = false;
+let _idleActivityThrottleAt = 0;
 let userByName = {};
 let _mergedConfigCache = {};
 let _holidaySetCache = {};
@@ -2113,7 +2157,73 @@ function isSessionExpiredBackendError(msg) {
   return /Xác thực thất bại hoặc Hết phiên làm việc/i.test((msg || '').toString());
 }
 
-// R2.3 HARD SESSION LOCK: ngay khi server xác nhận token cũ không còn hợp lệ,
+
+// ============================================================
+// R2.4 — TỰ ĐĂNG XUẤT KHI KHÔNG HOẠT ĐỘNG (CLIENT-ONLY TIMER)
+// ============================================================
+function getIdleLogoutMinutes_() {
+  const raw = APP_CONFIG && APP_CONFIG.configs ? APP_CONFIG.configs.AUTO_LOGOUT_IDLE_MINUTES : null;
+  if (raw == null || String(raw).trim() === '') return 60;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return 60;
+  if (n === 0) return 0;
+  return Math.max(5, Math.min(480, Math.round(n)));
+}
+function clearIdleLogoutTimer_() {
+  if (_idleLogoutTimer) { clearTimeout(_idleLogoutTimer); _idleLogoutTimer = null; }
+}
+function scheduleIdleLogoutTimer_() {
+  clearIdleLogoutTimer_();
+  if (!CU || _sessionExpiredHandling) return;
+  const mins = getIdleLogoutMinutes_();
+  if (!mins) return;
+  const dueMs = mins * 60 * 1000;
+  const elapsed = Date.now() - _idleLastActivityAt;
+  if (elapsed >= dueMs) { handleIdleLogout_(); return; }
+  _idleLogoutTimer = setTimeout(handleIdleLogout_, Math.max(500, dueMs - elapsed));
+}
+function noteUserActivity_() {
+  if (!CU || _sessionExpiredHandling) return;
+  const now = Date.now();
+  // Sự kiện pointer/scroll có thể dồn dập; chỉ reset đồng hồ tối đa 1 lần/giây.
+  if (now - _idleActivityThrottleAt < 1000) return;
+  _idleActivityThrottleAt = now;
+  _idleLastActivityAt = now;
+  scheduleIdleLogoutTimer_();
+}
+function bindIdleActivityGuard_() {
+  if (_idleActivityBound) return;
+  _idleActivityBound = true;
+  ['pointerdown','keydown','touchstart','scroll'].forEach(ev => document.addEventListener(ev, noteUserActivity_, {capture:true, passive:true}));
+}
+function startIdleLogoutGuard_() {
+  bindIdleActivityGuard_();
+  _idleLastActivityAt = Date.now();
+  scheduleIdleLogoutTimer_();
+}
+function stopIdleLogoutGuard_() { clearIdleLogoutTimer_(); }
+async function handleIdleLogout_() {
+  if (!CU || _sessionExpiredHandling) return;
+  const mins = getIdleLogoutMinutes_();
+  if (!mins) return;
+  const elapsed = Date.now() - _idleLastActivityAt;
+  if (elapsed < mins * 60 * 1000) { scheduleIdleLogoutTimer_(); return; }
+  try { await api({action:'auditClientEvent', event:'IDLE_LOGOUT', detail:`Không hoạt động ${mins} phút`}); } catch (_) {}
+  // Nếu đúng lúc request audit đang chờ mà người dùng quay lại thao tác thì không logout oan.
+  if (Date.now() - _idleLastActivityAt < mins * 60 * 1000) { scheduleIdleLogoutTimer_(); return; }
+  doLogout(false);
+  const err = document.getElementById('pin-err');
+  if (err) { err.style.color='#b45309'; err.textContent=`Đã tự đăng xuất sau ${mins} phút không hoạt động. Vui lòng đăng nhập lại.`; }
+}
+function enforceIdleLogoutOnReturn_() {
+  if (!CU || _sessionExpiredHandling) return false;
+  const mins = getIdleLogoutMinutes_();
+  if (!mins) return false;
+  if (Date.now() - _idleLastActivityAt >= mins * 60 * 1000) { handleIdleLogout_(); return true; }
+  return false;
+}
+
+// R2.4 HARD SESSION LOCK: ngay khi server xác nhận token cũ không còn hợp lệ,
 // khóa giao diện ĐỒNG BỘ trước khi bất kỳ handler phía client nào có thể tiếp tục.
 // Không thêm polling; chỉ siết chặt thời điểm đã phát hiện mất phiên.
 function hardLockExpiredSessionUi_() {
@@ -2165,7 +2275,7 @@ function forceSessionExpiredLogout(message) {
   }
 }
 
-// R2.3 HARD SESSION LOCK: các nghiệp vụ server vốn đã bị khóa ngay khi token bị thay.
+// R2.4 HARD SESSION LOCK: các nghiệp vụ server vốn đã bị khóa ngay khi token bị thay.
 // Bổ sung kiểm tra phiên cho thao tác thuần client (như tạo XLSX từ dữ liệu đã tải)
 // và khi người dùng quay lại cửa sổ. Không polling liên tục để tránh tăng tải Apps Script.
 let _sessionCheckPromise = null;
@@ -2206,6 +2316,7 @@ async function ensureCurrentSession(opts = {}) {
 
 function scheduleSessionCheckOnReturn() {
   if (!CU || _sessionExpiredHandling || document.visibilityState !== 'visible') return;
+  if (enforceIdleLogoutOnReturn_()) return;
   if (_sessionReturnCheckTimer) clearTimeout(_sessionReturnCheckTimer);
   _sessionReturnCheckTimer = setTimeout(() => {
     _sessionReturnCheckTimer = null;
@@ -2450,6 +2561,7 @@ function setupDynamicFields(settings) {
     _holidaySetCache = {};
     APP_CONFIG.kipList = settings.kips;
     APP_CONFIG.priorityOrder = settings.chucDanhs;
+    if (CU) scheduleIdleLogoutTimer_();
     buildLechLimitsByBoPhan();
     document.getElementById('page-title').textContent = "Quản lý chấm công – " + APP_CONFIG.tenCongTy; 
     document.getElementById('tb-ten-px').textContent = APP_CONFIG.tenCongTy;
@@ -2881,6 +2993,7 @@ function showAuthenticatedShellImmediately() {
   if (dispatchTab) dispatchTab.style.display = (CU.admin || (CU.quyenDieuDong || '').trim()) ? '' : 'none';
 
   resetDataLoadedFlags();
+  startIdleLogoutGuard_();
   invalidateCompanyScheduleData();
   setPrimarySyncState(false);
   switchTabRender('dang-ky');
@@ -3310,6 +3423,7 @@ async function doLogin(){
 
 function doLogout(skipServer = false) {
   hideLoginPerfDiag();
+  stopIdleLogoutGuard_();
   // Logout thủ công mới gọi server. Khi phiên đã hết chỉ dọn client để không sinh thêm API lỗi.
   if (!skipServer && CU && CU.name) {
     api({action: "logout", name: CU.name}).catch(() => {});
@@ -3538,6 +3652,97 @@ function showLocalAlert(elId, msg, cl) {
   }
   setTimeout(() => el.style.display = 'none', 4000);
 }
+
+// ============================================================
+// R2.4 — SỨC KHỎE HỆ THỐNG + NHẬT KÝ THAO TÁC (ADMIN)
+// ============================================================
+let _systemHealthData = null;
+let _auditRows = [];
+let _auditDropped = 0;
+
+function _stateBadgeHtml_(state, text) {
+  const s=(state||'INFO').toUpperCase();
+  const map={OK:['#dcfce7','#166534'],WARN:['#fef3c7','#92400e'],ERROR:['#fee2e2','#991b1b'],INFO:['#e0f2fe','#075985'],DISABLED:['#e2e8f0','#475569']};
+  const c=map[s]||map.INFO;
+  return `<span style="display:inline-block;padding:4px 8px;border-radius:999px;font-size:11px;font-weight:800;background:${c[0]};color:${c[1]}">${escapeHTML(text||s)}</span>`;
+}
+function _healthCard_(title, state, body) {
+  return `<div style="border:1px solid #dbe5ef;border-radius:12px;padding:11px 12px;background:#fff;min-height:88px"><div style="display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:7px"><b style="color:#0f2747">${escapeHTML(title)}</b>${_stateBadgeHtml_(state)}</div><div style="font-size:12px;color:#64748b;line-height:1.55">${body}</div></div>`;
+}
+function renderSystemHealth() {
+  const h=_systemHealthData; if(!h) return;
+  const badge=document.getElementById('health-overall-badge');
+  if(badge){ const ok=h.overall==='OK'; badge.textContent=ok?'ỔN ĐỊNH':'CẦN KIỂM TRA'; badge.style.background=ok?'#dcfce7':'#fef3c7'; badge.style.color=ok?'#166534':'#92400e'; }
+  const sum=document.getElementById('health-summary');
+  if(sum) sum.innerHTML=`<b>${escapeHTML(h.version||'')}</b><br>Nhân sự: <b>${Number(h.users)||0}</b> · Tự đăng xuất không hoạt động: <b>${Number(h.idleLogoutMinutes)||0} phút</b> · Kiểm tra lúc ${escapeHTML(h.generatedAt||'')}`;
+  const trig=(h.triggers&&h.triggers.items)||[];
+  const trigBad=trig.filter(x=>x.state!=='OK');
+  const triggerBody=trig.map(x=>`${escapeHTML(x.label)}: <b>${x.actual}/${x.expected}</b> ${x.state==='OK'?'✅':'⚠️'}`).join('<br>') + ((h.triggers&&h.triggers.obsolete&&h.triggers.obsolete.length)?'<br><b>⚠️ Có trigger cũ cần xóa</b>':'');
+  const b=h.backup||{};
+  const backupBody=b.status==='UNKNOWN'?'Chưa có dấu mốc backup kể từ khi nâng R2.4; trigger vẫn được kiểm tra riêng.':(`Lần gần nhất: <b>${escapeHTML(b.lastAt||'')}</b><br>${escapeHTML(b.fileName||'')}${b.error?'<br>'+escapeHTML(b.error):''}`);
+  const ws=(h.webhooks&&h.webhooks.shift)||{}, wl=(h.webhooks&&h.webhooks.leave)||{};
+  const webhookBody=`Đổi ca: ${_stateBadgeHtml_(ws.state)} · pending ${Number(ws.pending)||0}<br>Nghỉ: ${_stateBadgeHtml_(wl.state)} · pending ${Number(wl.pending)||0}${ws.lastError?'<br>'+escapeHTML(ws.lastError):''}${wl.lastError?'<br>'+escapeHTML(wl.lastError):''}`;
+  const d=h.diag||{}; const a=h.audit||{};
+  const diagBody=`API đã đo: <b>${Number(d.total)||0}</b> · SLOW: <b>${Number(d.slowPct)||0}%</b> · ERROR: <b>${Number(d.errors)||0}</b><br>Debug: <b>${d.debug?'ON':'OFF'}</b>`;
+  const auditBody=`Năm ${a.year||''}: <b>${Number(a.rows)||0}</b> dòng<br>Bị bỏ do lock bận: <b>${Number(a.dropped)||0}</b>`;
+  const ann=h.annualLeaveTrigger||{};
+  const annualBody=`Trạng thái: <b>${escapeHTML(ann.state||'')}</b><br>${escapeHTML(ann.message||('Năm đích: '+(ann.targetYear||'')))}`;
+  const grid=document.getElementById('health-grid');
+  if(grid) grid.innerHTML=[
+    _healthCard_('Trigger nền',trigBad.length?'WARN':'OK',triggerBody),
+    _healthCard_('Backup',b.state||'INFO',backupBody),
+    _healthCard_('Telegram Webhook',(ws.state==='ERROR'||wl.state==='ERROR')?'ERROR':((ws.state==='WARN'||wl.state==='WARN')?'WARN':'OK'),webhookBody),
+    _healthCard_('Chẩn đoán',d.state||'OK',diagBody),
+    _healthCard_('Audit log',a.state||'OK',auditBody),
+    _healthCard_('Khóa phép đầu năm',ann.state==='OK'?'OK':'WARN',annualBody)
+  ].join('');
+  const issues=document.getElementById('health-issues');
+  if(issues) issues.innerHTML=(h.issues&&h.issues.length)?'<b>Cần lưu ý:</b><br>'+h.issues.map(x=>'• '+escapeHTML(x)).join('<br>'):'✅ Không phát hiện cảnh báo đáng chú ý tại thời điểm kiểm tra.';
+}
+async function loadSystemHealth(force=false) {
+  if(!CU||!CU.admin) return;
+  try{
+    const r=await api({action:'getSystemHealth',refresh:!!force});
+    if(!r||r.error) throw new Error((r&&r.error)||'Không lấy được trạng thái hệ thống.');
+    _systemHealthData=r; renderSystemHealth();
+  }catch(e){ const x=document.getElementById('health-summary'); if(x) x.textContent='Không kiểm tra được: '+(e&&e.message?e.message:e); }
+}
+function initAuditYearSelect_(){
+  const el=document.getElementById('audit-year'); if(!el||el.options.length) return;
+  const y=new Date().getFullYear(); for(let i=y;i>=y-3;i--) el.innerHTML+=`<option value="${i}">Năm ${i}</option>`;
+}
+function renderAuditLogs(){
+  const body=document.getElementById('audit-log-body'); if(!body) return;
+  const uq=(document.getElementById('audit-filter-user')?.value||'').trim().toLowerCase();
+  const aq=document.getElementById('audit-filter-action')?.value||'';
+  const rq=document.getElementById('audit-filter-result')?.value||'';
+  const rows=_auditRows.filter(r=>(!uq||String(r.nguoiDung||'').toLowerCase().includes(uq))&&(!aq||r.thaoTac===aq)&&(!rq||r.ketQua===rq));
+  const sel=document.getElementById('audit-filter-action');
+  if(sel){ const cur=sel.value; const acts=[...new Set(_auditRows.map(r=>r.thaoTac).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'vi')); sel.innerHTML='<option value="">Tất cả thao tác</option>'+acts.map(x=>`<option value="${escapeAttr(x)}">${escapeHTML(x)}</option>`).join(''); if(acts.includes(cur)) sel.value=cur; }
+  const sum=document.getElementById('audit-summary'); if(sum) sum.textContent=`Hiển thị ${rows.length}/${_auditRows.length} dòng · Audit từng bị bỏ do lock bận: ${_auditDropped}`;
+  if(!rows.length){ body.innerHTML='<tr><td colspan="9" class="empty">Không có dữ liệu phù hợp</td></tr>'; return; }
+  body.innerHTML=rows.map(r=>`<tr><td style="white-space:nowrap">${escapeHTML(r.thoiGian||'')}</td><td><b>${escapeHTML(r.nguoiDung||'')}</b></td><td>${escapeHTML(r.boPhan||'')}</td><td>${escapeHTML(r.kenh||'')}</td><td>${escapeHTML(r.thaoTac||'')}</td><td>${escapeHTML(r.doiTuong||'')}</td><td>${escapeHTML(r.chiTiet||'')}</td><td>${_stateBadgeHtml_(r.ketQua==='OK'?'OK':'ERROR',r.ketQua||'')}</td><td style="font-size:11px">${escapeHTML(r.requestId||'')}</td></tr>`).join('');
+}
+async function loadAuditLogs(force=false){
+  if(!CU||!CU.admin) return;
+  initAuditYearSelect_();
+  const year=Number(document.getElementById('audit-year')?.value)||new Date().getFullYear();
+  try{
+    const r=await api({action:'getAuditLogs',year,limit:300});
+    if(!r||r.error) throw new Error((r&&r.error)||'Không tải được audit log.');
+    _auditRows=Array.isArray(r.logs)?r.logs:[]; _auditDropped=Number(r.dropped)||0;
+    const yel=document.getElementById('audit-year');
+    if(yel&&Array.isArray(r.years)){ const cur=String(year); const ys=[...new Set([year,...r.years])].sort((a,b)=>b-a); yel.innerHTML=ys.map(y=>`<option value="${y}" ${String(y)===cur?'selected':''}>Năm ${y}</option>`).join(''); }
+    renderAuditLogs();
+  }catch(e){ const body=document.getElementById('audit-log-body'); if(body) body.innerHTML=`<tr><td colspan="9" class="empty">${escapeHTML(e&&e.message?e.message:e)}</td></tr>`; }
+}
+async function exportAuditLogs(){
+  if(!CU||!CU.admin) return;
+  const table=document.getElementById('table-audit-log'); if(!table) return;
+  const year=document.getElementById('audit-year')?.value||new Date().getFullYear();
+  await downloadExcel(table.outerHTML,`Audit_Log_${year}.xlsx`,'AuditLog');
+}
+
 function _diagResultBadge(v) {
   const x = (v || '').toString().toUpperCase();
   const map = {
@@ -3928,6 +4133,8 @@ function switchTabRender(t){
   }
   if(t==='admin' && CU && CU.admin) {
     loadAnnualLeaveTriggerStatus(false).catch(err => console.warn('AnnualLeaveTrigger:', err));
+    loadSystemHealth(false).catch(err => console.warn('SystemHealth:', err));
+    loadAuditLogs(false).catch(err => console.warn('AuditLog:', err));
     loadSystemDiag(false).catch(err => console.warn('SystemDiag:', err));
   }
 
@@ -5624,6 +5831,10 @@ async function downloadExcel(htmlTable, filename, worksheetName) {
     // R2.2 SESSION LOCK: tuyệt đối không cho xuất dữ liệu đã cache nếu token hiện tại
     // đã bị máy đăng nhập sau thay thế. Fail-closed nếu không xác minh được phiên.
     if (!(await ensureCurrentSession({ force: true, failClosed: true }))) return false;
+    try {
+      const ar=await api({action:'auditClientEvent',event:'EXPORT_XLSX',detail:(filename||'DuLieu.xlsx')});
+      if(ar&&ar.error&&isSessionExpiredBackendError(ar.error)) return false;
+    } catch (_) {}
     const JSZipCtor=await _ccEnsureJsZip();
     const grid=_xlsxHtmlToGrid(htmlTable);
     if(!grid.rows.length) throw new Error('Không có dữ liệu để xuất.');
@@ -6626,6 +6837,10 @@ async function _ccDownloadXlsxFromTemplate(rows, yr, mo, tenBoPhan, filename) {
   // R2.2 SESSION LOCK: đường xuất bảng chấm công dùng template riêng nên phải
   // kiểm tra phiên tại đây, không được bỏ qua guard chung của downloadExcel().
   if (!(await ensureCurrentSession({ force: true, failClosed: true }))) return false;
+  try {
+    const ar=await api({action:'auditClientEvent',event:'EXPORT_XLSX',detail:(filename||'Bang_cham_cong.xlsx')});
+    if(ar&&ar.error&&isSessionExpiredBackendError(ar.error)) return false;
+  } catch (_) {}
   const JSZipCtor = await _ccEnsureJsZip();
   const zip = await JSZipCtor.loadAsync(_ccB64ToU8(_CC_TEMPLATE_XLSX_BASE64));
 
