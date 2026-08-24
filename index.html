@@ -208,6 +208,15 @@ textarea{resize:none;height:80px}
   #login-box .login-form-title{font-size:25px}
   #login-box .login-form-card{padding:15px 13px}
 }
+
+/* R2.4.3 — Chuẩn hóa nút con mắt cho mọi ô nhập mật khẩu/PIN */
+.pw-toggle-wrap{position:relative;width:100%;min-width:0}
+.pw-toggle-wrap>input{width:100%;padding-right:44px!important;box-sizing:border-box}
+.pw-toggle-wrap.pw-centered>input{padding-left:44px!important}
+.pw-eye{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:30px;height:30px;padding:0;border:0;background:transparent;color:#64748b;display:flex;align-items:center;justify-content:center;cursor:pointer;border-radius:7px;z-index:3}
+.pw-eye:hover{color:#0c4da2;background:#f1f5f9}
+.pw-eye:focus-visible{outline:2px solid #93c5fd;outline-offset:1px}
+.pw-eye svg{pointer-events:none}
 </style>
 </head>
 <body>
@@ -255,11 +264,9 @@ textarea{resize:none;height:80px}
           </div>
           <div class="pfield" style="margin-bottom:12px">
             <label>Mật khẩu / PIN (4-12 ký tự)</label>
-            <div style="position:relative;">
-              <input type="password" id="pin-inp" minlength="4" maxlength="12" placeholder="••••" onkeydown="if(event.key==='Enter')doLogin()" style="padding-right:44px;">
-              <span id="toggle-eye" onclick="togglePasswordVisibility('pin-inp','toggle-eye')" style="position:absolute;right:14px;top:50%;transform:translateY(-50%);cursor:pointer;color:#64748b;display:flex;align-items:center;justify-content:center;">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
-              </span>
+            <div class="pw-toggle-wrap pw-centered">
+              <input type="password" id="pin-inp" minlength="4" maxlength="12" placeholder="••••" onkeydown="if(event.key==='Enter')doLogin()">
+              <button type="button" class="pw-eye" id="toggle-eye" onclick="togglePasswordVisibility('pin-inp','toggle-eye')" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>
             </div>
           </div>
           <div class="login-help-row">
@@ -270,7 +277,7 @@ textarea{resize:none;height:80px}
           <button class="btn btn-primary login-submit" onclick="doLogin()">Đăng nhập</button>
           <div class="login-security-note"><i>🛡️</i><span>Không chia sẻ mã PIN. Khi cần hỗ trợ, liên hệ quản trị hệ thống.</span></div>
         </div>
-        <div class="login-footer">Phiên bản V13.7.8 DIAG13-STABLE+ R2.4.1 IDLE · AUDIT · HEALTH · Google Sheet / Apps Script</div>
+        <div class="login-footer">Phiên bản V13.7.8 DIAG13-STABLE+ R2.4.3 IDLE · AUDIT · HEALTH · UNIFIED PASSWORD · PASSWORD EYE · Google Sheet / Apps Script</div>
       </div>
     </section>
   </div>
@@ -374,7 +381,7 @@ textarea{resize:none;height:80px}
         <div class="sec-title">Reset PIN</div>
         <div class="form-row three">
           <div><label>Người dùng</label><div class="ss" id="ss-reset"><button class="ss-btn ph"><span id="ss-reset-lbl">-- Chọn --</span><span>▾</span></button><div class="ss-drop" id="ss-reset-drop"><input class="ss-inp" oninput="filterSS('ss-reset',this.value)" placeholder="Tìm..."><div class="ss-list" id="ss-reset-list"></div></div></div><input type="hidden" id="f-reset-name"></div>
-          <div><label>Mật khẩu mới</label><input type="password" id="f-reset-pin" minlength="4" maxlength="12" onkeydown="if(event.key==='Enter')doResetPin()"></div>
+          <div><label>Mật khẩu mới</label><div class="pw-toggle-wrap"><input type="password" id="f-reset-pin" minlength="4" maxlength="12" onkeydown="if(event.key==='Enter')doResetPin()"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('f-reset-pin',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div></div>
         </div>
         <button class="btn btn-warn" id="btn-reset-pin" style="width:100%; margin-top:8px" onclick="doResetPin()">Reset PIN</button>
         <div id="admin-msg" class="alert"></div>
@@ -576,7 +583,7 @@ textarea{resize:none;height:80px}
       </div>
       <div class="form-row full" style="margin-top:10px;">
         <label style="color:#ea580c; font-weight:700;">7. Mã PIN xác nhận điều chuyển <span style="color:#dc2626">*</span></label>
-        <input type="password" id="tc-pin" placeholder="Nhập PIN cá nhân để xác nhận..." style="border-color:#f97316; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;">
+        <div class="pw-toggle-wrap pw-centered"><input type="password" id="tc-pin" placeholder="Nhập PIN cá nhân để xác nhận..." style="border-color:#f97316; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('tc-pin',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div>
       </div>
       <button class="btn" style="width:100%; padding:12px; background:#f97316; color:white; font-weight:700; margin-top:10px;" onclick="submitTransfer()">⚡ XÁC NHẬN ĐIỀU CHUYỂN</button>
       <div id="transfer-msg" class="alert" style="margin-top:10px; display:none"></div>
@@ -650,7 +657,7 @@ textarea{resize:none;height:80px}
 
         <div class="form-row full" style="margin-top:10px;">
           <label style="color:#16a34a; font-weight:700;">Mã PIN xác nhận ban hành lệnh <span style="color:#dc2626">*</span></label>
-          <input type="password" id="hc-pin" placeholder="Nhập PIN cá nhân để xác nhận..." style="border-color:#16a34a; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;">
+          <div class="pw-toggle-wrap pw-centered"><input type="password" id="hc-pin" placeholder="Nhập PIN cá nhân để xác nhận..." style="border-color:#16a34a; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('hc-pin',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div>
         </div>
 
         <button class="btn btn-success" style="width:100%; padding:15px; font-weight:700; font-size:16px; margin-top:10px;" onclick="submitBatchHC()">⚡ PHÊ DUYỆT LỆNH</button>
@@ -956,32 +963,50 @@ textarea{resize:none;height:80px}
 
 <div class="overlay" id="forced-pin-modal" style="display:none; z-index:9999">
   <div class="pbox" style="border:3px solid #f59e0b;">
-    <div class="plogo" style="font-size:18px;color:#b45309;">🔐 Đặt PIN mới</div>
+    <div class="plogo" style="font-size:18px;color:#b45309;">🔐 Đặt mật khẩu / PIN mới</div>
     <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:8px;padding:10px;margin-bottom:14px;font-size:13px;color:#92400e;">
-      ⚠️ Bạn đang dùng PIN tạm thời.<br>Vui lòng đặt PIN mới trước khi tiếp tục.
+      ⚠️ Bạn đang dùng PIN tạm thời.<br>Vui lòng đặt mật khẩu / PIN mới trước khi tiếp tục.
     </div>
-    <div class="pfield"><label>PIN mới (4-8 số)</label>
-      <input type="password" id="fcp-new" minlength="4" maxlength="8" placeholder="Nhập PIN mới"
+    <div class="pfield"><label>Mật khẩu / PIN mới (4-12 ký tự)</label>
+      <div class="pw-toggle-wrap pw-centered"><input type="password" id="fcp-new" minlength="4" maxlength="12" placeholder="Nhập mật khẩu / PIN mới"
         style="text-align:center;font-size:20px;letter-spacing:6px;"
-        onkeydown="if(event.key==='Enter')doForcedChangePin()">
+        onkeydown="if(event.key==='Enter')doForcedChangePin()"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('fcp-new',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div>
     </div>
-    <div class="pfield"><label>Nhập lại PIN mới</label>
-      <input type="password" id="fcp-new2" minlength="4" maxlength="8" placeholder="Xác nhận PIN"
+    <div class="pfield"><label>Nhập lại mật khẩu / PIN mới</label>
+      <div class="pw-toggle-wrap pw-centered"><input type="password" id="fcp-new2" minlength="4" maxlength="12" placeholder="Xác nhận mật khẩu / PIN"
         style="text-align:center;font-size:20px;letter-spacing:6px;"
-        onkeydown="if(event.key==='Enter')doForcedChangePin()">
+        onkeydown="if(event.key==='Enter')doForcedChangePin()"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('fcp-new2',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div>
     </div>
     <div class="perr" id="fcp-err"></div>
-    <button class="btn btn-primary" style="width:100%;padding:12px;margin-top:4px;" onclick="doForcedChangePin()">✅ Xác nhận đặt PIN mới</button>
+    <button class="btn btn-primary" style="width:100%;padding:12px;margin-top:4px;" onclick="doForcedChangePin()">✅ Xác nhận đặt mật khẩu / PIN mới</button>
   </div>
 </div>
 <div class="overlay" id="pin-modal" style="display:none">
   <div class="pbox">
     <div class="plogo" style="font-size:18px">🔒 Đổi mã PIN</div>
-    <div class="pfield"><label>Mật khẩu cũ</label><div style="position:relative"><input type="password" id="cp-old" minlength="4" maxlength="12" style="padding-right:40px"><span onclick="togglePasswordVisibility('cp-old',this)" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);cursor:pointer;color:#64748b;display:flex;align-items:center"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></span></div></div>
-<div class="pfield"><label>Mật khẩu mới</label><div style="position:relative"><input type="password" id="cp-new" minlength="4" maxlength="12" style="padding-right:40px"><span onclick="togglePasswordVisibility('cp-new',this)" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);cursor:pointer;color:#64748b;display:flex;align-items:center"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></span></div></div>
-<div class="pfield"><label>Nhập lại mật khẩu</label><div style="position:relative"><input type="password" id="cp-new2" minlength="4" maxlength="12" style="padding-right:40px"><span onclick="togglePasswordVisibility('cp-new2',this)" style="position:absolute;right:12px;top:50%;transform:translateY(-50%);cursor:pointer;color:#64748b;display:flex;align-items:center"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></span></div></div>
+    <div class="pfield"><label>Mật khẩu cũ</label><div class="pw-toggle-wrap"><input type="password" id="cp-old" minlength="4" maxlength="12"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('cp-old',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div></div>
+<div class="pfield"><label>Mật khẩu mới</label><div class="pw-toggle-wrap"><input type="password" id="cp-new" minlength="4" maxlength="12"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('cp-new',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div></div>
+<div class="pfield"><label>Nhập lại mật khẩu</label><div class="pw-toggle-wrap"><input type="password" id="cp-new2" minlength="4" maxlength="12"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('cp-new2',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div></div>
     <div class="perr" id="cp-err"></div>
     <div style="display:flex;gap:10px;"><button class="btn" style="flex:1" onclick="closePinModal()">Hủy</button><button class="btn btn-primary" style="flex:2" onclick="doChangePin()">Đổi PIN</button></div>
+  </div>
+</div>
+<div class="overlay" id="admin-reset-confirm-modal" style="display:none">
+  <div class="pbox">
+    <div class="plogo" style="font-size:18px; color:#d97706;">🔐 Xác nhận reset mật khẩu/PIN</div>
+    <div class="psub" id="admin-reset-confirm-info" style="margin-bottom:12px;line-height:1.5;"></div>
+    <div class="pfield">
+      <label>Nhập mật khẩu/PIN của Admin để xác nhận</label>
+      <div class="pw-toggle-wrap pw-centered">
+        <input type="password" id="admin-reset-confirm-pin" minlength="4" maxlength="12" placeholder="Nhập mật khẩu/PIN Admin..." style="font-weight:bold;text-align:center;font-size:18px;letter-spacing:4px;" onkeydown="if(event.key==='Enter')confirmAdminResetPin()">
+        <button type="button" class="pw-eye" onclick="togglePasswordVisibility('admin-reset-confirm-pin',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button>
+      </div>
+    </div>
+    <div class="perr" id="admin-reset-confirm-err"></div>
+    <div style="display:flex;gap:10px;margin-top:8px;">
+      <button class="btn" style="flex:1" onclick="closeAdminResetConfirmModal()">Hủy</button>
+      <button class="btn btn-warn" id="admin-reset-confirm-btn" style="flex:2" onclick="confirmAdminResetPin()">🔐 Xác nhận reset</button>
+    </div>
   </div>
 </div>
 <div class="overlay" id="approve-modal" style="display:none">
@@ -989,7 +1014,7 @@ textarea{resize:none;height:80px}
     <div class="plogo" style="font-size:18px; color:#16a34a;">✅ Phê duyệt đơn</div>
     <div class="psub" style="margin-bottom: 12px;">Vui lòng nhập mã PIN để xác nhận:</div>
     <div class="pfield">
-      <input type="password" id="approve-pin-inp" placeholder="Nhập PIN cá nhân..." minlength="4" maxlength="12" style="border-color:#16a34a; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;">
+      <div class="pw-toggle-wrap pw-centered"><input type="password" id="approve-pin-inp" placeholder="Nhập PIN cá nhân..." minlength="4" maxlength="12" style="border-color:#16a34a; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('approve-pin-inp',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div>
     </div>
     <div class="perr" id="approve-err"></div>
     <div style="display:flex; flex-direction:column; gap:10px; margin-top:8px;">
@@ -1005,7 +1030,7 @@ textarea{resize:none;height:80px}
     <div class="psub" style="margin-bottom:12px;" id="leave-approve-modal-info"></div>
     <div class="pfield">
       <label style="font-weight:600; color:#374151;">Mã PIN xác nhận</label>
-      <input type="password" id="leave-approve-pin-inp" placeholder="Nhập PIN cá nhân..." minlength="4" maxlength="12" style="border-color:#16a34a; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;" onkeydown="if(event.key==='Enter') doApproveLeaveWithPin()">
+      <div class="pw-toggle-wrap pw-centered"><input type="password" id="leave-approve-pin-inp" placeholder="Nhập PIN cá nhân..." minlength="4" maxlength="12" style="border-color:#16a34a; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;" onkeydown="if(event.key==='Enter') doApproveLeaveWithPin()"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('leave-approve-pin-inp',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div>
     </div>
     <div class="perr" id="leave-approve-err"></div>
     <div style="display:flex; gap:10px; margin-top:8px;">
@@ -1024,7 +1049,7 @@ textarea{resize:none;height:80px}
     </div>
     <div class="pfield" style="margin-top:10px;">
       <label style="font-weight:600; color:#374151;">Mã PIN xác nhận <span style="color:#dc2626">*</span></label>
-      <input type="password" id="leave-reject-pin-inp" placeholder="Nhập PIN cá nhân..." minlength="4" maxlength="12" style="border-color:#dc2626; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;" onkeydown="if(event.key==='Enter') doRejectLeaveConfirm()">
+      <div class="pw-toggle-wrap pw-centered"><input type="password" id="leave-reject-pin-inp" placeholder="Nhập PIN cá nhân..." minlength="4" maxlength="12" style="border-color:#dc2626; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;" onkeydown="if(event.key==='Enter') doRejectLeaveConfirm()"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('leave-reject-pin-inp',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div>
     </div>
     <div class="perr" id="leave-reject-err"></div>
     <div style="display:flex; gap:10px; margin-top:8px;">
@@ -1039,7 +1064,7 @@ textarea{resize:none;height:80px}
     <div class="psub" style="margin-bottom:12px; text-align:left; line-height:1.5; background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:10px 12px; color:#78350f;" id="leave-recalc-modal-note"></div>
     <div class="pfield">
       <label style="font-weight:600; color:#374151;">Mã PIN xác nhận</label>
-      <input type="password" id="leave-recalc-pin-inp" placeholder="Nhập PIN cá nhân..." minlength="4" maxlength="12" style="border-color:#d97706; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;" onkeydown="if(event.key==='Enter') doLeaveRecalcActionWithPin()">
+      <div class="pw-toggle-wrap pw-centered"><input type="password" id="leave-recalc-pin-inp" placeholder="Nhập PIN cá nhân..." minlength="4" maxlength="12" style="border-color:#d97706; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;" onkeydown="if(event.key==='Enter') doLeaveRecalcActionWithPin()"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('leave-recalc-pin-inp',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div>
     </div>
     <div class="perr" id="leave-recalc-err"></div>
     <div style="display:flex; gap:10px; margin-top:8px;">
@@ -3577,22 +3602,21 @@ async function doForcedChangePin() {
   const newPin2 = document.getElementById('fcp-new2').value.trim();
   const err     = document.getElementById('fcp-err');
   err.textContent = '';
-  if (!newPin || newPin.length < 4)  { err.textContent = 'PIN phải có ít nhất 4 số!'; return; }
-  if (!/^\d+$/.test(newPin))         { err.textContent = 'PIN chỉ được chứa chữ số!'; return; }
-  if (newPin !== newPin2)             { err.textContent = 'PIN nhập lại không khớp!'; return; }
+  if (!newPin || newPin.length < 4 || newPin.length > 12) { err.textContent = 'Mật khẩu/PIN mới phải có từ 4 đến 12 ký tự!'; return; }
+  if (newPin !== newPin2)             { err.textContent = 'Mật khẩu/PIN nhập lại không khớp!'; return; }
   const btn = document.querySelector('#forced-pin-modal .btn-primary');
   btn.disabled = true; btn.textContent = '⏳ Đang lưu...';
   try {
     const currentPin = document.getElementById('pin-inp').value;
     const r = await api({ action: 'changeTempPin', name: CU.name, currentPin, newPin });
-    if (r.error) { err.textContent = r.error; btn.disabled = false; btn.textContent = '✅ Xác nhận đặt PIN mới'; return; }
+    if (r.error) { err.textContent = r.error; btn.disabled = false; btn.textContent = '✅ Xác nhận đặt mật khẩu / PIN mới'; return; }
     document.getElementById('forced-pin-modal').style.display = 'none';
-    showAlert('app', '✅ Đặt PIN mới thành công. Hệ thống sẽ quay lại màn hình đăng nhập để xác thực bằng PIN mới.', 'as');
+    showAlert('app', '✅ Đặt mật khẩu/PIN mới thành công. Hệ thống sẽ quay lại màn hình đăng nhập để xác thực lại.', 'as');
     CU = null;
     setTimeout(() => window.location.reload(), 900);
   } catch(ex) {
     err.textContent = 'Lỗi kết nối, thử lại!';
-    btn.disabled = false; btn.textContent = '✅ Xác nhận đặt PIN mới';
+    btn.disabled = false; btn.textContent = '✅ Xác nhận đặt mật khẩu / PIN mới';
   }
 }
 
@@ -3604,27 +3628,51 @@ async function doChangePin(){
   if(n!==n2){err.textContent='Mật khẩu nhập lại không khớp';return;}
   try{ const r=await api({action:"changePin",name:CU.name,oldPin:o,newPin:n}); if(r.error){err.textContent=r.error;return;} closePinModal(); showAlert('app','Đổi thành công','as'); } catch(ex){err.textContent='Lỗi';}
 }
-async function doResetPin(){
+let _pendingAdminResetPin = null;
+function doResetPin(){
   const n = document.getElementById('f-reset-name').value;
   const p = document.getElementById('f-reset-pin').value;
-  const btn = document.getElementById('btn-reset-pin');
   if(!n || !p){ showAlert('app','Vui lòng chọn nhân sự và nhập PIN mới.','ae'); return; }
-
-  const adminPin = prompt(`XÁC NHẬN BẢO MẬT:
-Nhập PIN của Admin ${CU.name} để reset PIN cho ${n}:`);
-  if(!adminPin) return;
-
-  const oldText = btn ? btn.textContent : 'Reset PIN';
-  if(btn){ btn.disabled = true; btn.textContent = '⏳ Đang reset...'; }
+  if(p.length < 4 || p.length > 12){ showAlert('app','Mật khẩu/PIN mới phải có từ 4 đến 12 ký tự.','ae'); return; }
+  _pendingAdminResetPin = { name:n, newPin:p };
+  const info = document.getElementById('admin-reset-confirm-info');
+  if(info) info.textContent = `Admin ${CU.name} đang reset mật khẩu/PIN cho ${n}. Vui lòng nhập mật khẩu/PIN Admin để xác nhận.`;
+  const pin = document.getElementById('admin-reset-confirm-pin');
+  const err = document.getElementById('admin-reset-confirm-err');
+  if(pin){ pin.value=''; pin.type='password'; }
+  if(err) err.textContent='';
+  document.getElementById('admin-reset-confirm-modal').style.display='flex';
+  setTimeout(()=>{ if(pin) pin.focus(); },80);
+}
+function closeAdminResetConfirmModal(){
+  const modal=document.getElementById('admin-reset-confirm-modal');
+  const pin=document.getElementById('admin-reset-confirm-pin');
+  const err=document.getElementById('admin-reset-confirm-err');
+  if(modal) modal.style.display='none';
+  if(pin){ pin.value=''; pin.type='password'; }
+  if(err) err.textContent='';
+  _pendingAdminResetPin=null;
+}
+async function confirmAdminResetPin(){
+  if(!_pendingAdminResetPin) return;
+  const adminPin=(document.getElementById('admin-reset-confirm-pin').value||'').trim();
+  const err=document.getElementById('admin-reset-confirm-err');
+  const btn=document.getElementById('admin-reset-confirm-btn');
+  if(!adminPin){ if(err) err.textContent='Vui lòng nhập mật khẩu/PIN Admin để xác nhận!'; return; }
+  const pending=_pendingAdminResetPin;
+  const oldText=btn?btn.textContent:'🔐 Xác nhận reset';
+  if(btn){btn.disabled=true;btn.textContent='⏳ Đang reset...';}
   try{
-    const r = await api({action:"resetPin", name:n, newPin:p, verifyPin:adminPin});
-    if(r.error){ showAlert('app', r.error, 'ae'); return; }
-    document.getElementById('f-reset-pin').value = '';
-    showAlert('app','Đã reset PIN cho '+n+' và thu hồi phiên đăng nhập cũ của tài khoản này.','as');
-  } catch(ex) {
-    showAlert('app','Lỗi kết nối khi reset PIN. Vui lòng thử lại.','ae');
-  } finally {
-    if(btn){ btn.disabled = false; btn.textContent = oldText; }
+    const r=await api({action:'resetPin',name:pending.name,newPin:pending.newPin,verifyPin:adminPin});
+    if(r.error){ if(err) err.textContent=r.error; return; }
+    document.getElementById('f-reset-pin').value='';
+    const doneName=pending.name;
+    closeAdminResetConfirmModal();
+    showAlert('app','Đã reset PIN cho '+doneName+' và thu hồi phiên đăng nhập cũ của tài khoản này.','as');
+  }catch(ex){
+    if(err) err.textContent='Lỗi kết nối khi reset PIN. Vui lòng thử lại.';
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent=oldText;}
   }
 }
 function showAlert(sc,m,cl){
@@ -9053,21 +9101,20 @@ async function exportExcelTransfer() {
   await _exportTableXlsxByDepartment({filterId:'f-transfer-bophan',renderFn:renderTransferLog,tableId:'table-transfer-log',filename:`Lich_Su_Dieu_Chuyen_Kip_${label}.xlsx`,worksheetName:'DieuChuyen'});
 }
 // ===============================================================
-// HÀM ẨN / HIỂN THỊ MẬT KHẨU
+// HÀM ẨN / HIỂN THỊ MẬT KHẨU — R2.4.3 chuẩn hóa toàn bộ ô PIN/mật khẩu
 // ===============================================================
-function togglePasswordVisibility(inputId, iconId) {
+function togglePasswordVisibility(inputId, iconRef) {
   const input = document.getElementById(inputId);
-  const iconSpan = document.getElementById(iconId);
-  
-  if (input.type === "password") {
-    input.type = "text";
-    // Đổi sang biểu tượng nhắm mắt (Con mắt bị gạch chéo)
-    iconSpan.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>';
-  } else {
-    input.type = "password";
-    // Đổi lại biểu tượng mở mắt
-    iconSpan.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
-  }
+  const iconEl = (typeof iconRef === 'string') ? document.getElementById(iconRef) : iconRef;
+  if (!input || !iconEl) return;
+  const showing = input.type === 'password';
+  input.type = showing ? 'text' : 'password';
+  iconEl.innerHTML = showing
+    ? '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>'
+    : '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+  const label = showing ? 'Ẩn mật khẩu' : 'Hiển thị mật khẩu';
+  iconEl.setAttribute('aria-label', label);
+  iconEl.setAttribute('title', label);
 }
 // ===============================================================
 // CẬP NHẬT LẠI DANH SÁCH NGƯỜI ĐI THAY MỖI KHI ĐỔI NGÀY/CA
