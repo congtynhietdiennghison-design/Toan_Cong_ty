@@ -277,7 +277,7 @@ textarea{resize:none;height:80px}
           <button class="btn btn-primary login-submit" onclick="doLogin()">Đăng nhập</button>
           <div class="login-security-note"><i>🛡️</i><span>Không chia sẻ mã PIN. Khi cần hỗ trợ, liên hệ quản trị hệ thống.</span></div>
         </div>
-        <div class="login-footer">Phiên bản V13.7.8 DIAG13-STABLE+ R2.4.3 IDLE · AUDIT · HEALTH · UNIFIED PASSWORD · PASSWORD EYE · Google Sheet / Apps Script</div>
+        <div class="login-footer">Phiên bản V13.7.8 DIAG13-STABLE+ R2.4.5 BỎ CỘT MỐC · MỐC THEO MẪU+KÍP · IDLE · AUDIT · HEALTH · PASSWORD EYE · Google Sheet / Apps Script</div>
       </div>
     </section>
   </div>
@@ -562,18 +562,15 @@ textarea{resize:none;height:80px}
             <select id="tc-newkip" style="border-color:#f97316; font-weight:700; color:#ea580c;"></select>
           </div>
           <div>
-            <label>4. Mẫu lịch mới (Nếu đổi kíp hệ)</label>
+            <label>4. Mẫu lịch mới (nếu đổi sang mẫu khác)</label>
             <select id="tc-newpattern" style="border-color:#f97316;"></select>
+            <div style="font-size:11.5px;color:#64748b;margin-top:4px;">Mốc lịch được tự động lấy theo <b>Mẫu lịch + Kíp</b> đã cấu hình trong sheet settings.</div>
           </div>
-        </div>
-        <div class="form-row full">
-          <label>5. Vị trí mốc khởi tạo (Dành cho lịch riêng/ngoại lệ)</label>
-          <input type="number" id="tc-newvitri" value="0" style="border-color:#f97316;" placeholder="Nhập số vị trí mốc...">
         </div>
       </div>
 
       <div class="form-row full">
-        <label>6. Chọn nhân viên</label>
+        <label>5. Chọn nhân viên</label>
         <div style="margin-bottom:8px;">
           <input type="text" id="tc-user-search" placeholder="🔍 Tìm tên nhân viên..." oninput="filterTCUsers()" style="width:100%; padding:8px; border:1px solid #f97316; border-radius:6px; font-size:14px;">
         </div>
@@ -582,7 +579,7 @@ textarea{resize:none;height:80px}
         </div>
       </div>
       <div class="form-row full" style="margin-top:10px;">
-        <label style="color:#ea580c; font-weight:700;">7. Mã PIN xác nhận điều chuyển <span style="color:#dc2626">*</span></label>
+        <label style="color:#ea580c; font-weight:700;">6. Mã PIN xác nhận điều chuyển <span style="color:#dc2626">*</span></label>
         <div class="pw-toggle-wrap pw-centered"><input type="password" id="tc-pin" placeholder="Nhập PIN cá nhân để xác nhận..." style="border-color:#f97316; font-weight:bold; text-align:center; font-size:18px; letter-spacing:4px;"><button type="button" class="pw-eye" onclick="togglePasswordVisibility('tc-pin',this)" aria-label="Hiển thị mật khẩu" title="Hiển thị mật khẩu"><svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg></button></div>
       </div>
       <button class="btn" style="width:100%; padding:12px; background:#f97316; color:white; font-weight:700; margin-top:10px;" onclick="submitTransfer()">⚡ XÁC NHẬN ĐIỀU CHUYỂN</button>
@@ -1179,11 +1176,11 @@ let transferHistoryRows = []; let transferHistoryYearLoaded = null; let _loadTra
 
 // Dữ liệu RIÊNG cho Bảng đi ca toàn Công ty của tài khoản CONG_TY.
 // Không ghi đè dữ liệu nghiệp vụ thường trực, nên quyền phê duyệt/lịch sử vẫn giữ nguyên.
-let _companySchedule = { key:'', loading:null, users:[], userByName:{}, requests:[], reqsByName:{}, reqsByNameDate:{}, leaves:[], approvedLeaveByNameDate:{}, transfers:[], transfersByName:{}, configsByBoPhan:{} };
+let _companySchedule = { key:'', loading:null, users:[], userByName:{}, requests:[], reqsByName:{}, reqsByNameDate:{}, leaves:[], approvedLeaveByNameDate:{}, transfers:[], transfersByName:{}, configsByBoPhan:{}, mocKipByPattern:{} };
 let _companyScheduleRevision = 0;
 
 function invalidateCompanyScheduleData() {
-  _companySchedule = { key:'', loading:null, users:[], userByName:{}, requests:[], reqsByName:{}, reqsByNameDate:{}, leaves:[], approvedLeaveByNameDate:{}, transfers:[], transfersByName:{}, configsByBoPhan:{} };
+  _companySchedule = { key:'', loading:null, users:[], userByName:{}, requests:[], reqsByName:{}, reqsByNameDate:{}, leaves:[], approvedLeaveByNameDate:{}, transfers:[], transfersByName:{}, configsByBoPhan:{}, mocKipByPattern:{} };
   _companyScheduleRevision++;
 }
 
@@ -1195,7 +1192,7 @@ function _companyScheduleKeyFromUI() {
 
 function applyCompanyScheduleData(d) {
   if (!d || d.error || !Array.isArray(d.users)) return false;
-  const cs = { key:d.key || '', loading:null, users:d.users || [], userByName:{}, requests:[], reqsByName:{}, reqsByNameDate:{}, leaves:d.leaves || [], approvedLeaveByNameDate:{}, transfers:[], transfersByName:{}, configsByBoPhan:d.configsByBoPhan || {} };
+  const cs = { key:d.key || '', loading:null, users:d.users || [], userByName:{}, requests:[], reqsByName:{}, reqsByNameDate:{}, leaves:d.leaves || [], approvedLeaveByNameDate:{}, transfers:[], transfersByName:{}, configsByBoPhan:d.configsByBoPhan || {}, mocKipByPattern:d.mocKipByPattern || {} };
   cs.users.forEach(u => { const n=(u.name||'').toString().trim(); if(n) cs.userByName[n]=u; });
 
   cs.requests = (d.requests || []).map(r0 => {
@@ -1263,13 +1260,14 @@ async function renderCompanyScheduleTable() {
   }
 
   // Hoán đổi dữ liệu chỉ trong lúc dựng DOM bảng đi ca; sau đó khôi phục ngay.
-  const saved={NV_LIST,userByName,allReqs,reqsByName,reqsByNameDate,allLeaves,approvedLeaveByNameDate,allTransfers,transfersByName,configsByBoPhan:APP_CONFIG.configsByBoPhan,merged:_mergedConfigCache,holiday:_holidaySetCache,caGoc:_caGocCache,caThuc:_caThucTeCache};
+  const saved={NV_LIST,userByName,allReqs,reqsByName,reqsByNameDate,allLeaves,approvedLeaveByNameDate,allTransfers,transfersByName,configsByBoPhan:APP_CONFIG.configsByBoPhan,mocKipByPattern:APP_CONFIG.mocKipByPattern,merged:_mergedConfigCache,holiday:_holidaySetCache,caGoc:_caGocCache,caThuc:_caThucTeCache};
   try {
     NV_LIST=_companySchedule.users; userByName=_companySchedule.userByName;
     allReqs=_companySchedule.requests; reqsByName=_companySchedule.reqsByName; reqsByNameDate=_companySchedule.reqsByNameDate;
     allLeaves=_companySchedule.leaves; approvedLeaveByNameDate=_companySchedule.approvedLeaveByNameDate;
     allTransfers=_companySchedule.transfers; transfersByName=_companySchedule.transfersByName;
     APP_CONFIG.configsByBoPhan=_companySchedule.configsByBoPhan || {};
+    APP_CONFIG.mocKipByPattern=_companySchedule.mocKipByPattern || APP_CONFIG.mocKipByPattern || {};
     _mergedConfigCache={}; _holidaySetCache={}; _caGocCache=new Map(); _caThucTeCache=new Map();
     renderScheduleTableCore();
   } finally {
@@ -1278,6 +1276,7 @@ async function renderCompanyScheduleTable() {
     allLeaves=saved.allLeaves; approvedLeaveByNameDate=saved.approvedLeaveByNameDate;
     allTransfers=saved.allTransfers; transfersByName=saved.transfersByName;
     APP_CONFIG.configsByBoPhan=saved.configsByBoPhan;
+    APP_CONFIG.mocKipByPattern=saved.mocKipByPattern || {};
     _mergedConfigCache=saved.merged; _holidaySetCache=saved.holiday; _caGocCache=saved.caGoc; _caThucTeCache=saved.caThuc;
   }
 }
@@ -1299,6 +1298,17 @@ function getLatestTransfer(name, onOrBeforeDate) {
   const d = onOrBeforeDate || '9999-12-31';
   for (let i = 0; i < arr.length; i++) {
     if ((arr[i]._date || arr[i].date || '') <= d && arr[i].newKip) return arr[i];
+  }
+  return null;
+}
+
+// Lấy lệnh gần nhất có thay đổi mẫu lịch. Cần tách khỏi newKip vì "Giữ nguyên mẫu"
+// ở một lệnh điều chuyển sau không được làm mất mẫu đặc biệt đã áp dụng trước đó.
+function getLatestTransferPattern(name, onOrBeforeDate) {
+  const arr = transfersByName[(name || '').toString().trim()] || [];
+  const d = onOrBeforeDate || '9999-12-31';
+  for (let i = 0; i < arr.length; i++) {
+    if ((arr[i]._date || arr[i].date || '') <= d && arr[i].newPattern) return arr[i];
   }
   return null;
 }
@@ -2580,7 +2590,8 @@ function setupDynamicFields(settings) {
     APP_CONFIG.lechMax = parseInt(settings.configs.SO_CA_LECH_MAX) || 10;
     APP_CONFIG.lechWarn = parseInt(settings.configs.SO_CA_LECH_CANH_BAO) || (APP_CONFIG.lechMax - 2); 
     APP_CONFIG.configs = settings.configs;
-    APP_CONFIG.configsByBoPhan = settings.configsByBoPhan || {}; // FIX: thiếu dòng này khiến mọi bộ phận đều dùng chung MAU_LICH_MAC_DINH/MOC_KIP thay vì cấu hình riêng
+    APP_CONFIG.configsByBoPhan = settings.configsByBoPhan || {};
+    APP_CONFIG.mocKipByPattern = settings.mocKipByPattern || {}; // R2.4.4: mốc theo mẫu lịch + kíp, không theo bộ phận
     // TURBO: config theo bộ phận được dùng ở hàng nghìn ô lịch; xóa cache khi settings đổi.
     _mergedConfigCache = {};
     _holidaySetCache = {};
@@ -4799,6 +4810,19 @@ function mergeConfigsForBoPhan(boPhan) {
   return merged;
 }
 
+// R2.4.5: tra mốc theo đúng CẶP (mẫu lịch, kíp).
+function getMocKipTheoMau(patternName, kipName) {
+  const pattern = (patternName || '').toString().trim();
+  const soKip = (kipName || '').toString().replace(/\D/g, '');
+  if (!pattern || !soKip) return null;
+  const key = 'MOC_KIP_' + soKip;
+  const byPattern = APP_CONFIG.mocKipByPattern || {};
+  const raw = byPattern[pattern] ? byPattern[pattern][key] : undefined;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 function getHolidaySetForBoPhan(boPhan, cfg) {
   const key = (boPhan || '').toString();
   if (_holidaySetCache[key]) return _holidaySetCache[key];
@@ -4826,20 +4850,14 @@ function getCaTrucGoc(userName, defaultKip, dateStr) {
   // --- 1. TÌM TRẠNG THÁI THỰC TẾ TẠI NGÀY ĐANG XÉT ---
   let currentKip = defaultKip;
   let currentPattern = _cfg.MAU_LICH_MAC_DINH || "3 ca 5 kíp";
-  let currentRef = 0;
-  let isNgoaiLe = false;
 
-  // TURBO: transfersByName đã sắp giảm dần; lấy lệnh mới nhất <= dateStr bằng 1 lượt
-  // duyệt ngắn, không filter + sort lại mảng ở MỖI Ô trong bảng đi ca/thống kê.
-  const latest = getLatestTransferAny(userName, dateStr);
-  if (latest) {
-    if (latest.newKip) currentKip = latest.newKip;
-    if (latest.newPattern) {
-      currentPattern = latest.newPattern;
-      currentRef = parseInt(latest.newViTriMoc) || 0;
-      isNgoaiLe = (latest.newPattern !== (_cfg.MAU_LICH_MAC_DINH || '3 ca 5 kíp'));
-    }
-  }
+  // Kíp và mẫu lịch là hai trạng thái độc lập: lệnh mới chỉ đổi kíp thì phải giữ nguyên
+  // mẫu đặc biệt đã áp dụng trước đó; lệnh chỉ đổi mẫu thì phải giữ nguyên kíp hiện tại.
+  const latestKip = getLatestTransfer(userName, dateStr);
+  if (latestKip && latestKip.newKip) currentKip = latestKip.newKip;
+
+  const latestPattern = getLatestTransferPattern(userName, dateStr);
+  if (latestPattern && latestPattern.newPattern) currentPattern = latestPattern.newPattern;
 
   // --- 2. XỬ LÝ KHỐI HÀNH CHÍNH (LỄ, NGHỈ BÙ) ---
   if ((currentKip || "").toLowerCase().includes('hành chính') || (currentKip || "").toLowerCase() === 'hc') {
@@ -4880,14 +4898,11 @@ function getCaTrucGoc(userName, defaultKip, dateStr) {
   
   let chuKy = mau.chuKy;
   let ngayMocStr = mau.ngayMoc;
-  let viTriMoc = currentRef;
 
-  // Nếu là lịch chuẩn, bốc vị trí mốc theo tên Kíp từ Settings
-  if (!isNgoaiLe) {
-    const soKip = currentKip.replace(/\D/g, '');
-    const keyTimKiem = 'MOC_KIP_' + soKip;
-    viTriMoc = _cfg[keyTimKiem] !== undefined ? parseInt(_cfg[keyTimKiem]) : 0;
-  }
+  // R2.4.5: mốc chỉ lấy theo MẪU LỊCH + KÍP trong settings.
+  // Nếu thiếu cấu hình, trả OFF thay vì tự đoán mốc 0 hoặc dùng mốc theo bộ phận.
+  let viTriMoc = getMocKipTheoMau(currentPattern, currentKip);
+  if (viTriMoc === null) return _rememberCaGoc(_cacheKey, 'OFF');
 
   const diffTime = parseDateLocal(dateStr) - parseDateLocal(ngayMocStr);
   let diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
@@ -8645,8 +8660,36 @@ function _getCurrentKipOfUser(name, defaultKip, selectedDate) {
   return defaultKip;
 }
 
+function _getCurrentPatternOfUser(name, selectedDate) {
+  const u = getUserInfo(name);
+  const bp = u ? (u.boPhan || '') : '';
+  const cfg = mergeConfigsForBoPhan(bp);
+  const latest = getLatestTransferPattern(name, selectedDate);
+  return (latest && latest.newPattern) ? latest.newPattern : (cfg.MAU_LICH_MAC_DINH || '3 ca 5 kíp');
+}
+
+function _validateTransferMocConfigClient_(tasks, commonDate) {
+  const missing = [];
+  (tasks || []).forEach(t => {
+    const u = getUserInfo(t.name);
+    if (!u) return;
+    const d = (t.date || commonDate || localTodayYmd()).toString();
+    const kip = (t.newKip || _getCurrentKipOfUser(t.name, u.kip, d) || '').toString().trim();
+    const pattern = (t.newPattern || _getCurrentPatternOfUser(t.name, d) || '').toString().trim();
+    const kipLower = kip.toLowerCase();
+    if (kipLower === 'hc' || kipLower.includes('hành chính')) return;
+    if (!pattern || getMocKipTheoMau(pattern, kip) === null) {
+      const soKip = kip.replace(/\D/g, '');
+      missing.push({ name:t.name, kip, pattern, key:soKip ? ('MOC_KIP_' + soKip) : 'MOC_KIP_?' });
+    }
+  });
+  if (!missing.length) return null;
+  const show = missing.slice(0, 5).map(x => `• ${x.name}: ${x.pattern || '(chưa có mẫu)'} + ${x.kip || '(chưa có kíp)'} → ${x.key}`).join('\n');
+  return `⚠️ Chưa cấu hình mốc lịch theo Mẫu + Kíp trong sheet settings:\n${show}${missing.length > 5 ? `\n… và ${missing.length - 5} người khác` : ''}\n\nHãy điền configValue cho dòng MOC_KIP_x có cột boPhan = tên mẫu lịch. Sau đó tải lại ứng dụng.`;
+}
+
 // DIAG14.1 — giữ đầy đủ lựa chọn điều chuyển nhiều kíp khi tìm kiếm/render lại danh sách.
-// Trước đây chỉ nhớ trạng thái checkbox; kíp/ngày/mẫu/mốc bị render lại về giá trị mặc định.
+// Trước đây chỉ nhớ trạng thái checkbox; kíp/ngày/mẫu bị render lại về giá trị mặc định.
 function _getTCTransferState_() {
   if (!window._tcTransferState || typeof window._tcTransferState !== 'object') window._tcTransferState = {};
   return window._tcTransferState;
@@ -8670,18 +8713,16 @@ function _captureTCVisibleState_() {
     const wrap = document.getElementById(`tc-kip-wrap-${safeId}`);
     const dateSel = wrap ? wrap.querySelector('.tc-user-date') : null;
     const kipSel = wrap ? wrap.querySelector('.tc-user-newkip') : null;
-    const vitriToggle = wrap ? wrap.querySelector('.tc-vitri-toggle') : null;
-    const vitriWrap = document.getElementById(`tc-vitri-wrap-${safeId}`);
-    const patternSel = vitriWrap ? vitriWrap.querySelector('.tc-user-pattern') : null;
-    const vitriSel = vitriWrap ? vitriWrap.querySelector('.tc-user-vitri') : null;
+    const patternToggle = wrap ? wrap.querySelector('.tc-pattern-toggle') : null;
+    const patternWrap = document.getElementById(`tc-pattern-wrap-${safeId}`);
+    const patternSel = patternWrap ? patternWrap.querySelector('.tc-user-pattern') : null;
 
     state[name] = {
       checked: !!cb.checked,
       date: dateSel ? dateSel.value : (prev.date || ''),
       newKip: kipSel ? kipSel.value : (Object.prototype.hasOwnProperty.call(prev, 'newKip') ? prev.newKip : ''),
-      changePattern: !!(vitriToggle && vitriToggle.checked),
-      newPattern: patternSel ? patternSel.value : (prev.newPattern || ''),
-      newViTriMoc: vitriSel ? (vitriSel.value || '0') : (prev.newViTriMoc || '0')
+      changePattern: !!(patternToggle && patternToggle.checked),
+      newPattern: patternSel ? patternSel.value : (prev.newPattern || '')
     };
   });
 }
@@ -8697,7 +8738,7 @@ function _clearTCTransferSelection_() {
 function filterTCUsers(skipCapture = false) {
   // Luôn chụp lại TOÀN BỘ giá trị đang hiển thị trước khi render lại.
   // Vì ô tìm kiếm gọi filterTCUsers() theo từng ký tự, đây là điểm quan trọng để
-  // kíp/ngày/mẫu/mốc của người vừa chọn không bị trả về kíp hiện tại.
+  // kíp/ngày/mẫu của người vừa chọn không bị trả về kíp hiện tại.
   // Riêng sau khi reset thành công thì bỏ qua capture để checkbox cũ không sống lại.
   if (!skipCapture) _captureTCVisibleState_();
   const tcState = _getTCTransferState_();
@@ -8756,13 +8797,12 @@ function filterTCUsers(skipCapture = false) {
         <span style="color:#94a3b8; font-size:12px; margin-left:5px; white-space:nowrap;">${escapeHTML(currentKip)}</span>
       </label>`;
     } else {
-      // Chế độ nhiều kíp: mỗi người có ngày/kíp/mẫu/mốc riêng và đều lấy lại từ state đã lưu.
+      // Chế độ nhiều kíp: mỗi người có ngày/kíp/mẫu riêng và đều lấy lại từ state đã lưu.
       const rowDate = (saved && saved.date) ? saved.date : selectedDate;
       const hasSavedKip = !!(saved && Object.prototype.hasOwnProperty.call(saved, 'newKip'));
       const rowKip = hasSavedKip ? (saved.newKip || '') : currentKip;
       const rowChangePattern = !!(saved && saved.changePattern);
       const rowPattern = saved ? (saved.newPattern || '') : '';
-      const rowVitri = saved ? (saved.newViTriMoc || '0') : '0';
       const kipOptions = kips.map(k =>
         `<option value="${escapeAttr(k)}" ${k === rowKip ? 'selected' : ''}>${escapeHTML(k)}</option>`
       ).join('');
@@ -8786,24 +8826,20 @@ function filterTCUsers(skipCapture = false) {
             <option value="" ${rowKip === '' ? 'selected' : ''}>-- Chọn kíp --</option>
             ${kipOptions}
           </select>
-          <label title="Chỉ cần nhập nếu đổi sang lịch ca hệ mới (offset mẫu)" style="display:flex; align-items:center; gap:4px; font-size:11px; color:#64748b; cursor:pointer; white-space:nowrap; margin-left:4px;">
-            <input type="checkbox" class="tc-vitri-toggle" ${rowChangePattern ? 'checked' : ''}
-              onchange="var w=document.getElementById('tc-vitri-wrap-${safeId}'); w.style.display=this.checked?'flex':'none';"
+          <label title="Tích khi người này cần chuyển sang một mẫu lịch khác" style="display:flex; align-items:center; gap:4px; font-size:11px; color:#64748b; cursor:pointer; white-space:nowrap; margin-left:4px;">
+            <input type="checkbox" class="tc-pattern-toggle" ${rowChangePattern ? 'checked' : ''}
+              onchange="var w=document.getElementById('tc-pattern-wrap-${safeId}'); w.style.display=this.checked?'flex':'none';"
               style="width:14px; height:14px; appearance:auto; -webkit-appearance:auto; cursor:pointer;">
-            Đổi mẫu/mốc?
+            Đổi mẫu?
           </label>
-          <div id="tc-vitri-wrap-${safeId}" style="display:${rowChangePattern ? 'flex' : 'none'}; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px; width:100%; padding:6px 8px; background:#f8fafc; border:1px dashed #cbd5e1; border-radius:6px;">
+          <div id="tc-pattern-wrap-${safeId}" style="display:${rowChangePattern ? 'flex' : 'none'}; align-items:center; gap:6px; flex-wrap:wrap; margin-top:4px; width:100%; padding:6px 8px; background:#f8fafc; border:1px dashed #cbd5e1; border-radius:6px;">
             <span style="font-size:12px; color:#64748b; white-space:nowrap;">Mẫu lịch:</span>
             <select class="tc-user-pattern" data-user="${escapeAttr(u.name)}"
-              style="padding:4px 8px; border:1.5px solid #94a3b8; border-radius:6px; font-size:13px; flex:1; min-width:120px;"
-              onchange="document.getElementById('tc-vitri-wrap-${safeId}').querySelector('.tc-user-vitri').value=0;">
+              style="padding:4px 8px; border:1.5px solid #94a3b8; border-radius:6px; font-size:13px; flex:1; min-width:120px;">
               <option value="" ${rowPattern === '' ? 'selected' : ''}>-- Giữ nguyên mẫu --</option>
               ${Object.keys(MAU_LICH||{}).map(p=>`<option value="${escapeAttr(p)}" ${p === rowPattern ? 'selected' : ''}>${escapeHTML(p)}</option>`).join('')}
             </select>
-            <span style="font-size:12px; color:#64748b; white-space:nowrap;">Vị trí mốc:</span>
-            <input type="number" class="tc-user-vitri" data-user="${escapeAttr(u.name)}"
-              value="${escapeAttr(rowVitri)}" min="0"
-              style="width:60px; padding:4px 6px; border:1.5px solid #94a3b8; border-radius:6px; font-size:13px; text-align:center;">
+            <span style="font-size:11px; color:#64748b;">Mốc tự lấy theo mẫu lịch + kíp trong settings.</span>
           </div>
         </div>
       </div>`;
@@ -8853,18 +8889,17 @@ async function submitTransfer() {
 
   const approvedBy = CU ? CU.name : "";
 
-  // Tập hợp danh sách { name, newKip, newPattern, newViTriMoc } cần gửi
+  // Tập hợp danh sách { name, newKip, newPattern }; mốc tự tra theo settings.
   let tasks = [];
 
   if (!isMulti) {
-    // ── Chế độ thường: kíp/mẫu/mốc dùng chung ──
+    // ── Chế độ thường: kíp/mẫu dùng chung; mốc lấy tự động theo settings ──
     const newKip      = document.getElementById('tc-newkip').value;
     const newPattern  = document.getElementById('tc-newpattern').value;
-    const newViTriMoc = document.getElementById('tc-newvitri').value;
     const state = _getTCTransferState_();
     const users = Object.keys(state).filter(name => state[name] && state[name].checked);
     if (users.length === 0) { showLocalAlert('transfer-msg', 'Vui lòng chọn ít nhất 1 nhân viên!', 'ae'); return; }
-    tasks = users.map(name => ({ name, newKip, newPattern, newViTriMoc }));
+    tasks = users.map(name => ({ name, newKip, newPattern }));
   } else {
     // ── Chế độ nhiều kíp: lấy từ state bền vững thay vì chỉ đọc các dropdown đang hiện ──
     const state = _getTCTransferState_();
@@ -8875,7 +8910,6 @@ async function submitTransfer() {
       const s = state[name] || {};
       const newKip = (s.newKip || '').toString().trim();
       const userDate = (s.date || date || '').toString().trim();
-      const userVitri = s.changePattern ? ((s.newViTriMoc || '0').toString()) : '0';
       const userPattern = s.changePattern ? ((s.newPattern || '').toString()) : '';
       if (!newKip) {
         showLocalAlert('transfer-msg', `⚠️ Chưa chọn kíp mới cho: ${name}`, 'ae');
@@ -8885,8 +8919,18 @@ async function submitTransfer() {
         showLocalAlert('transfer-msg', `⚠️ Chưa chọn ngày áp dụng cho: ${name}`, 'ae');
         return;
       }
-      tasks.push({ name, date: userDate, newKip, newPattern: userPattern, newViTriMoc: userVitri });
+      tasks.push({ name, date: userDate, newKip, newPattern: userPattern });
     }
+  }
+
+  // R2.4.5: lệnh mới bắt buộc có mốc theo đúng Mẫu lịch + Kíp trong settings; Transfers không còn cột mốc.
+  // Không còn cho phép người ban hành nhập mốc tay trong form điều chuyển.
+  const mocConfigError = _validateTransferMocConfigClient_(tasks, date);
+  if (mocConfigError) {
+    const _tm = document.getElementById('transfer-msg');
+    if (_tm) _tm.style.whiteSpace = 'pre-line';
+    showLocalAlert('transfer-msg', mocConfigError, 'ae');
+    return;
   }
 
   // V12.6: Chặn batch quá lớn ngay trên giao diện — server vẫn kiểm tra lại lần nữa.
@@ -8914,8 +8958,7 @@ async function submitTransfer() {
       name: t.name,
       date: t.date || date,
       newKip: t.newKip,
-      newPattern: t.newPattern || '',
-      newViTriMoc: t.newViTriMoc || '0'
+      newPattern: t.newPattern || ''
     }));
     const res = await api({
       action: "addTransferBatch",
