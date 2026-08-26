@@ -1075,9 +1075,9 @@ textarea{resize:none;height:80px}
 // =============================================
 // KHAI BÁO BIẾN TOÀN CỤC
 // =============================================
-// R2.4.10 CF PROXY TAB QUEUE — giữ nguyên backend SAFE; trình duyệt chỉ gọi API cùng domain Cloudflare.
+// R2.4.13 HYBRID TRANSPORT — Apps Script trực tiếp là đường chính; Cloudflare /api là đường dự phòng.
+// Mục tiêu: tránh Google trả HTML thường xuyên cho IP Cloudflare nhưng vẫn tự cứu khi browser gọi trực tiếp lỗi.
 const API_PROXY_URL = "/api";
-// Chỉ giữ URL Apps Script làm thông tin tham chiếu; browser KHÔNG gọi trực tiếp URL này nữa.
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw7fHZBn_Bzfma2td2PoP72JhrfasO1h_BYn_mF5o87Vx7Af85DgmCh3Tivaypc-L9yxA/exec";
 let APP_CONFIG = { tenCongTy: "Công ty", lechMax: 10 };
 let NV_LIST=[]; let CA = {}; let CU=null;
@@ -2048,10 +2048,151 @@ function isBusyError(msg) {
   return s.includes('Hệ thống đang bận') || s.includes('Hệ thống bận');
 }
 
+// R2.4.13: Hai đường truyền tuần tự, KHÔNG gọi song song để tránh tăng tải Apps Script.
+// Đường 1: browser -> Apps Script trực tiếp. Nếu lỗi vận chuyển tạm thời mới dùng
+// Đường 2: browser -> Cloudflare /api -> Apps Script. Lỗi nghiệp vụ JSON không fallback.
+const _HYBRID_SAFE_READ_ACTIONS = new Set([
+  'getPublicBranding','login','checkSession','getBootstrap','getUsers','getCoreBootstrap',
+  'getSystemDiag','getAuditLogs','getSystemHealth','getAnnualLeaveTriggerStatus',
+  'getUserPrivilegeData','getCompanyScheduleData','getStartupBundle',
+  'getRegistrationGuardBundle','getRefreshBundle','getTabBundle','getAll','getTransfers',
+  'getLeaves','getLeaveBalance','getAllLeaveBalances','getLeaveHistory',
+  'telegramShiftStatus','telegramLeaveStatus'
+]);
+const _HYBRID_IDEMPOTENT_WRITE_ACTIONS = new Set([
+  'add','updateStatus','addDispatchBatch','addTransfer','addTransferBatch','submitLeave',
+  'cancelLeave','approveLeaveWeb','rejectLeaveWeb','resetPin'
+]);
+const _HYBRID_RETRYABLE_HTTP = new Set([404,408,425,429,500,502,503,504]);
+
+function _transportCanFallback_(p) {
+  const action = String((p && p.action) || '');
+  if (_HYBRID_SAFE_READ_ACTIONS.has(action)) return true;
+  return _HYBRID_IDEMPOTENT_WRITE_ACTIONS.has(action) && !!(p && p.clientRequestId);
+}
+
+function _looksLikeHtmlPayload_(text, contentType) {
+  const head = String(text || '').trim().slice(0, 1200).toLowerCase();
+  const ct = String(contentType || '').toLowerCase();
+  return ct.includes('text/html') || head.startsWith('<!doctype html') || head.startsWith('<html') ||
+    head.includes('<head') || head.includes("window['ppconfig']") || head.includes('window["ppconfig"]');
+}
+
+function _makeTransportError_(code, message, meta) {
+  const err = new Error(message || code || 'Lỗi kết nối');
+  err.transportCode = code || 'TRANSPORT_ERROR';
+  if (meta) Object.assign(err, meta);
+  return err;
+}
+
+function _transportErrorShort_(err) {
+  const code = err && err.transportCode ? String(err.transportCode) : '';
+  const msg = (err && err.message) ? String(err.message) : String(err || '');
+  if (code === 'DIRECT_HTML' || code === 'PROXY_HTML' || /HTML/i.test(msg)) return 'Google trả HTML';
+  if (code === 'DIRECT_TIMEOUT' || code === 'PROXY_TIMEOUT' || /quá thời gian|TIMEOUT/i.test(msg)) return 'quá thời gian';
+  const m = msg.match(/HTTP\s*(\d{3})/i);
+  if (m) return 'HTTP ' + m[1];
+  if (/Failed to fetch|NetworkError|Load failed|FETCH_ERROR/i.test(msg)) return 'không kết nối được';
+  return msg.replace(/\s+/g,' ').slice(0,120) || 'lỗi kết nối';
+}
+
+function _isFallbackTransportError_(err) {
+  const code = err && err.transportCode ? String(err.transportCode) : '';
+  if (/^(DIRECT|PROXY)_(FETCH|TIMEOUT|HTML|NON_JSON)$/.test(code)) return true;
+  if (/^(DIRECT|PROXY)_HTTP_(404|408|425|429|500|502|503|504)$/.test(code)) return true;
+  const msg = (err && err.message) ? err.message : String(err || '');
+  return /Failed to fetch|NetworkError|Load failed|quá thời gian|HTML|không phải JSON|HTTP\s*(404|408|425|429|500|502|503|504)/i.test(msg);
+}
+
+function _fetchFormJson_(url, p, opts = {}) {
+  const label = opts.label || 'API';
+  const prefix = opts.prefix || 'DIRECT';
+  const timeoutMs = Number(opts.timeoutMs || 38000);
+  const action = String((p && p.action) || 'API');
+  const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try { if (controller) controller.abort(); } catch (_) {}
+  }, timeoutMs);
+
+  return fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Accept': 'application/json,text/plain,*/*',
+      'X-Client-Action': action
+    },
+    body: new URLSearchParams(p).toString(),
+    cache: 'no-store',
+    redirect: 'follow',
+    signal: controller ? controller.signal : undefined
+  }).then(async r => {
+    const text = await r.text();
+    const ct = r.headers.get('Content-Type') || '';
+    if (!r.ok) {
+      let detail = '';
+      try {
+        const obj = JSON.parse(text || '{}');
+        detail = obj && (obj.error || obj.message || obj.detail) ? String(obj.error || obj.message || obj.detail) : '';
+      } catch (_) {}
+      throw _makeTransportError_(prefix + '_HTTP_' + r.status,
+        label + ' HTTP ' + r.status + ' — ' + action + (detail ? ' — ' + detail : ''),
+        { httpStatus: r.status, action });
+    }
+    if (_looksLikeHtmlPayload_(text, ct)) {
+      throw _makeTransportError_(prefix + '_HTML', label + ' nhận HTML thay vì JSON — ' + action, { action });
+    }
+    try {
+      return JSON.parse(text);
+    } catch (_) {
+      throw _makeTransportError_(prefix + '_NON_JSON', label + ' nhận phản hồi không phải JSON — ' + action, { action });
+    }
+  }).catch(err => {
+    if (err && err.transportCode) throw err;
+    if (timedOut || (err && err.name === 'AbortError')) {
+      throw _makeTransportError_(prefix + '_TIMEOUT', label + ' quá thời gian ' + Math.round(timeoutMs/1000) + 's — ' + action, { action });
+    }
+    throw _makeTransportError_(prefix + '_FETCH', label + ' không kết nối được — ' + action + ' — ' + ((err && err.message) ? err.message : String(err || '')), { action });
+  }).finally(() => clearTimeout(timer));
+}
+
+async function _apiExternalHybridOnce_(p) {
+  const action = String((p && p.action) || 'API');
+  const allowFallback = _transportCanFallback_(p);
+  const directTimeout = allowFallback ? 38000 : 80000;
+  let directErr = null;
+
+  try {
+    // Đường chính: cách cũ vốn hoạt động được trên browser, tránh IP Cloudflare bị Google trả HTML.
+    return await _fetchFormJson_(SCRIPT_URL, p, {
+      label: 'Apps Script trực tiếp', prefix: 'DIRECT', timeoutMs: directTimeout
+    });
+  } catch (err) {
+    directErr = err;
+    if (!allowFallback || !_isFallbackTransportError_(err)) throw err;
+    console.warn('[HYBRID] Đường trực tiếp lỗi, chuyển /api:', action, _transportErrorShort_(err));
+  }
+
+  try {
+    // Đường dự phòng chỉ chạy khi đường trực tiếp thất bại; không tạo hai request song song.
+    return await _fetchFormJson_(API_PROXY_URL, p, {
+      label: 'Cloudflare dự phòng', prefix: 'PROXY', timeoutMs: 42000
+    });
+  } catch (proxyErr) {
+    const e = _makeTransportError_('HYBRID_BOTH_FAILED',
+      'Cả 2 đường kết nối đều chưa ổn định — trực tiếp: ' + _transportErrorShort_(directErr) +
+      '; Cloudflare: ' + _transportErrorShort_(proxyErr) + ' — ' + action,
+      { action, directError: directErr, proxyError: proxyErr });
+    throw e;
+  }
+}
+
 function apiOnce(p) {
   return new Promise((resolve, reject) => {
+    // Lưới an toàn tổng; mỗi transport có timeout riêng và tổng luôn dưới 90s khi có fallback.
     const timeout = setTimeout(() => {
-      reject(new Error("Yêu cầu quá thời gian (90s). Vui lòng kiểm tra mạng hoặc Apps Script!"));
+      reject(_makeTransportError_('HYBRID_TIMEOUT', 'Yêu cầu quá thời gian (90s) — ' + (((p && p.action) || 'API'))));
     }, 90000);
 
     if (typeof google !== 'undefined' && google.script && google.script.run) {
@@ -2059,39 +2200,12 @@ function apiOnce(p) {
         .withSuccessHandler(res => { clearTimeout(timeout); resolve(res); })
         .withFailureHandler(err => { clearTimeout(timeout); reject(err); })
         .apiRun(p);
-    } else {
-      // R2.4.9: gọi cùng domain Cloudflare Pages. /api sẽ chuyển tiếp server-side
-      // tới Apps Script và tự theo redirect Google; browser không còn gọi cross-origin trực tiếp.
-      fetch(API_PROXY_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'X-Client-Action': ((p && p.action) || 'API')
-        },
-        body: new URLSearchParams(p).toString(),
-        cache: 'no-store'
-      })
-        .then(async r => {
-          const action = ((p && p.action) || 'API');
-          const text = await r.text();
-          if (!r.ok) {
-            let detail = '';
-            try {
-              const obj = JSON.parse(text || '{}');
-              detail = (obj && (obj.error || obj.message || obj.detail)) ? String(obj.error || obj.message || obj.detail) : '';
-            } catch (_) {}
-            throw new Error('Mã lỗi HTTP: ' + r.status + ' — ' + action + (detail ? ' — ' + detail : ''));
-          }
-          try {
-            return JSON.parse(text);
-          } catch (_) {
-            const sample = (text || '').replace(/\s+/g, ' ').slice(0, 160);
-            throw new Error('Phản hồi API không phải JSON — ' + action + (sample ? ' — ' + sample : ''));
-          }
-        })
-        .then(res => { clearTimeout(timeout); resolve(res); })
-        .catch(err => { clearTimeout(timeout); reject(err); });
+      return;
     }
+
+    _apiExternalHybridOnce_(p)
+      .then(res => { clearTimeout(timeout); resolve(res); })
+      .catch(err => { clearTimeout(timeout); reject(err); });
   });
 }
 
@@ -3549,26 +3663,15 @@ function _loginTransportCause_(err) {
 }
 
 async function _loginApiSafe_(name, pin, statusEl) {
-  let lastErr = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      return await api({action:'login', name:name, pin:pin});
-    } catch (err) {
-      lastErr = err;
-      if (attempt === 0 && _isTransientLoginTransportError_(err)) {
-        if (statusEl) {
-          statusEl.style.color = '#1a56a0';
-          statusEl.textContent = 'Kết nối chưa ổn định — ' + _loginTransportCause_(err) + ' — đang thử lại...';
-          statusEl.title = (err && err.message) ? err.message : String(err || '');
-        }
-        console.warn('[LOGIN TRANSPORT RETRY]', (err && err.message) ? err.message : err);
-        await sleep(1200);
-        continue;
-      }
-      throw err;
+  try {
+    // R2.4.13: api() tự thử 2 ĐƯỜNG khác nhau. Không lặp lại cả chu kỳ lần 2 để tránh 4 request/login.
+    return await api({action:'login', name:name, pin:pin});
+  } catch (err) {
+    if (statusEl) {
+      statusEl.title = (err && err.message) ? err.message : String(err || '');
     }
+    throw err;
   }
-  throw lastErr || new Error('Không nhận được phản hồi đăng nhập.');
 }
 
 async function doLogin(){
@@ -3643,9 +3746,9 @@ async function doLogin(){
     const msg = (ex && ex.message) ? ex.message : String(ex || 'Không rõ lỗi');
     endLoginPerfStep('login', _diagLoginT0, msg);
     e.style.color='#dc2626';
-    // R2.4.8 SAFE: không che mất nguyên nhân thật bằng câu “Lỗi kết nối mạng”.
-    if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
-      e.textContent='Không kết nối được Apps Script — ' + msg;
+    // R2.4.13: nếu cả đường trực tiếp và Cloudflare đều hỏng mới báo lỗi kết nối cho người dùng.
+    if (/HYBRID|Cả 2 đường|Failed to fetch|NetworkError|Load failed|không kết nối được|quá thời gian/i.test(msg)) {
+      e.textContent='Kết nối chưa ổn định — ' + msg;
     } else {
       e.textContent='Không đăng nhập được — ' + msg;
     }
