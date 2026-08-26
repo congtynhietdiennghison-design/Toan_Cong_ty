@@ -1,5 +1,5 @@
 // Cloudflare Pages Function: /api
-// R2.4.9 CF PROXY
+// R2.4.10 CF PROXY TAB QUEUE
 // Mục tiêu: browser chỉ gọi cùng domain Cloudflare; Function gọi Apps Script server-side.
 // Upstream cố định để endpoint này KHÔNG trở thành open proxy.
 
@@ -13,7 +13,7 @@ function jsonResponse(obj, status = 200, extraHeaders = {}) {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store, no-cache, must-revalidate",
       "Pragma": "no-cache",
-      "X-ChamCong-Proxy": "cloudflare-pages-r2.4.9",
+      "X-ChamCong-Proxy": "cloudflare-pages-r2.4.10",
       ...extraHeaders,
     },
   });
@@ -34,7 +34,7 @@ export function onRequestGet() {
   return jsonResponse({
     ok: true,
     proxy: "cloudflare-pages",
-    version: "R2.4.9-CF-PROXY",
+    version: "R2.4.10-CF-PROXY-TAB-QUEUE",
     message: "Cloudflare API proxy is ready",
   });
 }
@@ -77,7 +77,7 @@ export async function onRequestPost(context) {
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json,text/plain,*/*",
-        "User-Agent": "ChamCongNghiSon-CloudflareProxy/2.4.9",
+        "User-Agent": "ChamCongNghiSon-CloudflareProxy/2.4.10",
       },
       body,
       redirect: "follow",
@@ -93,7 +93,7 @@ export async function onRequestPost(context) {
         "Content-Type": upstream.headers.get("Content-Type") || "application/json; charset=utf-8",
         "Cache-Control": "no-store, no-cache, must-revalidate",
         "Pragma": "no-cache",
-        "X-ChamCong-Proxy": "cloudflare-pages-r2.4.9",
+        "X-ChamCong-Proxy": "cloudflare-pages-r2.4.10",
         "X-ChamCong-Action": String(action).slice(0, 80),
         "X-ChamCong-Upstream-Status": String(upstream.status),
         "X-ChamCong-Proxy-Ms": String(elapsed),
