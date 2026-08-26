@@ -22,6 +22,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 .tab.active{background:#1a56a0;color:#fff;border-color:#1a56a0;}
 /* PHẢN HỒI CHẠM TAB: hiện ngay vòng xoay trong lúc đang chờ dữ liệu/render. */
 .tab.tab-loading{cursor:wait;pointer-events:none;box-shadow:0 0 0 2px rgba(37,99,235,.12) inset;}
+.tab.tab-load-error{cursor:pointer;box-shadow:0 0 0 2px rgba(220,38,38,.12) inset;color:#b91c1c;}
 .tab-loading-spinner{display:inline-block;width:14px;height:14px;margin-right:7px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;vertical-align:-2px;animation:tabLoadingSpin .65s linear infinite;}
 @keyframes tabLoadingSpin{to{transform:rotate(360deg)}}
 .section{display:none}.section.active{display:block}
@@ -1074,7 +1075,7 @@ textarea{resize:none;height:80px}
 // =============================================
 // KHAI BÁO BIẾN TOÀN CỤC
 // =============================================
-// R2.4.9 CF PROXY — giữ nguyên backend SAFE; trình duyệt chỉ gọi API cùng domain Cloudflare.
+// R2.4.10 CF PROXY TAB QUEUE — giữ nguyên backend SAFE; trình duyệt chỉ gọi API cùng domain Cloudflare.
 const API_PROXY_URL = "/api";
 // Chỉ giữ URL Apps Script làm thông tin tham chiếu; browser KHÔNG gọi trực tiếp URL này nữa.
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw7fHZBn_Bzfma2td2PoP72JhrfasO1h_BYn_mF5o87Vx7Af85DgmCh3Tivaypc-L9yxA/exec";
@@ -1450,47 +1451,39 @@ function resetDataLoadedFlags() {
   clearSharedReadCache();
 }
 
-async function _ensureDataForTabNow(tab, navSeq) {
+async function _ensureDataForTabNow(tab) {
   const keys = TAB_DATA_NEEDS[tab];
   if (!keys || keys.length === 0) return true;
-  if (navSeq && navSeq !== _tabSwitchSeq) return false; // tab đã bị người dùng bỏ qua trước khi tới lượt
 
   if (tab === 'bang-di-ca' && isCompanyPermissionScope()) {
-    if (navSeq && navSeq !== _tabSwitchSeq) return false;
     await ensureCompanyScheduleData(false);
     return true;
   }
 
   // Nếu GUARD sau đăng nhập đang đọc Requests/Leaves thì chờ nó xong trước.
-  // Tránh tab vừa bấm tạo thêm một execution đọc đúng cùng dữ liệu.
+  // Các tab được XẾP HÀNG chứ không hủy nhau: lượt sau sẽ dùng lại dữ liệu lượt trước đã tải.
   if (_registrationGuardPromise) {
     try { await _registrationGuardPromise; } catch (_) {}
-    if (navSeq && navSeq !== _tabSwitchSeq) return false;
   }
 
   const needsPrimary = keys.includes('requests') || keys.includes('transfers');
   const needsSecondary = keys.includes('leaves') || keys.includes('balances');
   if (needsPrimary && _tabPrefetchPromise) {
     try { await _tabPrefetchPromise; } catch (_) {}
-    if (navSeq && navSeq !== _tabSwitchSeq) return false;
   }
   if (needsSecondary && _secondaryPrefetchPromise) {
     try { await _secondaryPrefetchPromise; } catch (_) {}
-    if (navSeq && navSeq !== _tabSwitchSeq) return false;
   }
 
-  // QUAN TRỌNG: tính dữ liệu còn thiếu SAU KHI các lượt trước đã xong.
-  // Đây là điểm ngăn hai tab cùng quyết định requests=false/true từ một trạng thái cũ.
+  // Tính phần còn thiếu NGAY KHI TỚI LƯỢT trong hàng đợi.
+  // Nhờ vậy dữ liệu đã được tab trước tải xong sẽ không bị gọi lại.
   const opts = {};
   if (keys.includes('requests') && !_dataLoaded.requests) opts.requests = true;
   if (keys.includes('leaves') && !_dataLoaded.leaves) opts.leaves = true;
   if (keys.includes('transfers') && !_dataLoaded.transfers) opts.transfers = true;
   if (keys.includes('balances') && !_dataLoaded.balances) opts.balances = true;
   if (!opts.requests && !opts.leaves && !opts.transfers && !opts.balances) return true;
-  if (navSeq && navSeq !== _tabSwitchSeq) return false;
 
-  // R2.4.7: không fallback ngay sang getAll/getLeaves khi lỗi HTTP/mạng, vì như vậy
-  // một request lỗi lại sinh thêm nhiều request nặng khác. getTabBundle là API chuẩn của bản này.
   const bundle = await apiSharedRead({
     action: 'getTabBundle',
     requests: !!opts.requests,
@@ -1506,11 +1499,18 @@ async function _ensureDataForTabNow(tab, navSeq) {
   return true;
 }
 
-async function ensureDataForTab(tab, navSeq = 0) {
+async function ensureDataForTab(tab) {
+  const keys = TAB_DATA_NEEDS[tab] || [];
+  // Tab không cần dữ liệu server thì mở ngay, không phải đứng sau hàng đợi.
+  if (keys.length === 0) return true;
+  // Nếu các nhóm dữ liệu tab cần đã có đủ thì dùng lại ngay trong RAM.
+  if (!(tab === 'bang-di-ca' && isCompanyPermissionScope()) &&
+      keys.every(k => !Object.prototype.hasOwnProperty.call(_dataLoaded, k) || _dataLoaded[k])) return true;
+
   const sessionKey = CU ? `${CU.name || ''}|${CU.token || ''}` : '';
-  return _enqueueTabEnsure_(async () => {
+  return _enqueueTabEnsure_(tab, async () => {
     if (!CU || `${CU.name || ''}|${CU.token || ''}` !== sessionKey) return false;
-    const ok = await _ensureDataForTabNow(tab, navSeq);
+    const ok = await _ensureDataForTabNow(tab);
     if (!CU || `${CU.name || ''}|${CU.token || ''}` !== sessionKey) return false;
     return ok;
   });
@@ -2199,19 +2199,36 @@ const _sharedReadCache = new Map();
 let _loadRequestsPromise = null;
 let _loadLeavesPromise = null;
 let _loadTransfersPromise = null;
-// R2.4.7: các tab có thể bị bấm liên tiếp rất nhanh. Xếp hàng phần đọc dữ liệu nặng
-// để không tạo nhiều getTabBundle song song trên cùng một phiên.
+// R2.4.10: tab bấm liên tiếp được XẾP HÀNG tải tuần tự, không hủy tab bấm trước.
+// Mỗi tab chỉ có tối đa 1 lượt pending; bấm lại cùng tab khi đang chờ sẽ dùng chung Promise.
 let _tabEnsureTail = Promise.resolve();
 let _tabEnsureActive = 0;
 let _tabSwitchSeq = 0;
+const _tabEnsurePending = new Map();
 
-function _enqueueTabEnsure_(fn) {
+function resetTabEnsureQueue_() {
+  // Promise mạng đang chạy không thể hủy, nhưng phiên mới không phải chờ hàng đợi của phiên cũ.
+  _tabEnsureTail = Promise.resolve();
+  _tabEnsureActive = 0;
+  _tabEnsurePending.clear();
+}
+
+function _enqueueTabEnsure_(tab, fn) {
+  const key = (tab || '').toString();
+  const existing = _tabEnsurePending.get(key);
+  if (existing) return existing;
+
   const run = _tabEnsureTail.catch(() => {}).then(async () => {
     _tabEnsureActive++;
     try { return await fn(); }
     finally { _tabEnsureActive = Math.max(0, _tabEnsureActive - 1); }
   });
+
+  _tabEnsurePending.set(key, run);
   _tabEnsureTail = run.catch(() => {});
+  run.finally(() => {
+    if (_tabEnsurePending.get(key) === run) _tabEnsurePending.delete(key);
+  }).catch(() => {});
   return run;
 }
 
@@ -3560,6 +3577,7 @@ async function doLogin(){
     clearHardSessionUiLock_();
     _lastSessionCheckAt = Date.now();
     CU = r.user;
+    resetTabEnsureQueue_();
     _myLeaveBalanceCache = null;
     _myLeaveBalanceSource = '';
     // DIAG6: backend đã có sẵn số phép của chính tài khoản trong row đăng nhập.
@@ -3641,6 +3659,7 @@ function doLogout(skipServer = false) {
   _startupUiCacheApplied = false;
   _registrationGuardReady = false;
   _registrationGuardPromise = null;
+  resetTabEnsureQueue_();
   resetEarlyBackgroundFetches();
   _lastSessionCheckAt = 0;
   _sessionCheckPromise = null;
@@ -4281,47 +4300,66 @@ async function exportSystemDiagCsv() {
   } catch(e) { showAlert('app','Không xuất được log: '+(e&&e.message?e.message:e),'ae'); }
 }
 
-function setTabLoadingState(t, loading){
+function setTabLoadingState(t, state, message){
   const btn = document.querySelector(`.tab[onclick="switchTab('${t}')"]`);
   if (!btn) return;
+  const mode = state === true ? 'loading' : (state === false ? 'done' : state);
 
-  if (loading) {
-    // Lưu nguyên HTML gốc để giữ đúng icon/tên/màu của từng tab sau khi tải xong.
+  if (mode === 'loading') {
     if (!btn.dataset.tabOriginalHtml) btn.dataset.tabOriginalHtml = btn.innerHTML;
     btn.classList.add('tab-loading');
+    btn.classList.remove('tab-load-error');
     btn.setAttribute('aria-busy', 'true');
+    btn.removeAttribute('title');
     btn.innerHTML = '<span class="tab-loading-spinner" aria-hidden="true"></span><span>Đang tải…</span>';
+  } else if (mode === 'error') {
+    btn.classList.remove('tab-loading');
+    btn.classList.add('tab-load-error');
+    btn.removeAttribute('aria-busy');
+    btn.title = message || 'Tải dữ liệu chưa thành công. Chạm lại để thử.';
+    btn.innerHTML = '<span aria-hidden="true">⚠️</span><span>Tải lỗi</span>';
   } else {
     btn.classList.remove('tab-loading');
+    btn.classList.remove('tab-load-error');
     btn.removeAttribute('aria-busy');
+    btn.removeAttribute('title');
     if (btn.dataset.tabOriginalHtml) btn.innerHTML = btn.dataset.tabOriginalHtml;
   }
 }
 
 function switchTab(t, showLoading = true){
-  // R2.4.7: mỗi lần bấm tab tăng sequence. Nếu người dùng bấm tiếp tab khác trong lúc
-  // tab cũ còn chờ server, tab cũ không được phép render đè trở lại sau khi hoàn tất.
+  // R2.4.10: mỗi lần người dùng bấm tab vẫn ghi nhận tab MỚI NHẤT để quyết định tab nào
+  // được hiển thị, nhưng TẤT CẢ các tab đã bấm đều giữ lượt tải trong hàng đợi.
   const navSeq = showLoading ? ++_tabSwitchSeq : _tabSwitchSeq;
-  if (showLoading) setTabLoadingState(t, true);
+  if (showLoading) setTabLoadingState(t, 'loading');
 
   const waitCore = _coreBootstrapReady ? Promise.resolve(true) : (_coreBootstrapPromise || startInitialFullBundle({}));
+  let completed = false;
   return waitCore.then(ok => {
-    if (!ok || navSeq !== _tabSwitchSeq) return false;
-    return ensureDataForTab(t, navSeq).then(dataOk => {
-      if (!dataOk || navSeq !== _tabSwitchSeq) return false;
-      switchTabRender(t);
+    if (!ok) throw new Error(_coreBootstrapError || 'Không đồng bộ được dữ liệu khởi tạo.');
+    return ensureDataForTab(t).then(dataOk => {
+      if (!dataOk) throw new Error('Lượt tải dữ liệu đã bị gián đoạn.');
+      completed = true;
+      // Không cho tab cũ render đè tab người dùng vừa chọn sau cùng.
+      // Tuy nhiên dữ liệu tab cũ vẫn đã tải xong và được giữ trong RAM để lần sau mở tức thì.
+      if (!showLoading || navSeq === _tabSwitchSeq) switchTabRender(t);
       return true;
     });
   }).catch(err => {
-    // Chỉ tab cuối cùng còn được quyền hiện lỗi; request cũ thất bại sau khi đã chuyển tab không gây banner giả.
-    if (navSeq === _tabSwitchSeq) {
-      console.error('switchTab/ensureCore:', err);
-      const msg = (err && err.message) ? err.message : 'Không đồng bộ được dữ liệu';
+    console.error('switchTab/ensureCore:', t, err);
+    const msg = (err && err.message) ? err.message : 'Không đồng bộ được dữ liệu';
+    if (showLoading) setTabLoadingState(t, 'error', msg);
+    // Chỉ tab đang được người dùng quan tâm nhất mới bật banner toàn cục.
+    if (!showLoading || navSeq === _tabSwitchSeq) {
       setCoreBootstrapUiState('failed', msg + ' — chạm để thử lại.');
     }
     return false;
   }).finally(() => {
-    if (showLoading) requestAnimationFrame(() => requestAnimationFrame(() => setTabLoadingState(t, false)));
+    // CHỈ xóa "Đang tải" khi lượt của CHÍNH tab này đã hoàn tất thật.
+    // Nếu lỗi, giữ trạng thái ⚠️ Tải lỗi để người dùng không hiểu nhầm là đã tải xong.
+    if (showLoading && completed) {
+      requestAnimationFrame(() => requestAnimationFrame(() => setTabLoadingState(t, 'done')));
+    }
   });
 }
 
