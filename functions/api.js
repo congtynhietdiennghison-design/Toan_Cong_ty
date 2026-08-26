@@ -1,16 +1,23 @@
 // Cloudflare Pages Function: /api
-// R2.4.11 CF PROXY AUTO RETRY
-// Nền: R2.4.10 CF PROXY TAB QUEUE.
-// Chỉ vá lớp proxy: nếu Google tạm trả HTML/non-JSON hoặc HTTP hạ tầng tạm thời,
-// tự thử lại 1 lần với các action đọc/an toàn. Không đụng logic nghiệp vụ Apps Script.
+// R2.4.12 CF PROXY DIAGNOSTIC + AUTO RETRY
+// Nền: R2.4.11 CF PROXY AUTO RETRY + R2.4.10 TAB QUEUE.
+// Chỉ tăng chẩn đoán lớp Cloudflare -> Google Apps Script:
+// - phân biệt TIMEOUT / HTTP / GOOGLE_HTML / NON_JSON / FETCH_ERROR;
+// - tự retry 1 lần với action an toàn như R2.4.11;
+// - không ghi/không trả PIN, token, body request hay nội dung HTML Google;
+// - trả traceId + thông tin từng lần thử khi vẫn lỗi sau retry.
 // Upstream cố định để endpoint này KHÔNG trở thành open proxy.
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw7fHZBn_Bzfma2td2PoP72JhrfasO1h_BYn_mF5o87Vx7Af85DgmCh3Tivaypc-L9yxA/exec";
-const MAX_BODY_BYTES = 8 * 1024 * 1024; // đủ cho ảnh minh chứng đã nén/base64
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const RETRY_DELAY_MS = 450;
+// Các API đọc/login thực tế thường dưới 20s theo log vận hành. Cho 38s/lần để
+// nếu cần retry vẫn kết thúc trước timeout 90s của frontend.
+const RETRYABLE_ATTEMPT_TIMEOUT_MS = 38000;
+// Action không retry chỉ có một lượt nên cho dư thời gian hơn.
+const SINGLE_ATTEMPT_TIMEOUT_MS = 80000;
+const PROXY_VERSION = "R2.4.12-CF-PROXY-DIAGNOSTIC-AUTO-RETRY";
 
-// Chỉ tự retry những action không làm phát sinh thay đổi nghiệp vụ đáng kể.
-// login được phép retry vì đây là lỗi người dùng vừa gặp: lần đầu HTML, lần sau vào bình thường.
 const SAFE_RETRY_ACTIONS = new Set([
   "getPublicBranding",
   "login",
@@ -38,8 +45,7 @@ const SAFE_RETRY_ACTIONS = new Set([
   "telegramLeaveStatus"
 ]);
 
-// Các thao tác ghi dưới đây đã có clientRequestId + chống lặp ở Code.gs.
-// Chỉ cho retry khi request thực sự mang clientRequestId.
+// Các thao tác ghi này chỉ được retry khi request có clientRequestId.
 const IDEMPOTENT_WRITE_ACTIONS = new Set([
   "add",
   "updateStatus",
@@ -53,8 +59,21 @@ const IDEMPOTENT_WRITE_ACTIONS = new Set([
   "resetPin"
 ]);
 
-// HTTP tạm thời. 404 được giữ vì hệ thống thực tế đã ghi nhận 404 chập chờn từ Apps Script.
+// 404 được giữ vì hệ thống thực tế đã ghi nhận 404 chập chờn ở đường Apps Script.
 const RETRYABLE_HTTP = new Set([404, 408, 425, 429, 500, 502, 503, 504]);
+
+function makeTraceId() {
+  try {
+    if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+      return globalThis.crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+    }
+  } catch (_) {}
+  return (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)).slice(0, 16);
+}
+
+function safeShort(value, max = 100) {
+  return String(value == null ? "" : value).replace(/[\r\n\t]+/g, " ").slice(0, max);
+}
 
 function jsonResponse(obj, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(obj), {
@@ -63,7 +82,7 @@ function jsonResponse(obj, status = 200, extraHeaders = {}) {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store, no-cache, must-revalidate",
       "Pragma": "no-cache",
-      "X-ChamCong-Proxy": "cloudflare-pages-r2.4.11",
+      "X-ChamCong-Proxy": "cloudflare-pages-r2.4.12",
       ...extraHeaders,
     },
   });
@@ -71,7 +90,7 @@ function jsonResponse(obj, status = 200, extraHeaders = {}) {
 
 function sameOriginBrowserRequest(request) {
   const origin = request.headers.get("Origin");
-  if (!origin) return true; // cho phép công cụ kiểm tra/server-side không gửi Origin
+  if (!origin) return true;
   try {
     return origin === new URL(request.url).origin;
   } catch (_) {
@@ -107,35 +126,6 @@ function canRetryAction(action, params) {
   return IDEMPOTENT_WRITE_ACTIONS.has(action) && !!params.get("clientRequestId");
 }
 
-async function callAppsScript(body, attempt) {
-  // Tạo request MỚI, không chuyển tiếp Cookie/Authorization của người dùng sang Google.
-  // redirect:'follow' để Cloudflare tự theo redirect do Apps Script/ContentService trả về.
-  const upstream = await fetch(APPS_SCRIPT_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "Accept": "application/json,text/plain,*/*",
-      "User-Agent": "ChamCongNghiSon-CloudflareProxy/2.4.11",
-      "X-ChamCong-Proxy-Attempt": String(attempt),
-    },
-    body,
-    redirect: "follow",
-  });
-
-  const text = await upstream.text();
-  const contentType = upstream.headers.get("Content-Type") || "";
-  const parsed = tryParseJson(text);
-
-  return {
-    upstream,
-    text,
-    contentType,
-    validJson: parsed.ok,
-    parsedJson: parsed.value,
-    htmlLike: looksLikeHtml(text, contentType),
-  };
-}
-
 function upstreamHost(response) {
   try {
     return response && response.url ? new URL(response.url).hostname : "";
@@ -144,39 +134,160 @@ function upstreamHost(response) {
   }
 }
 
-export function onRequestGet() {
-  // Ping nhẹ để xác nhận Pages Function đã được Cloudflare nhận route /api.
+function contentTypeLabel(contentType) {
+  return safeShort(String(contentType || "").split(";")[0], 60);
+}
+
+function classifyResult(result) {
+  const status = Number(result.upstream && result.upstream.status || 0);
+  if (result.htmlLike) return "GOOGLE_HTML";
+  if (!result.validJson) return "NON_JSON";
+  if (status >= 400) return "HTTP_" + status;
+  return "OK";
+}
+
+function diagRecordFromResult(attempt, result, elapsedMs) {
+  return {
+    attempt,
+    kind: classifyResult(result),
+    httpStatus: Number(result.upstream && result.upstream.status || 0),
+    host: upstreamHost(result.upstream),
+    contentType: contentTypeLabel(result.contentType),
+    ms: elapsedMs,
+  };
+}
+
+function diagRecordFromError(attempt, err, elapsedMs, timeoutMs) {
+  const timeout = !!(err && (err._proxyTimeout || err.name === "AbortError"));
+  return {
+    attempt,
+    kind: timeout ? "TIMEOUT" : "FETCH_ERROR",
+    httpStatus: 0,
+    host: "",
+    contentType: "",
+    ms: elapsedMs,
+    timeoutMs: timeout ? timeoutMs : undefined,
+    detail: timeout ? "Upstream timeout" : safeShort(err && err.message ? err.message : err, 120),
+  };
+}
+
+function humanAttemptDiag(d) {
+  if (!d) return "không rõ nguyên nhân";
+  if (d.kind === "GOOGLE_HTML") {
+    return `Google trả HTML thay vì JSON${d.httpStatus ? ` (HTTP ${d.httpStatus})` : ""}`;
+  }
+  if (d.kind === "NON_JSON") {
+    return `Google trả dữ liệu không phải JSON${d.httpStatus ? ` (HTTP ${d.httpStatus})` : ""}`;
+  }
+  if (d.kind === "TIMEOUT") {
+    return `Apps Script phản hồi quá ${Math.round((d.timeoutMs || 0) / 1000)} giây`;
+  }
+  if (String(d.kind || "").startsWith("HTTP_")) {
+    return `Google/Apps Script trả HTTP ${d.httpStatus || String(d.kind).slice(5)}`;
+  }
+  if (d.kind === "FETCH_ERROR") {
+    return "Cloudflare không kết nối được tới Google Apps Script";
+  }
+  return d.kind || "không rõ nguyên nhân";
+}
+
+function diagnosticSummary(diags) {
+  return (diags || []).map(d => `L${d.attempt}: ${humanAttemptDiag(d)}`).join("; ");
+}
+
+async function callAppsScript(body, attempt, timeoutMs) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    try { controller.abort(); } catch (_) {}
+  }, timeoutMs);
+
+  try {
+    const upstream = await fetch(APPS_SCRIPT_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json,text/plain,*/*",
+        "User-Agent": "ChamCongNghiSon-CloudflareProxy/2.4.12",
+        "X-ChamCong-Proxy-Attempt": String(attempt),
+      },
+      body,
+      redirect: "follow",
+      signal: controller.signal,
+    });
+
+    const text = await upstream.text();
+    const contentType = upstream.headers.get("Content-Type") || "";
+    const parsed = tryParseJson(text);
+
+    return {
+      upstream,
+      text,
+      contentType,
+      validJson: parsed.ok,
+      parsedJson: parsed.value,
+      htmlLike: looksLikeHtml(text, contentType),
+    };
+  } catch (err) {
+    if (timedOut || (err && err.name === "AbortError")) {
+      try { err._proxyTimeout = true; } catch (_) {}
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function failureHeaders(action, traceId, attempts, totalMs, failureKind) {
+  return {
+    "X-ChamCong-Action": safeShort(action, 80),
+    "X-ChamCong-Trace-Id": traceId,
+    "X-ChamCong-Proxy-Attempts": String(attempts),
+    "X-ChamCong-Proxy-Ms": String(totalMs),
+    "X-ChamCong-Proxy-Failure": safeShort(failureKind || "UNKNOWN", 80),
+  };
+}
+
+export function onRequestGet(context) {
+  const request = context && context.request;
+  const url = request ? new URL(request.url) : null;
   return jsonResponse({
     ok: true,
     proxy: "cloudflare-pages",
-    version: "R2.4.11-CF-PROXY-AUTO-RETRY",
-    retry: "1 lan cho loi ket noi/HTML tam thoi o action an toan",
-    message: "Cloudflare API proxy is ready",
+    version: PROXY_VERSION,
+    diagnostic: true,
+    retry: "1 lan cho loi ket noi/HTML/HTTP tam thoi o action an toan",
+    timeoutPerRetryableAttemptMs: RETRYABLE_ATTEMPT_TIMEOUT_MS,
+    message: url && url.searchParams.get("diag") === "1"
+      ? "Proxy diagnostic is ready; chi tiet loi duoc tra theo tung request, khong luu PIN/token/body."
+      : "Cloudflare API proxy is ready",
   });
 }
 
 export async function onRequestPost(context) {
   const { request } = context;
   const started = Date.now();
+  const traceId = makeTraceId();
 
   if (!sameOriginBrowserRequest(request)) {
-    return jsonResponse({ error: "Origin không hợp lệ." }, 403);
+    return jsonResponse({ error: "Origin không hợp lệ.", traceId }, 403);
   }
 
   const contentType = (request.headers.get("Content-Type") || "").toLowerCase();
   if (!contentType.includes("application/x-www-form-urlencoded")) {
-    return jsonResponse({ error: "Content-Type không được hỗ trợ." }, 415);
+    return jsonResponse({ error: "Content-Type không được hỗ trợ.", traceId }, 415);
   }
 
   let body;
   try {
     body = await request.text();
-  } catch (err) {
-    return jsonResponse({ error: "Không đọc được dữ liệu gửi lên proxy." }, 400);
+  } catch (_) {
+    return jsonResponse({ error: "Không đọc được dữ liệu gửi lên proxy.", traceId }, 400);
   }
 
   if (new TextEncoder().encode(body).byteLength > MAX_BODY_BYTES) {
-    return jsonResponse({ error: "Dữ liệu gửi lên quá lớn." }, 413);
+    return jsonResponse({ error: "Dữ liệu gửi lên quá lớn.", traceId }, 413);
   }
 
   let params;
@@ -188,99 +299,102 @@ export async function onRequestPost(context) {
 
   const action = params.get("action") || request.headers.get("X-Client-Action") || "API";
   const retryAllowed = canRetryAction(action, params);
-  let attempt = 1;
-  let lastFailure = null;
+  const maxAttempts = retryAllowed ? 2 : 1;
+  const attemptTimeoutMs = retryAllowed ? RETRYABLE_ATTEMPT_TIMEOUT_MS : SINGLE_ATTEMPT_TIMEOUT_MS;
+  const diagnostics = [];
 
-  while (attempt <= (retryAllowed ? 2 : 1)) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const attemptStarted = Date.now();
     try {
-      const result = await callAppsScript(body, attempt);
-      const status = result.upstream.status;
+      const result = await callAppsScript(body, attempt, attemptTimeoutMs);
+      const status = Number(result.upstream.status || 0);
+      const diag = diagRecordFromResult(attempt, result, Date.now() - attemptStarted);
+      diagnostics.push(diag);
+
       const temporaryHttp = RETRYABLE_HTTP.has(status);
       const invalidPayload = !result.validJson;
-      const shouldRetry = retryAllowed && attempt === 1 && (temporaryHttp || invalidPayload);
+      const shouldRetry = retryAllowed && attempt < maxAttempts && (temporaryHttp || invalidPayload);
 
       if (shouldRetry) {
-        lastFailure = {
-          kind: invalidPayload ? (result.htmlLike ? "html" : "non_json") : "http",
-          status,
-          host: upstreamHost(result.upstream),
-        };
         await sleep(RETRY_DELAY_MS);
-        attempt += 1;
         continue;
       }
 
-      const elapsed = Date.now() - started;
+      const totalMs = Date.now() - started;
 
-      // Apps Script doPost chuẩn luôn trả JSON. Nếu sau lần cuối vẫn là HTML/non-JSON,
-      // chuẩn hóa thành JSON ngắn gọn thay vì đẩy cả trang HTML Google ra màn hình đăng nhập.
       if (!result.validJson) {
+        const summary = diagnosticSummary(diagnostics);
+        const reason = humanAttemptDiag(diag);
         return jsonResponse({
-          error: retryAllowed && attempt > 1
-            ? "Google Apps Script trả về phản hồi không hợp lệ sau khi proxy đã tự thử lại."
-            : "Google Apps Script trả về phản hồi không hợp lệ.",
+          error: `Kết nối Cloudflare → Apps Script chưa ổn định: ${reason}. ${maxAttempts > 1 ? `Đã thử ${attempt} lần.` : "Không tự retry action này."} Mã chẩn đoán ${traceId}.`,
           action,
-          responseType: result.htmlLike ? "HTML" : "NON_JSON",
-          upstreamStatus: status,
+          diagnosticCode: diag.kind,
+          traceId,
           attempts: attempt,
-          proxyMs: elapsed,
-        }, 502, {
-          "X-ChamCong-Action": String(action).slice(0, 80),
-          "X-ChamCong-Upstream-Status": String(status),
-          "X-ChamCong-Proxy-Attempts": String(attempt),
-          "X-ChamCong-Proxy-Ms": String(elapsed),
-        });
+          proxyMs: totalMs,
+          diagnosticSummary: summary,
+          diagnostic: {
+            retryAllowed,
+            attemptTimeoutMs,
+            attempts: diagnostics,
+          },
+        }, 502, failureHeaders(action, traceId, attempt, totalMs, diag.kind));
       }
 
-      // JSON hợp lệ: trả thẳng cho frontend. Không retry lỗi nghiệp vụ nằm trong JSON.
-      return new Response(result.text, {
-        status,
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          "Cache-Control": "no-store, no-cache, must-revalidate",
-          "Pragma": "no-cache",
-          "X-ChamCong-Proxy": "cloudflare-pages-r2.4.11",
-          "X-ChamCong-Action": String(action).slice(0, 80),
-          "X-ChamCong-Upstream-Status": String(status),
-          "X-ChamCong-Proxy-Attempts": String(attempt),
-          "X-ChamCong-Proxy-Ms": String(elapsed),
-          ...(lastFailure ? { "X-ChamCong-Retry-Recovered": "1" } : {}),
-        },
-      });
+      // JSON hợp lệ: trả nguyên văn cho frontend. Không retry lỗi nghiệp vụ trong JSON.
+      const headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+        "X-ChamCong-Proxy": "cloudflare-pages-r2.4.12",
+        "X-ChamCong-Action": safeShort(action, 80),
+        "X-ChamCong-Trace-Id": traceId,
+        "X-ChamCong-Upstream-Status": String(status),
+        "X-ChamCong-Proxy-Attempts": String(attempt),
+        "X-ChamCong-Proxy-Ms": String(totalMs),
+      };
+      if (attempt > 1 && diagnostics.length > 1) {
+        headers["X-ChamCong-Retry-Recovered"] = "1";
+        headers["X-ChamCong-Retry-First-Failure"] = safeShort(diagnostics[0].kind, 80);
+      }
+      return new Response(result.text, { status, headers });
+
     } catch (err) {
-      const elapsed = Date.now() - started;
-      const canTryAgain = retryAllowed && attempt === 1;
-      if (canTryAgain) {
-        lastFailure = {
-          kind: "fetch_error",
-          detail: err && err.message ? String(err.message) : String(err || "Unknown fetch error"),
-        };
+      const diag = diagRecordFromError(attempt, err, Date.now() - attemptStarted, attemptTimeoutMs);
+      diagnostics.push(diag);
+
+      if (retryAllowed && attempt < maxAttempts) {
         await sleep(RETRY_DELAY_MS);
-        attempt += 1;
         continue;
       }
 
+      const totalMs = Date.now() - started;
+      const summary = diagnosticSummary(diagnostics);
+      const reason = humanAttemptDiag(diag);
       return jsonResponse({
-        error: retryAllowed && attempt > 1
-          ? "Cloudflare không gọi được Apps Script sau khi đã tự thử lại."
-          : "Cloudflare không gọi được Apps Script.",
+        error: `Kết nối Cloudflare → Apps Script chưa ổn định: ${reason}. ${maxAttempts > 1 ? `Đã thử ${attempt} lần.` : "Không tự retry action này."} Mã chẩn đoán ${traceId}.`,
         action,
-        detail: err && err.message ? String(err.message) : String(err || "Unknown proxy error"),
+        diagnosticCode: diag.kind,
+        traceId,
         attempts: attempt,
-        proxyMs: elapsed,
-      }, 502, {
-        "X-ChamCong-Action": String(action).slice(0, 80),
-        "X-ChamCong-Proxy-Attempts": String(attempt),
-        "X-ChamCong-Proxy-Ms": String(elapsed),
-      });
+        proxyMs: totalMs,
+        diagnosticSummary: summary,
+        diagnostic: {
+          retryAllowed,
+          attemptTimeoutMs,
+          attempts: diagnostics,
+        },
+      }, 502, failureHeaders(action, traceId, attempt, totalMs, diag.kind));
     }
   }
 
-  // Không kỳ vọng tới đây, giữ fail-safe dạng JSON.
+  const totalMs = Date.now() - started;
   return jsonResponse({
-    error: "Proxy không hoàn tất được yêu cầu.",
+    error: `Proxy không hoàn tất được yêu cầu. Mã chẩn đoán ${traceId}.`,
     action,
-    attempts: attempt - 1,
-    proxyMs: Date.now() - started,
-  }, 502);
+    traceId,
+    attempts: diagnostics.length,
+    proxyMs: totalMs,
+    diagnostic: { retryAllowed, attemptTimeoutMs, attempts: diagnostics },
+  }, 502, failureHeaders(action, traceId, diagnostics.length, totalMs, "UNKNOWN"));
 }
