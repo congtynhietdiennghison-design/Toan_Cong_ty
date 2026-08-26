@@ -1,22 +1,22 @@
 // Cloudflare Pages Function: /api
-// R2.4.13 CF PROXY DIAGNOSTIC — HYBRID FALLBACK
-// Nền: R2.4.12 DIAGNOSTIC + R2.4.10 TAB QUEUE.
+// R2.4.12 CF PROXY DIAGNOSTIC + AUTO RETRY
+// Nền: R2.4.11 CF PROXY AUTO RETRY + R2.4.10 TAB QUEUE.
 // Chỉ tăng chẩn đoán lớp Cloudflare -> Google Apps Script:
 // - phân biệt TIMEOUT / HTTP / GOOGLE_HTML / NON_JSON / FETCH_ERROR;
-// - proxy chỉ gọi upstream 1 lần; frontend R2.4.13 đã dùng Apps Script trực tiếp trước rồi mới fallback /api;
+// - tự retry 1 lần với action an toàn như R2.4.11;
 // - không ghi/không trả PIN, token, body request hay nội dung HTML Google;
 // - trả traceId + thông tin từng lần thử khi vẫn lỗi sau retry.
 // Upstream cố định để endpoint này KHÔNG trở thành open proxy.
 
 const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw7fHZBn_Bzfma2td2PoP72JhrfasO1h_BYn_mF5o87Vx7Af85DgmCh3Tivaypc-L9yxA/exec";
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
-const RETRY_DELAY_MS = 0; // R2.4.13: không retry bên proxy
+const RETRY_DELAY_MS = 450;
 // Các API đọc/login thực tế thường dưới 20s theo log vận hành. Cho 38s/lần để
 // nếu cần retry vẫn kết thúc trước timeout 90s của frontend.
-const RETRYABLE_ATTEMPT_TIMEOUT_MS = 42000;
+const RETRYABLE_ATTEMPT_TIMEOUT_MS = 38000;
 // Action không retry chỉ có một lượt nên cho dư thời gian hơn.
-const SINGLE_ATTEMPT_TIMEOUT_MS = 42000;
-const PROXY_VERSION = "R2.4.13-CF-PROXY-DIAGNOSTIC-HYBRID-FALLBACK";
+const SINGLE_ATTEMPT_TIMEOUT_MS = 80000;
+const PROXY_VERSION = "R2.4.12-CF-PROXY-DIAGNOSTIC-AUTO-RETRY";
 
 const SAFE_RETRY_ACTIONS = new Set([
   "getPublicBranding",
@@ -82,7 +82,7 @@ function jsonResponse(obj, status = 200, extraHeaders = {}) {
       "Content-Type": "application/json; charset=utf-8",
       "Cache-Control": "no-store, no-cache, must-revalidate",
       "Pragma": "no-cache",
-      "X-ChamCong-Proxy": "cloudflare-pages-r2.4.13",
+      "X-ChamCong-Proxy": "cloudflare-pages-r2.4.12",
       ...extraHeaders,
     },
   });
@@ -257,7 +257,7 @@ export function onRequestGet(context) {
     proxy: "cloudflare-pages",
     version: PROXY_VERSION,
     diagnostic: true,
-    retry: "khong retry ben proxy; frontend dung Apps Script truc tiep roi fallback /api",
+    retry: "1 lan cho loi ket noi/HTML/HTTP tam thoi o action an toan",
     timeoutPerRetryableAttemptMs: RETRYABLE_ATTEMPT_TIMEOUT_MS,
     message: url && url.searchParams.get("diag") === "1"
       ? "Proxy diagnostic is ready; chi tiet loi duoc tra theo tung request, khong luu PIN/token/body."
@@ -298,9 +298,9 @@ export async function onRequestPost(context) {
   }
 
   const action = params.get("action") || request.headers.get("X-Client-Action") || "API";
-  const retryAllowed = false; // R2.4.13: tránh retry chồng tầng; frontend đã có 2 transport độc lập.
-  const maxAttempts = 1;
-  const attemptTimeoutMs = SINGLE_ATTEMPT_TIMEOUT_MS;
+  const retryAllowed = canRetryAction(action, params);
+  const maxAttempts = retryAllowed ? 2 : 1;
+  const attemptTimeoutMs = retryAllowed ? RETRYABLE_ATTEMPT_TIMEOUT_MS : SINGLE_ATTEMPT_TIMEOUT_MS;
   const diagnostics = [];
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -346,7 +346,7 @@ export async function onRequestPost(context) {
         "Content-Type": "application/json; charset=utf-8",
         "Cache-Control": "no-store, no-cache, must-revalidate",
         "Pragma": "no-cache",
-        "X-ChamCong-Proxy": "cloudflare-pages-r2.4.13",
+        "X-ChamCong-Proxy": "cloudflare-pages-r2.4.12",
         "X-ChamCong-Action": safeShort(action, 80),
         "X-ChamCong-Trace-Id": traceId,
         "X-ChamCong-Upstream-Status": String(status),
