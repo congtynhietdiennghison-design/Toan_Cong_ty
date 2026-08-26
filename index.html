@@ -3530,7 +3530,22 @@ function retryCoreBootstrap() {
 
 function _isTransientLoginTransportError_(err) {
   const msg = (err && err.message) ? err.message : String(err || '');
-  return /Failed to fetch|NetworkError|Load failed|quá thời gian|HTTP:\s*(404|408|425|429|500|502|503|504)|HTTP\s*(404|408|425|429|500|502|503|504)/i.test(msg);
+  return /Failed to fetch|NetworkError|Load failed|quá thời gian|GOOGLE_HTML|NON_JSON|TIMEOUT|FETCH_ERROR|Cloudflare.*Apps Script|Google.*HTML|HTTP:\s*(404|408|425|429|500|502|503|504)|HTTP\s*(404|408|425|429|500|502|503|504)/i.test(msg);
+}
+
+function _loginTransportCause_(err) {
+  const msg = (err && err.message) ? err.message : String(err || '');
+  if (/Google.*HTML|GOOGLE_HTML/i.test(msg)) return 'Google trả HTML thay vì dữ liệu';
+  if (/quá thời gian|TIMEOUT/i.test(msg)) return 'Apps Script phản hồi quá lâu';
+  if (/HTTP(?:\s*:?\s*)(404|408|425|429|500|502|503|504)/i.test(msg)) {
+    const m = msg.match(/HTTP(?:\s*:?\s*)(404|408|425|429|500|502|503|504)/i);
+    return 'HTTP ' + (m ? m[1] : 'tạm thời');
+  }
+  if (/Cloudflare.*Apps Script|Failed to fetch|NetworkError|Load failed|FETCH_ERROR/i.test(msg)) {
+    return 'Cloudflare chưa kết nối ổn định tới Apps Script';
+  }
+  if (/NON_JSON|không phải JSON/i.test(msg)) return 'Google trả phản hồi không đúng định dạng';
+  return 'lỗi kết nối tạm thời';
 }
 
 async function _loginApiSafe_(name, pin, statusEl) {
@@ -3543,8 +3558,10 @@ async function _loginApiSafe_(name, pin, statusEl) {
       if (attempt === 0 && _isTransientLoginTransportError_(err)) {
         if (statusEl) {
           statusEl.style.color = '#1a56a0';
-          statusEl.textContent = 'Kết nối chưa ổn định — đang thử lại...';
+          statusEl.textContent = 'Kết nối chưa ổn định — ' + _loginTransportCause_(err) + ' — đang thử lại...';
+          statusEl.title = (err && err.message) ? err.message : String(err || '');
         }
+        console.warn('[LOGIN TRANSPORT RETRY]', (err && err.message) ? err.message : err);
         await sleep(1200);
         continue;
       }
