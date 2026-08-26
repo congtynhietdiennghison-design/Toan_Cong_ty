@@ -1074,7 +1074,9 @@ textarea{resize:none;height:80px}
 // =============================================
 // KHAI BÁO BIẾN TOÀN CỤC
 // =============================================
-// R2.4.8 SAFE LOGIN — backend nền R2.4.5, frontend chống tab đồng thời.
+// R2.4.9 CF PROXY — giữ nguyên backend SAFE; trình duyệt chỉ gọi API cùng domain Cloudflare.
+const API_PROXY_URL = "/api";
+// Chỉ giữ URL Apps Script làm thông tin tham chiếu; browser KHÔNG gọi trực tiếp URL này nữa.
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw7fHZBn_Bzfma2td2PoP72JhrfasO1h_BYn_mF5o87Vx7Af85DgmCh3Tivaypc-L9yxA/exec";
 let APP_CONFIG = { tenCongTy: "Công ty", lechMax: 10 };
 let NV_LIST=[]; let CA = {}; let CU=null;
@@ -2058,14 +2060,34 @@ function apiOnce(p) {
         .withFailureHandler(err => { clearTimeout(timeout); reject(err); })
         .apiRun(p);
     } else {
-      fetch(SCRIPT_URL, {
+      // R2.4.9: gọi cùng domain Cloudflare Pages. /api sẽ chuyển tiếp server-side
+      // tới Apps Script và tự theo redirect Google; browser không còn gọi cross-origin trực tiếp.
+      fetch(API_PROXY_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams(p).toString()
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Client-Action': ((p && p.action) || 'API')
+        },
+        body: new URLSearchParams(p).toString(),
+        cache: 'no-store'
       })
-        .then(r => {
-          if (!r.ok) throw new Error("Mã lỗi HTTP: " + r.status + " — " + ((p && p.action) || 'API'));
-          return r.json();
+        .then(async r => {
+          const action = ((p && p.action) || 'API');
+          const text = await r.text();
+          if (!r.ok) {
+            let detail = '';
+            try {
+              const obj = JSON.parse(text || '{}');
+              detail = (obj && (obj.error || obj.message || obj.detail)) ? String(obj.error || obj.message || obj.detail) : '';
+            } catch (_) {}
+            throw new Error('Mã lỗi HTTP: ' + r.status + ' — ' + action + (detail ? ' — ' + detail : ''));
+          }
+          try {
+            return JSON.parse(text);
+          } catch (_) {
+            const sample = (text || '').replace(/\s+/g, ' ').slice(0, 160);
+            throw new Error('Phản hồi API không phải JSON — ' + action + (sample ? ' — ' + sample : ''));
+          }
         })
         .then(res => { clearTimeout(timeout); resolve(res); })
         .catch(err => { clearTimeout(timeout); reject(err); });
