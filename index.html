@@ -1074,6 +1074,7 @@ textarea{resize:none;height:80px}
 // =============================================
 // KHAI BÁO BIẾN TOÀN CỤC
 // =============================================
+// R2.4.8 SAFE LOGIN — backend nền R2.4.5, frontend chống tab đồng thời.
 const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw7fHZBn_Bzfma2td2PoP72JhrfasO1h_BYn_mF5o87Vx7Af85DgmCh3Tivaypc-L9yxA/exec";
 let APP_CONFIG = { tenCongTy: "Công ty", lechMax: 10 };
 let NV_LIST=[]; let CA = {}; let CU=null;
@@ -3488,6 +3489,32 @@ function retryCoreBootstrap() {
   return _syncRetryPromise;
 }
 
+function _isTransientLoginTransportError_(err) {
+  const msg = (err && err.message) ? err.message : String(err || '');
+  return /Failed to fetch|NetworkError|Load failed|quá thời gian|HTTP:\s*(404|408|425|429|500|502|503|504)|HTTP\s*(404|408|425|429|500|502|503|504)/i.test(msg);
+}
+
+async function _loginApiSafe_(name, pin, statusEl) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await api({action:'login', name:name, pin:pin});
+    } catch (err) {
+      lastErr = err;
+      if (attempt === 0 && _isTransientLoginTransportError_(err)) {
+        if (statusEl) {
+          statusEl.style.color = '#1a56a0';
+          statusEl.textContent = 'Kết nối chưa ổn định — đang thử lại...';
+        }
+        await sleep(1200);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr || new Error('Không nhận được phản hồi đăng nhập.');
+}
+
 async function doLogin(){
   const n=document.getElementById('f-login-name').value;
   const p=document.getElementById('pin-inp').value;
@@ -3499,7 +3526,8 @@ async function doLogin(){
   resetLoginPerfDiag();
   const _diagLoginT0 = beginLoginPerfStep('login');
   try {
-    const r = await api({action:'login', name:n, pin:p});
+    const r = await _loginApiSafe_(n, p, e);
+    if (!r) throw new Error('Máy chủ không trả dữ liệu đăng nhập.');
     if (r.error) {
       endLoginPerfStep('login', _diagLoginT0, r.error);
       e.style.color='#dc2626'; e.textContent=r.error; return;
@@ -3555,9 +3583,16 @@ async function doLogin(){
 
     startInitialFullBundle(r).catch(() => {});
   } catch(ex) {
-    endLoginPerfStep('login', _diagLoginT0, (ex && ex.message) ? ex.message : 'Lỗi kết nối mạng');
+    const msg = (ex && ex.message) ? ex.message : String(ex || 'Không rõ lỗi');
+    endLoginPerfStep('login', _diagLoginT0, msg);
     e.style.color='#dc2626';
-    e.textContent='Lỗi kết nối mạng';
+    // R2.4.8 SAFE: không che mất nguyên nhân thật bằng câu “Lỗi kết nối mạng”.
+    if (/Failed to fetch|NetworkError|Load failed/i.test(msg)) {
+      e.textContent='Không kết nối được Apps Script — ' + msg;
+    } else {
+      e.textContent='Không đăng nhập được — ' + msg;
+    }
+    console.error('[LOGIN SAFE] lỗi:', ex);
   }
 }
 
