@@ -3379,9 +3379,78 @@ function startCoreBootstrap(r) {
   return _coreBootstrapPromise;
 }
 
+let _syncRetryPromise = null;
+
+function getActiveTabForSyncRetry() {
+  const btn = document.querySelector('.tab.active[onclick*="switchTab("]');
+  if (btn) {
+    const raw = btn.getAttribute('onclick') || '';
+    const m = raw.match(/switchTab\(['"]([^'"]+)['"]\)/);
+    if (m && m[1]) return m[1];
+  }
+  const sec = document.querySelector('[id^="tab-"].active');
+  if (sec && sec.id) return sec.id.replace(/^tab-/, '');
+  return 'dang-ky';
+}
+
+async function forceRetryActiveTabData(tab) {
+  const t = tab || getActiveTabForSyncRetry();
+
+  // Bảng đi ca phạm vi toàn Công ty dùng gói dữ liệu riêng, cần ép tải mới.
+  if (t === 'bang-di-ca' && isCompanyPermissionScope()) {
+    await ensureCompanyScheduleData(true);
+    switchTabRender(t);
+    return true;
+  }
+
+  const keys = TAB_DATA_NEEDS[t] || [];
+  clearSharedReadCache();
+  keys.forEach(k => {
+    if (Object.prototype.hasOwnProperty.call(_dataLoaded, k)) _dataLoaded[k] = false;
+  });
+
+  await ensureDataForTab(t);
+  switchTabRender(t);
+  return true;
+}
+
 function retryCoreBootstrap() {
-  if (!CU) return;
-  startInitialFullBundle({}).catch(() => {});
+  if (!CU) return Promise.resolve(false);
+  if (_syncRetryPromise) return _syncRetryPromise;
+
+  const activeTab = getActiveTabForSyncRetry();
+  setCoreBootstrapUiState('loading', '⏳ Đang thử đồng bộ lại...');
+
+  _syncRetryPromise = (async () => {
+    try {
+      let ok = true;
+
+      // Nếu lõi users/settings/mẫu lịch chưa sẵn sàng thì thử lại gói khởi tạo trước.
+      if (!_coreBootstrapReady || !_initialFullBundleReady) {
+        ok = await startInitialFullBundle({});
+        if (!ok) throw new Error(_coreBootstrapError || 'Không đồng bộ được dữ liệu khởi tạo.');
+      } else {
+        // Lõi đã sẵn sàng: lỗi trước đó là dữ liệu của tab, phải tải lại đúng tab đó.
+        await forceRetryActiveTabData(activeTab);
+      }
+
+      if (!CU) return false; // phiên đã hết hạn và handler đã đưa về màn đăng nhập
+      setPrimarySyncState(true);
+      setCoreBootstrapUiState('ready');
+      return true;
+    } catch (err) {
+      if (!CU) return false;
+      const msg = (err && err.message) ? err.message : String(err || 'Không đồng bộ được dữ liệu.');
+      console.error('[SYNC RETRY] lỗi:', err);
+      setCoreBootstrapUiState('failed', msg + ' — chạm để thử lại.');
+      setPrimarySyncState(false, true);
+      return false;
+    } finally {
+      _syncRetryPromise = null;
+    }
+  })();
+
+  return _syncRetryPromise;
 }
 
 async function doLogin(){
